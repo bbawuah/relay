@@ -452,7 +452,8 @@ async function zelftest(): Promise<number> {
       console.log(
         `${rood ? "OK  " : "FOUT"} zelftest ${k.stap.padEnd(10)} ${rood ? "keurt af" : "keurt NIET af"}: ${k.wat} (${duur(Date.now() - t0)})`,
       );
-      if (!rood) console.log(staart(r.uit, 20));
+      if (rood) console.log(`     ${r.uit.match(k.verwacht)?.[0]}`);
+      else console.log(staart(r.uit, 20));
       herstel(map);
     }
   } finally {
