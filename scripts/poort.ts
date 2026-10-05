@@ -48,7 +48,7 @@ import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, write
 import { homedir, tmpdir } from "node:os";
 import path from "node:path";
 import { ongebruikt, sleutels as dsSleutels, zoek as dsZoek } from "./ds-regels";
-import { beschrijf as ekBeschrijf, OPLOSSING as EK_OPLOSSING, sleutel as ekSleutel, zoek as ekZoek } from "./echte-klok";
+import { beschrijf as ekBeschrijf, nieuweTreffers as ekNieuw, OPLOSSING as EK_OPLOSSING, sleutel as ekSleutel, zoek as ekZoek } from "./echte-klok";
 import { JUISTE_VORM, sleutel as wcSleutel, zoek as wcZoek } from "./werk-commentaar";
 
 const ROOT = path.resolve(import.meta.dir, "..");
@@ -278,8 +278,7 @@ function stapEchteKlok(): Resultaat {
   const treffers = ekZoek();
   const r = metBaseline("echte-klok", { code: 0, uit: "" }, treffers.map(ekSleutel));
   if (r.status !== "FOUT") return r;
-  const bekend = new Set(leesBaseline()["echte-klok"] ?? []);
-  const nieuw = treffers.filter((t) => !bekend.has(ekSleutel(t))).map((t) => `     ${ekBeschrijf(t)}`);
+  const nieuw = ekNieuw(treffers, leesBaseline()["echte-klok"] ?? []).map((t) => `     ${ekBeschrijf(t)}`);
   return { ...r, uitleg: `${r.uitleg}${nieuw.length ? `\n${nieuw.join("\n")}` : ""}
      Op een trage runner wordt dat flaky; oplossing: ${EK_OPLOSSING}` };
 }
