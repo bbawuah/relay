@@ -7,6 +7,7 @@
 //   boundaries  turbo boundaries: imports zonder dependency      (hele repo)
 //   ds-regels   designsysteem-regels R1–R7 (scripts/ds-regels.ts) (alle apps)
 //   werk-commentaar  TODO/HACK/FIXME/XXX/workaround alleen als TODO(JJJJ-MM-DD): reden; verlopen = FOUT
+//   echte-klok  unittests wachten niet op de echte klok: Bun.sleep/setTimeout ≥ 10 ms = FOUT (scripts/echte-klok.ts)
 //   scripts-tests  bun test ./scripts/ (de tests van poort en ds-regels; < 1 s, altijd)
 //   biome       biome ci: lint (alleen foutregels), geen format  (hele repo)
 //   taken       turbo run lint typecheck test                    (affected)
@@ -30,7 +31,7 @@
 //   --base <ref>     vergelijk met deze ref in plaats van main
 //   --ci             voor .github/workflows/ci.yml: sla de taken over die in
 //                    uitzonderingen.ci van de baseline staan (alleen op de mini)
-//   --alleen <s,…>   alleen deze stappen (sherif,boundaries,ds-regels,werk-commentaar,scripts-tests,biome,taken,build,e2e)
+//   --alleen <s,…>   alleen deze stappen (sherif,boundaries,ds-regels,werk-commentaar,echte-klok,scripts-tests,biome,taken,build,e2e)
 //   --zelftest       bewijs dat elke stap afkeurt: per stap een bewuste fout in een
 //                    tijdelijke kopie van de werkkopie; de poort moet daar rood worden
 //   --baseline       schrijf de huidige sherif-, boundaries- en ds-regels-schendingen naar de
@@ -47,11 +48,12 @@ import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, write
 import { homedir, tmpdir } from "node:os";
 import path from "node:path";
 import { ongebruikt, sleutels as dsSleutels, zoek as dsZoek } from "./ds-regels";
+import { beschrijf as ekBeschrijf, nieuweTreffers as ekNieuw, OPLOSSING as EK_OPLOSSING, sleutel as ekSleutel, zoek as ekZoek } from "./echte-klok";
 import { JUISTE_VORM, sleutel as wcSleutel, zoek as wcZoek } from "./werk-commentaar";
 
 const ROOT = path.resolve(import.meta.dir, "..");
 const BASELINE_PAD = path.join(ROOT, "scripts/poort-baseline.json");
-const STAPPEN = ["sherif", "boundaries", "ds-regels", "werk-commentaar", "scripts-tests", "biome", "taken", "build", "e2e"] as const;
+const STAPPEN = ["sherif", "boundaries", "ds-regels", "werk-commentaar", "echte-klok", "scripts-tests", "biome", "taken", "build", "e2e"] as const;
 type Stap = (typeof STAPPEN)[number];
 
 // ── Opties ──────────────────────────────────────────────────────────────────
@@ -136,6 +138,8 @@ type Baseline = {
   "ds-regels": string[];
   /** "bestand | regeltekst" van werk-commentaar in een ongeldige vorm (zie werk-commentaar.ts). */
   "werk-commentaar"?: string[];
+  /** "bestand | regeltekst" van unittests die op de echte klok wachten (zie echte-klok.ts). */
+  "echte-klok"?: string[];
   uitzonderingen: {
     build: { zonder: string[]; reden: string; weg_als: string };
     /** `<package>#<taak>` die CI (--ci) niet draait; lokaal draaien ze wel. */
@@ -197,7 +201,7 @@ export function boundarySleutels(uit: string, root = ROOT): string[] {
 
 type Resultaat = { status: "OK" | "FOUT" | "SKIP"; detail?: string; uitleg?: string };
 
-type BaselineSoort = "sherif" | "boundaries" | "ds-regels" | "werk-commentaar";
+type BaselineSoort = "sherif" | "boundaries" | "ds-regels" | "werk-commentaar" | "echte-klok";
 
 function metBaseline(soort: BaselineSoort, r: Uitkomst, sleutels: string[], extra: string[] = [], extraLabel = "allowlist verouderd"): Resultaat {
   const bekend = leesBaseline()[soort] ?? [];
@@ -263,6 +267,20 @@ function stapWerkCommentaar(): Resultaat {
   if (r.status === "FOUT") return { ...r, uitleg: `${r.uitleg}
      juiste vorm: ${JUISTE_VORM}` };
   return r;
+}
+
+/**
+ * Echte klok draait in-process over alle getrackte unittests (< 1 s). Een nieuwe wachttijd
+ * van 10 ms of meer is FOUT (bestaande in de baseline, mag alleen krimpen); de melding
+ * noemt per treffer bestand, regel en tijd, en de oplossing.
+ */
+function stapEchteKlok(): Resultaat {
+  const treffers = ekZoek();
+  const r = metBaseline("echte-klok", { code: 0, uit: "" }, treffers.map(ekSleutel));
+  if (r.status !== "FOUT") return r;
+  const nieuw = ekNieuw(treffers, leesBaseline()["echte-klok"] ?? []).map((t) => `     ${ekBeschrijf(t)}`);
+  return { ...r, uitleg: `${r.uitleg}${nieuw.length ? `\n${nieuw.join("\n")}` : ""}
+     Op een trage runner wordt dat flaky; oplossing: ${EK_OPLOSSING}` };
 }
 
 /** De root is geen workspace, dus turbo draait deze tests niet; deze stap wel (altijd, < 1 s). */
@@ -376,6 +394,7 @@ async function poort(o: Opties): Promise<number> {
       : s === "boundaries" ? stapBoundaries()
       : s === "ds-regels" ? stapDsRegels()
       : s === "werk-commentaar" ? stapWerkCommentaar()
+      : s === "echte-klok" ? stapEchteKlok()
       : s === "scripts-tests" ? stapScriptsTests()
       : s === "biome" ? stapBiome()
       : s === "taken" ? stapTaken(ctx, o.ci)
@@ -412,9 +431,10 @@ function schrijfBaseline(): void {
     .filter((t) => t.soort === "ongeldig")
     .map(wcSleutel)
     .sort();
+  b["echte-klok"] = ekZoek().map(ekSleutel).sort();
   writeFileSync(BASELINE_PAD, JSON.stringify(b, null, 2) + "\n");
   console.log(
-    `baseline: ${b.sherif.length} sherif, ${b.boundaries.length} boundaries, ${b["ds-regels"].length} ds-regels, ${b["werk-commentaar"].length} werk-commentaar → scripts/poort-baseline.json`,
+    `baseline: ${b.sherif.length} sherif, ${b.boundaries.length} boundaries, ${b["ds-regels"].length} ds-regels, ${b["werk-commentaar"].length} werk-commentaar, ${b["echte-klok"].length} echte-klok → scripts/poort-baseline.json`,
   );
 }
 
@@ -505,6 +525,23 @@ export const KANARIES: Kanarie[] = [
     wat: "een TODO met een verlopen datum in apps/template",
     verwacht: /FOUT werk-commentaar .*1 verlopen/,
     zet: (m) => schrijf(m, "apps/template/src/kanarie-werk-verlopen.ts", "// TODO(2020-01-01): oude afspraak\nexport const kanarie = 1;\n"),
+  },
+  {
+    stap: "echte-klok",
+    wat: "een unittest met Bun.sleep(50) in apps/template",
+    verwacht: /FOUT echte-klok .*1 nieuw/,
+    zet: (m) =>
+      schrijf(
+        m,
+        "apps/template/src/kanarie-klok.test.ts",
+        'import { expect, test } from "bun:test";\ntest("kanarie", async () => {\n  await Bun.sleep(50);\n  expect(1).toBe(1);\n});\n',
+      ),
+  },
+  {
+    stap: "echte-klok",
+    wat: "de echte oude test van #52: paneel.test.tsx van 9fe29d5^ (Bun.sleep(70) en (60))",
+    verwacht: /FOUT echte-klok .*2 nieuw/,
+    zet: (m) => schrijf(m, "apps/watchparty/src/ui/paneel.test.tsx", git("show", "9fe29d5^:apps/watchparty/src/ui/paneel.test.tsx") + "\n"),
   },
   {
     stap: "scripts-tests",
