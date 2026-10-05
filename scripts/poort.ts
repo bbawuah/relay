@@ -5,14 +5,18 @@
 //
 //   sherif      dependency-regels over alle package.json's      (hele repo)
 //   boundaries  turbo boundaries: imports zonder dependency      (hele repo)
+//   ds-regels   designsysteem-regels R1–R7 (scripts/ds-regels.ts) (alle apps)
+//   scripts-tests  bun test ./scripts/ (de tests van poort en ds-regels; < 1 s, altijd)
 //   biome       biome ci: lint (alleen foutregels), geen format  (hele repo)
 //   taken       turbo run lint typecheck test                    (affected)
 //   build       turbo run build, zonder de site (zie baseline)   (affected)
 //   e2e         turbo run e2e --concurrency=1                    (affected; tmux, watchparty, storybook-axe)
 //
-// sherif en boundaries vergelijken met scripts/poort-baseline.json: bekende
-// schendingen zijn schuld, een nieuwe is FOUT, en een opgeloste die nog in de
-// baseline staat ook (dan de regel weghalen, zodat de baseline alleen krimpt).
+// sherif, boundaries en ds-regels vergelijken met scripts/poort-baseline.json:
+// bekende schendingen zijn schuld, een nieuwe is FOUT, en een opgeloste die nog in
+// de baseline staat ook (dan de regel weghalen, zodat de baseline alleen krimpt).
+// ds-regels heeft daarnaast een allowlist met reden (UITZONDERINGEN in
+// ds-regels.ts); een uitzondering die niets meer dekt is ook FOUT.
 //
 // Affected betekent: geraakt door de diff tussen de merge-base met --base en de
 // werkkopie (ook niet-gecommitte wijzigingen). Standaard is de base `main`; sta
@@ -25,10 +29,10 @@
 //   --base <ref>     vergelijk met deze ref in plaats van main
 //   --ci             voor .github/workflows/ci.yml: sla de taken over die in
 //                    uitzonderingen.ci van de baseline staan (alleen op de mini)
-//   --alleen <s,…>   alleen deze stappen (sherif,boundaries,biome,taken,build,e2e)
+//   --alleen <s,…>   alleen deze stappen (sherif,boundaries,ds-regels,scripts-tests,biome,taken,build,e2e)
 //   --zelftest       bewijs dat elke stap afkeurt: per stap een bewuste fout in een
 //                    tijdelijke kopie van de werkkopie; de poort moet daar rood worden
-//   --baseline       schrijf de huidige sherif- en boundaries-schendingen naar de
+//   --baseline       schrijf de huidige sherif-, boundaries- en ds-regels-schendingen naar de
 //                    baseline (alleen bewust gebruiken; de diff hoort in review)
 //
 // Uitvoer: één regel per stap, OK / FOUT / SKIP, zoals rooktest.sh. Exitcode =
@@ -41,10 +45,11 @@
 import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import path from "node:path";
+import { ongebruikt, sleutels as dsSleutels, zoek as dsZoek } from "./ds-regels";
 
 const ROOT = path.resolve(import.meta.dir, "..");
 const BASELINE_PAD = path.join(ROOT, "scripts/poort-baseline.json");
-const STAPPEN = ["sherif", "boundaries", "biome", "taken", "build", "e2e"] as const;
+const STAPPEN = ["sherif", "boundaries", "ds-regels", "scripts-tests", "biome", "taken", "build", "e2e"] as const;
 type Stap = (typeof STAPPEN)[number];
 
 // ── Opties ──────────────────────────────────────────────────────────────────
@@ -125,6 +130,8 @@ type Baseline = {
   _uitleg: string;
   sherif: string[];
   boundaries: string[];
+  /** "bestand | regel-ID | regeltekst" (zie sleutel() in ds-regels.ts). */
+  "ds-regels": string[];
   uitzonderingen: {
     build: { zonder: string[]; reden: string; weg_als: string };
     /** `<package>#<taak>` die CI (--ci) niet draait; lokaal draaien ze wel. */
@@ -186,21 +193,31 @@ export function boundarySleutels(uit: string, root = ROOT): string[] {
 
 type Resultaat = { status: "OK" | "FOUT" | "SKIP"; detail?: string; uitleg?: string };
 
-function metBaseline(soort: "sherif" | "boundaries", r: Uitkomst, sleutels: string[]): Resultaat {
-  const bekend = leesBaseline()[soort];
+type BaselineSoort = "sherif" | "boundaries" | "ds-regels";
+
+function metBaseline(soort: BaselineSoort, r: Uitkomst, sleutels: string[], extra: string[] = []): Resultaat {
+  const bekend = leesBaseline()[soort] ?? [];
   if (r.code !== 0 && sleutels.length === 0) {
     return { status: "FOUT", detail: "onverwachte uitvoer", uitleg: staart(r.uit) };
   }
   const { nieuw, opgelost } = vergelijk(sleutels, bekend);
-  if (!nieuw.length && !opgelost.length) {
+  if (!nieuw.length && !opgelost.length && !extra.length) {
     return { status: "OK", detail: sleutels.length ? `${sleutels.length} bekend in baseline` : undefined };
   }
   const regels = [
     ...nieuw.map((k) => `     nieuw: ${k}`),
     ...opgelost.map((k) => `     opgelost, haal weg uit scripts/poort-baseline.json: ${k}`),
+    ...extra.map((k) => `     ${k}`),
   ];
-  const kop = [nieuw.length && `${nieuw.length} nieuw`, opgelost.length && `${opgelost.length} opgelost`].filter(Boolean).join(", ");
-  return { status: "FOUT", detail: kop, uitleg: regels.join("\n") + (nieuw.length ? `\n${staart(r.uit, 30)}` : "") };
+  const kop = [
+    nieuw.length && `${nieuw.length} nieuw`,
+    opgelost.length && `${opgelost.length} opgelost`,
+    extra.length && `${extra.length} allowlist verouderd`,
+  ]
+    .filter(Boolean)
+    .join(", ");
+  const uitvoer = nieuw.length && r.uit ? `\n${staart(r.uit, 30)}` : "";
+  return { status: "FOUT", detail: kop, uitleg: regels.join("\n") + uitvoer };
 }
 
 function stapSherif(): Resultaat {
@@ -211,6 +228,29 @@ function stapSherif(): Resultaat {
 function stapBoundaries(): Resultaat {
   const r = draai([bin("turbo"), "boundaries"]);
   return metBaseline("boundaries", r, boundarySleutels(r.uit));
+}
+
+/**
+ * ds-regels draait in-process over alle apps (geen affected: een paar honderd
+ * bestanden lezen kost minder dan een seconde). Alleen treffers zonder
+ * uitzondering tellen; een uitzondering die niets meer dekt is FOUT.
+ */
+function stapDsRegels(): Resultaat {
+  const uitslagen = dsZoek();
+  const treffers = uitslagen.flatMap((u) => u.treffers);
+  const verouderd = ongebruikt(treffers).map((m) => `${m}; haal weg uit UITZONDERINGEN in scripts/ds-regels.ts`);
+  const r = metBaseline("ds-regels", { code: 0, uit: "" }, dsSleutels(uitslagen), verouderd);
+  const toegestaan = treffers.filter((t) => t.uitzondering).length;
+  return r.status === "OK" ? { ...r, detail: `${r.detail ?? "0 in baseline"}, ${toegestaan} toegestaan` } : r;
+}
+
+/** De root is geen workspace, dus turbo draait deze tests niet; deze stap wel (altijd, < 1 s). */
+function stapScriptsTests(): Resultaat {
+  const r = draai(["bun", "test", "./scripts/"]);
+  const pass = r.uit.match(/^\s*(\d+) pass/m)?.[1];
+  const fail = r.uit.match(/^\s*(\d+) fail/m)?.[1];
+  if (r.code === 0) return { status: "OK", detail: pass ? `${pass} tests` : undefined };
+  return { status: "FOUT", detail: fail ? `${fail} mislukt` : "bun test faalde", uitleg: staart(r.uit) };
 }
 
 function stapBiome(): Resultaat {
@@ -313,6 +353,8 @@ async function poort(o: Opties): Promise<number> {
     const r =
       s === "sherif" ? stapSherif()
       : s === "boundaries" ? stapBoundaries()
+      : s === "ds-regels" ? stapDsRegels()
+      : s === "scripts-tests" ? stapScriptsTests()
       : s === "biome" ? stapBiome()
       : s === "taken" ? stapTaken(ctx, o.ci)
       : s === "build" ? stapBuild(ctx)
@@ -343,8 +385,11 @@ function schrijfBaseline(): void {
   const b = leesBaseline();
   b.sherif = sherifSleutels(draai([bin("sherif")]).uit);
   b.boundaries = boundarySleutels(draai([bin("turbo"), "boundaries"]).uit);
+  b["ds-regels"] = dsSleutels(dsZoek());
   writeFileSync(BASELINE_PAD, JSON.stringify(b, null, 2) + "\n");
-  console.log(`baseline: ${b.sherif.length} sherif, ${b.boundaries.length} boundaries → scripts/poort-baseline.json`);
+  console.log(
+    `baseline: ${b.sherif.length} sherif, ${b.boundaries.length} boundaries, ${b["ds-regels"].length} ds-regels → scripts/poort-baseline.json`,
+  );
 }
 
 // ── Zelftest ────────────────────────────────────────────────────────────────
@@ -376,6 +421,47 @@ export const KANARIES: Kanarie[] = [
     wat: "import van een niet-gedeclareerde dependency (zod) in apps/template",
     verwacht: /FOUT boundaries .*1 nieuw/,
     zet: (m) => schrijf(m, "apps/template/src/kanarie-boundaries.ts", 'import { z } from "zod";\nexport const kanarie = z.string();\n'),
+  },
+  {
+    stap: "ds-regels",
+    wat: "een nieuwe rounded-3xl in apps/template (R3)",
+    verwacht: /FOUT ds-regels .*1 nieuw/,
+    zet: (m) => schrijf(m, "apps/template/src/kanarie-ds-radius.tsx", 'export const Kanarie = () => <div className="rounded-3xl" />;\n'),
+  },
+  {
+    stap: "ds-regels",
+    wat: "een nieuwe <Card> zonder variant in apps/template (R1)",
+    verwacht: /FOUT ds-regels .*1 nieuw/,
+    zet: (m) =>
+      schrijf(
+        m,
+        "apps/template/src/kanarie-ds-card.tsx",
+        'import { Card } from "@lab-bawuah/components-react";\nexport const Kanarie = () => <Card>kanarie</Card>;\n',
+      ),
+  },
+  {
+    stap: "ds-regels",
+    wat: "een niet-zwevende schaduw in apps/site/components/chat/chat-ui.tsx (bestand op de allowlist zwevend, R4)",
+    verwacht: /FOUT ds-regels .*1 nieuw/,
+    zet: (m) =>
+      schrijf(
+        m,
+        "apps/site/components/chat/chat-ui.tsx",
+        `${readFileSync(path.join(m, "apps/site/components/chat/chat-ui.tsx"), "utf8")}export const KanarieSchaduw = () => <div className="p-4 shadow-md" />;\n`,
+      ),
+  },
+  {
+    stap: "ds-regels",
+    wat: "een opgeloste treffer die nog in de baseline staat",
+    verwacht: /FOUT ds-regels .*1 opgelost/,
+    zet: (m) =>
+      pasPkgAan(m, "scripts/poort-baseline.json", (b) => b["ds-regels"].push("apps/template/src/bestaat-niet.tsx | R3 | rounded-3xl")),
+  },
+  {
+    stap: "scripts-tests",
+    wat: "falende test in scripts/",
+    verwacht: /FOUT scripts-tests .*1 mislukt/,
+    zet: (m) => schrijf(m, "scripts/kanarie.test.ts", 'import { expect, test } from "bun:test";\ntest("kanarie", () => expect(1).toBe(2));\n'),
   },
   {
     stap: "biome",
