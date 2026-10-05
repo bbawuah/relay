@@ -23,6 +23,8 @@
 //   --alles          geen affected: alle workspaces
 //   --zonder-e2e     de e2e-stap overslaan (= bun run check, de pre-push-hook)
 //   --base <ref>     vergelijk met deze ref in plaats van main
+//   --ci             voor .github/workflows/ci.yml: sla de taken over die in
+//                    uitzonderingen.ci van de baseline staan (alleen op de mini)
 //   --alleen <s,…>   alleen deze stappen (sherif,boundaries,biome,taken,build,e2e)
 //   --zelftest       bewijs dat elke stap afkeurt: per stap een bewuste fout in een
 //                    tijdelijke kopie van de werkkopie; de poort moet daar rood worden
@@ -54,10 +56,11 @@ export type Opties = {
   alleen: Stap[] | null;
   zelftest: boolean;
   baseline: boolean;
+  ci: boolean;
 };
 
 export function leesOpties(args: string[]): Opties {
-  const o: Opties = { alles: false, zonderE2e: false, base: null, alleen: null, zelftest: false, baseline: false };
+  const o: Opties = { alles: false, zonderE2e: false, base: null, alleen: null, zelftest: false, baseline: false, ci: false };
   for (let i = 0; i < args.length; i++) {
     const a = args[i];
     if (a === "--") continue; // `bun run poort -- --alles`
@@ -65,6 +68,7 @@ export function leesOpties(args: string[]): Opties {
     else if (a === "--zonder-e2e") o.zonderE2e = true;
     else if (a === "--zelftest") o.zelftest = true;
     else if (a === "--baseline") o.baseline = true;
+    else if (a === "--ci") o.ci = true;
     else if (a === "--base") {
       o.base = args[++i] ?? null;
       if (!o.base) throw new Error("--base vraagt een ref");
@@ -121,7 +125,11 @@ type Baseline = {
   _uitleg: string;
   sherif: string[];
   boundaries: string[];
-  uitzonderingen: { build: { zonder: string[]; reden: string; weg_als: string } };
+  uitzonderingen: {
+    build: { zonder: string[]; reden: string; weg_als: string };
+    /** `<package>#<taak>` die CI (--ci) niet draait; lokaal draaien ze wel. */
+    ci?: { zonder: string[]; reden: string; weg_als: string };
+  };
 };
 
 function leesBaseline(): Baseline {
@@ -227,8 +235,26 @@ function turboResultaat(r: Uitkomst): Resultaat {
   return { status: "FOUT", detail: mislukt ? `mislukt: ${mislukt}` : detail, uitleg: staart(r.uit) };
 }
 
-function stapTaken(ctx: Context): Resultaat {
-  return turboResultaat(turbo(ctx, ["lint", "typecheck", "test"]));
+const TAKEN = ["lint", "typecheck", "test"];
+
+function stapTaken(ctx: Context, ci: boolean): Resultaat {
+  const zonder = ci ? (leesBaseline().uitzonderingen.ci?.zonder ?? []) : [];
+  if (!zonder.length) return turboResultaat(turbo(ctx, TAKEN));
+  // Een package met een uitgezonderde taak gaat uit de gewone run en krijgt een
+  // eigen run met de taken die overblijven.
+  const perPackage = new Map<string, string[]>();
+  for (const z of zonder) {
+    const [pkg, taak] = z.split("#");
+    perPackage.set(pkg!, [...(perPackage.get(pkg!) ?? []), taak!]);
+  }
+  const runs = [turboResultaat(turbo(ctx, TAKEN, [...perPackage.keys()].map((p) => `--filter=!${p}`)))];
+  for (const [pkg, weg] of perPackage) {
+    const rest = TAKEN.filter((t) => !weg.includes(t));
+    if (rest.length) runs.push(turboResultaat(turbo(ctx, rest, [`--filter=${pkg}`])));
+  }
+  const fout = runs.find((r) => r.status === "FOUT");
+  const detail = `${runs.map((r) => r.detail).join(" + ")}; zonder ${zonder.join(", ")} (CI)`;
+  return fout ? { ...fout, detail: `${fout.detail}; zonder ${zonder.join(", ")} (CI)` } : { status: "OK", detail };
 }
 
 function stapBuild(ctx: Context): Resultaat {
@@ -288,7 +314,7 @@ async function poort(o: Opties): Promise<number> {
       s === "sherif" ? stapSherif()
       : s === "boundaries" ? stapBoundaries()
       : s === "biome" ? stapBiome()
-      : s === "taken" ? stapTaken(ctx)
+      : s === "taken" ? stapTaken(ctx, o.ci)
       : s === "build" ? stapBuild(ctx)
       : stapE2e(ctx);
     if (r.status === "FOUT") fouten++;
