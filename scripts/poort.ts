@@ -6,6 +6,7 @@
 //   sherif      dependency-regels over alle package.json's      (hele repo)
 //   boundaries  turbo boundaries: imports zonder dependency      (hele repo)
 //   ds-regels   designsysteem-regels R1–R7 (scripts/ds-regels.ts) (alle apps)
+//   werk-commentaar  TODO/HACK/FIXME/XXX/workaround alleen als TODO(JJJJ-MM-DD): reden; verlopen = FOUT
 //   scripts-tests  bun test ./scripts/ (de tests van poort en ds-regels; < 1 s, altijd)
 //   biome       biome ci: lint (alleen foutregels), geen format  (hele repo)
 //   taken       turbo run lint typecheck test                    (affected)
@@ -29,7 +30,7 @@
 //   --base <ref>     vergelijk met deze ref in plaats van main
 //   --ci             voor .github/workflows/ci.yml: sla de taken over die in
 //                    uitzonderingen.ci van de baseline staan (alleen op de mini)
-//   --alleen <s,…>   alleen deze stappen (sherif,boundaries,ds-regels,scripts-tests,biome,taken,build,e2e)
+//   --alleen <s,…>   alleen deze stappen (sherif,boundaries,ds-regels,werk-commentaar,scripts-tests,biome,taken,build,e2e)
 //   --zelftest       bewijs dat elke stap afkeurt: per stap een bewuste fout in een
 //                    tijdelijke kopie van de werkkopie; de poort moet daar rood worden
 //   --baseline       schrijf de huidige sherif-, boundaries- en ds-regels-schendingen naar de
@@ -46,10 +47,11 @@ import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, write
 import { homedir, tmpdir } from "node:os";
 import path from "node:path";
 import { ongebruikt, sleutels as dsSleutels, zoek as dsZoek } from "./ds-regels";
+import { JUISTE_VORM, sleutel as wcSleutel, zoek as wcZoek } from "./werk-commentaar";
 
 const ROOT = path.resolve(import.meta.dir, "..");
 const BASELINE_PAD = path.join(ROOT, "scripts/poort-baseline.json");
-const STAPPEN = ["sherif", "boundaries", "ds-regels", "scripts-tests", "biome", "taken", "build", "e2e"] as const;
+const STAPPEN = ["sherif", "boundaries", "ds-regels", "werk-commentaar", "scripts-tests", "biome", "taken", "build", "e2e"] as const;
 type Stap = (typeof STAPPEN)[number];
 
 // ── Opties ──────────────────────────────────────────────────────────────────
@@ -132,6 +134,8 @@ type Baseline = {
   boundaries: string[];
   /** "bestand | regel-ID | regeltekst" (zie sleutel() in ds-regels.ts). */
   "ds-regels": string[];
+  /** "bestand | regeltekst" van werk-commentaar in een ongeldige vorm (zie werk-commentaar.ts). */
+  "werk-commentaar"?: string[];
   uitzonderingen: {
     build: { zonder: string[]; reden: string; weg_als: string };
     /** `<package>#<taak>` die CI (--ci) niet draait; lokaal draaien ze wel. */
@@ -193,9 +197,9 @@ export function boundarySleutels(uit: string, root = ROOT): string[] {
 
 type Resultaat = { status: "OK" | "FOUT" | "SKIP"; detail?: string; uitleg?: string };
 
-type BaselineSoort = "sherif" | "boundaries" | "ds-regels";
+type BaselineSoort = "sherif" | "boundaries" | "ds-regels" | "werk-commentaar";
 
-function metBaseline(soort: BaselineSoort, r: Uitkomst, sleutels: string[], extra: string[] = []): Resultaat {
+function metBaseline(soort: BaselineSoort, r: Uitkomst, sleutels: string[], extra: string[] = [], extraLabel = "allowlist verouderd"): Resultaat {
   const bekend = leesBaseline()[soort] ?? [];
   if (r.code !== 0 && sleutels.length === 0) {
     return { status: "FOUT", detail: "onverwachte uitvoer", uitleg: staart(r.uit) };
@@ -212,7 +216,7 @@ function metBaseline(soort: BaselineSoort, r: Uitkomst, sleutels: string[], extr
   const kop = [
     nieuw.length && `${nieuw.length} nieuw`,
     opgelost.length && `${opgelost.length} opgelost`,
-    extra.length && `${extra.length} allowlist verouderd`,
+    extra.length && `${extra.length} ${extraLabel}`,
   ]
     .filter(Boolean)
     .join(", ");
@@ -242,6 +246,23 @@ function stapDsRegels(): Resultaat {
   const r = metBaseline("ds-regels", { code: 0, uit: "" }, dsSleutels(uitslagen), verouderd);
   const toegestaan = treffers.filter((t) => t.uitzondering).length;
   return r.status === "OK" ? { ...r, detail: `${r.detail ?? "0 in baseline"}, ${toegestaan} toegestaan` } : r;
+}
+
+/**
+ * Werk-commentaar draait in-process over alle getrackte code (< 1 s). Een ongeldige
+ * vorm vergelijkt met de baseline (mag alleen krimpen); een verlopen datum is altijd
+ * FOUT. De foutmelding noemt de juiste vorm.
+ */
+function stapWerkCommentaar(): Resultaat {
+  const treffers = wcZoek();
+  const ongeldig = treffers.filter((t) => t.soort === "ongeldig").map(wcSleutel);
+  const verlopen = treffers
+    .filter((t) => t.soort === "verlopen")
+    .map((t) => `verlopen (${t.datum}): ${t.bestand}:${t.regel}  ${t.tekst}; doe het werk, of zet een nieuwe datum met een reden`);
+  const r = metBaseline("werk-commentaar", { code: 0, uit: "" }, ongeldig, verlopen, "verlopen");
+  if (r.status === "FOUT") return { ...r, uitleg: `${r.uitleg}
+     juiste vorm: ${JUISTE_VORM}` };
+  return r;
 }
 
 /** De root is geen workspace, dus turbo draait deze tests niet; deze stap wel (altijd, < 1 s). */
@@ -354,6 +375,7 @@ async function poort(o: Opties): Promise<number> {
       s === "sherif" ? stapSherif()
       : s === "boundaries" ? stapBoundaries()
       : s === "ds-regels" ? stapDsRegels()
+      : s === "werk-commentaar" ? stapWerkCommentaar()
       : s === "scripts-tests" ? stapScriptsTests()
       : s === "biome" ? stapBiome()
       : s === "taken" ? stapTaken(ctx, o.ci)
@@ -386,9 +408,13 @@ function schrijfBaseline(): void {
   b.sherif = sherifSleutels(draai([bin("sherif")]).uit);
   b.boundaries = boundarySleutels(draai([bin("turbo"), "boundaries"]).uit);
   b["ds-regels"] = dsSleutels(dsZoek());
+  b["werk-commentaar"] = wcZoek()
+    .filter((t) => t.soort === "ongeldig")
+    .map(wcSleutel)
+    .sort();
   writeFileSync(BASELINE_PAD, JSON.stringify(b, null, 2) + "\n");
   console.log(
-    `baseline: ${b.sherif.length} sherif, ${b.boundaries.length} boundaries, ${b["ds-regels"].length} ds-regels → scripts/poort-baseline.json`,
+    `baseline: ${b.sherif.length} sherif, ${b.boundaries.length} boundaries, ${b["ds-regels"].length} ds-regels, ${b["werk-commentaar"].length} werk-commentaar → scripts/poort-baseline.json`,
   );
 }
 
@@ -467,6 +493,18 @@ export const KANARIES: Kanarie[] = [
     verwacht: /FOUT ds-regels .*1 opgelost/,
     zet: (m) =>
       pasPkgAan(m, "scripts/poort-baseline.json", (b) => b["ds-regels"].push("apps/template/src/bestaat-niet.tsx | R3 | rounded-3xl")),
+  },
+  {
+    stap: "werk-commentaar",
+    wat: "een kale TODO zonder datum in apps/template",
+    verwacht: /FOUT werk-commentaar .*1 nieuw/,
+    zet: (m) => schrijf(m, "apps/template/src/kanarie-werk.ts", "// TODO: dit later netjes maken\nexport const kanarie = 1;\n"),
+  },
+  {
+    stap: "werk-commentaar",
+    wat: "een TODO met een verlopen datum in apps/template",
+    verwacht: /FOUT werk-commentaar .*1 verlopen/,
+    zet: (m) => schrijf(m, "apps/template/src/kanarie-werk-verlopen.ts", "// TODO(2020-01-01): oude afspraak\nexport const kanarie = 1;\n"),
   },
   {
     stap: "scripts-tests",
