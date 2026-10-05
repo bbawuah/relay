@@ -452,6 +452,17 @@ export const KANARIES: Kanarie[] = [
   },
   {
     stap: "ds-regels",
+    wat: "een .mdx met een echte <Card> naast `rounded-3xl` als inline code (alleen de JSX telt)",
+    verwacht: /FOUT ds-regels .*1 nieuw/,
+    zet: (m) =>
+      schrijf(
+        m,
+        "apps/template/src/kanarie-ds.mdx",
+        "Zo niet: `rounded-3xl` of `<Card>` als sectie.\n\n```tsx\n<Card className=\"rounded-3xl\" />\n```\n\n<Card>kanarie</Card>\n",
+      ),
+  },
+  {
+    stap: "ds-regels",
     wat: "een opgeloste treffer die nog in de baseline staat",
     verwacht: /FOUT ds-regels .*1 opgelost/,
     zet: (m) =>
@@ -536,6 +547,7 @@ function maakKopie(): string {
 }
 
 function herstel(map: string): void {
+  draai(["git", "reset", "-q"], {}, map);
   draai(["git", "checkout", "--", "."], {}, map);
   draai(["git", "clean", "-fdq"], {}, map);
 }
@@ -557,6 +569,9 @@ async function zelftest(): Promise<number> {
     console.log("OK   zelftest controle: schone kopie groen");
     for (const k of KANARIES) {
       k.zet(map);
+      // ds-regels scant alleen getrackte bestanden (git ls-files); een kanarie is
+      // een nieuw bestand, dus eerst stagen.
+      draai(["git", "add", "-A"], {}, map);
       const t0 = Date.now();
       const r = poortIn(k.stap);
       const rood = r.code !== 0 && k.verwacht.test(r.uit);
