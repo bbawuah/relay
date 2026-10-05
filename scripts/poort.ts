@@ -6,6 +6,7 @@
 //   sherif      dependency-regels over alle package.json's      (hele repo)
 //   boundaries  turbo boundaries: imports zonder dependency      (hele repo)
 //   ds-regels   designsysteem-regels R1–R7 (scripts/ds-regels.ts) (alle apps)
+//   scripts-tests  bun test ./scripts/ (de tests van poort en ds-regels; < 1 s, altijd)
 //   biome       biome ci: lint (alleen foutregels), geen format  (hele repo)
 //   taken       turbo run lint typecheck test                    (affected)
 //   build       turbo run build, zonder de site (zie baseline)   (affected)
@@ -28,7 +29,7 @@
 //   --base <ref>     vergelijk met deze ref in plaats van main
 //   --ci             voor .github/workflows/ci.yml: sla de taken over die in
 //                    uitzonderingen.ci van de baseline staan (alleen op de mini)
-//   --alleen <s,…>   alleen deze stappen (sherif,boundaries,ds-regels,biome,taken,build,e2e)
+//   --alleen <s,…>   alleen deze stappen (sherif,boundaries,ds-regels,scripts-tests,biome,taken,build,e2e)
 //   --zelftest       bewijs dat elke stap afkeurt: per stap een bewuste fout in een
 //                    tijdelijke kopie van de werkkopie; de poort moet daar rood worden
 //   --baseline       schrijf de huidige sherif-, boundaries- en ds-regels-schendingen naar de
@@ -48,7 +49,7 @@ import { ongebruikt, sleutels as dsSleutels, zoek as dsZoek } from "./ds-regels"
 
 const ROOT = path.resolve(import.meta.dir, "..");
 const BASELINE_PAD = path.join(ROOT, "scripts/poort-baseline.json");
-const STAPPEN = ["sherif", "boundaries", "ds-regels", "biome", "taken", "build", "e2e"] as const;
+const STAPPEN = ["sherif", "boundaries", "ds-regels", "scripts-tests", "biome", "taken", "build", "e2e"] as const;
 type Stap = (typeof STAPPEN)[number];
 
 // ── Opties ──────────────────────────────────────────────────────────────────
@@ -243,6 +244,15 @@ function stapDsRegels(): Resultaat {
   return r.status === "OK" ? { ...r, detail: `${r.detail ?? "0 in baseline"}, ${toegestaan} toegestaan` } : r;
 }
 
+/** De root is geen workspace, dus turbo draait deze tests niet; deze stap wel (altijd, < 1 s). */
+function stapScriptsTests(): Resultaat {
+  const r = draai(["bun", "test", "./scripts/"]);
+  const pass = r.uit.match(/^\s*(\d+) pass/m)?.[1];
+  const fail = r.uit.match(/^\s*(\d+) fail/m)?.[1];
+  if (r.code === 0) return { status: "OK", detail: pass ? `${pass} tests` : undefined };
+  return { status: "FOUT", detail: fail ? `${fail} mislukt` : "bun test faalde", uitleg: staart(r.uit) };
+}
+
 function stapBiome(): Resultaat {
   const r = draai([bin("biome"), "ci", "--colors=off", "--max-diagnostics=20", "."]);
   return r.code === 0 ? { status: "OK" } : { status: "FOUT", uitleg: staart(r.uit) };
@@ -344,6 +354,7 @@ async function poort(o: Opties): Promise<number> {
       s === "sherif" ? stapSherif()
       : s === "boundaries" ? stapBoundaries()
       : s === "ds-regels" ? stapDsRegels()
+      : s === "scripts-tests" ? stapScriptsTests()
       : s === "biome" ? stapBiome()
       : s === "taken" ? stapTaken(ctx, o.ci)
       : s === "build" ? stapBuild(ctx)
@@ -430,10 +441,27 @@ export const KANARIES: Kanarie[] = [
   },
   {
     stap: "ds-regels",
+    wat: "een niet-zwevende schaduw in apps/site/components/chat/chat-ui.tsx (bestand op de allowlist zwevend, R4)",
+    verwacht: /FOUT ds-regels .*1 nieuw/,
+    zet: (m) =>
+      schrijf(
+        m,
+        "apps/site/components/chat/chat-ui.tsx",
+        `${readFileSync(path.join(m, "apps/site/components/chat/chat-ui.tsx"), "utf8")}export const KanarieSchaduw = () => <div className="p-4 shadow-md" />;\n`,
+      ),
+  },
+  {
+    stap: "ds-regels",
     wat: "een opgeloste treffer die nog in de baseline staat",
     verwacht: /FOUT ds-regels .*1 opgelost/,
     zet: (m) =>
       pasPkgAan(m, "scripts/poort-baseline.json", (b) => b["ds-regels"].push("apps/template/src/bestaat-niet.tsx | R3 | rounded-3xl")),
+  },
+  {
+    stap: "scripts-tests",
+    wat: "falende test in scripts/",
+    verwacht: /FOUT scripts-tests .*1 mislukt/,
+    zet: (m) => schrijf(m, "scripts/kanarie.test.ts", 'import { expect, test } from "bun:test";\ntest("kanarie", () => expect(1).toBe(2));\n'),
   },
   {
     stap: "biome",
