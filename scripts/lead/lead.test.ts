@@ -357,6 +357,47 @@ describe("spawn.sh", () => {
     expect(log("tmux.log")).not.toContain("send-keys");
   });
 
+  test("--sublead: startzin met de Agent-tool, zonder workflow", () => {
+    const r = draai(SPAWN, ["--naam", "s1", "--opdracht", opdracht(), "--lead", "lead-x", "--sublead", "--droog"], basis());
+    expect(r.code).toBe(0);
+    expect(r.uit).toContain("sub-lead");
+    expect(r.uit).toContain("scripts/lead/sublead.md");
+    expect(r.uit).toContain("Agent-tool");
+    expect(r.uit).toContain("SendMessage (to: lead-x)");
+    expect(r.uit).not.toContain("workflows");
+    expect(r.uit).not.toContain("vaste-cyclus.js");
+  });
+
+  test("--sublead --workflow noemt Brians toestemming met de datum; --workflow alleen met --sublead", () => {
+    const r = draai(SPAWN, ["--naam", "s1", "--opdracht", opdracht(), "--lead", "l", "--sublead", "--workflow", "2026-10-06", "--droog"], basis());
+    expect(r.uit).toContain("Brian gaf op 2026-10-06 toestemming voor workflows (zie lead.md)");
+    expect(r.uit).toContain("scripts/lead/vaste-cyclus.js");
+    const zonder = draai(SPAWN, ["--naam", "s1", "--opdracht", opdracht(), "--lead", "l", "--workflow", "2026-10-06", "--droog"], basis());
+    expect(zonder.code).toBe(1);
+    expect(zonder.fout).toMatch(/hoort bij --sublead/);
+    const slecht = draai(SPAWN, ["--naam", "s1", "--opdracht", opdracht(), "--lead", "l", "--sublead", "--workflow", "gisteren", "--droog"], basis());
+    expect(slecht.fout).toMatch(/JJJJ-MM-DD/);
+  });
+
+  test("--vervolg: weigert een onbekende tak, typt voor een bestaande tak de vervolg-startzin", () => {
+    const geen = draai(SPAWN, ["--naam", "v1", "--opdracht", opdracht(), "--lead", "l", "--vervolg", "lead/bestaat-niet", "--map", repo, "--droog"], basis());
+    expect(geen.code).toBe(1);
+    expect(geen.fout).toMatch(/tak 'lead\/bestaat-niet' bestaat niet/);
+    const r = draai(SPAWN, ["--naam", "v1", "--opdracht", opdracht(), "--lead", "l", "--vervolg", "lead/test-tak", "--map", repo, "--droog"], basis());
+    expect(r.code).toBe(0);
+    expect(r.uit).toContain("vervolgsessie op tak lead/test-tak");
+    expect(r.uit).toContain("git log origin/main..lead/test-tak");
+    expect(r.uit).toContain("git diff origin/main...lead/test-tak");
+    expect(log("tmux.log")).toBe("");
+  });
+
+  test("--vervolg en --sublead sluiten elkaar uit; een tak met shell-tekens wordt geweigerd", () => {
+    const a = draai(SPAWN, ["--naam", "v1", "--opdracht", opdracht(), "--lead", "l", "--sublead", "--vervolg", "main", "--map", repo, "--droog"], basis());
+    expect(a.fout).toMatch(/sluiten elkaar uit/);
+    const b = draai(SPAWN, ["--naam", "v1", "--opdracht", opdracht(), "--lead", "l", "--vervolg", "x; rm -rf", "--map", repo, "--droog"], basis());
+    expect(b.fout).toMatch(/mag alleen/);
+  });
+
   test("meldt het als er na de startzin geen tool-aanroep verschijnt", () => {
     writeFileSync(join(dir, "pane.txt"), "❯ \n");
     const r = draai(SPAWN, ["--naam", "w1", "--opdracht", opdracht(), "--lead", "l", "--map", dir], basis());

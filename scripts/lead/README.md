@@ -19,6 +19,9 @@ scripts/lead/spawn.sh --naam w2 --opdracht opdracht.md --lead labbawuah-1c --dro
 | `--model sonnet\|opus` | Optioneel; zonder de standaard van Claude Code. |
 | `--map <pad>` | Werkmap van de sessie; standaard de huidige map. |
 | `--lead <naam>` | Naam van de lead voor de startzin; anders env `LAB_LEAD_NAAM`. |
+| `--sublead` | Start een sub-lead: de startzin verwijst naar `scripts/lead/sublead.md` (bouwer, reviewer die niet plant, één herstelronde met de Agent-tool) en vraagt een korte melding (PR, sha, oordeel, open punten). |
+| `--workflow <JJJJ-MM-DD>` | Alleen bij `--sublead`, en alleen als Brian workflows toestond op die datum: de startzin zegt dat en wijst naar `scripts/lead/vaste-cyclus.js`. Zonder deze vlag geen workflow. |
+| `--vervolg <tak>` | Verse sessie op een bestaande tak (lokaal of `origin/<tak>` in `--map`, anders exit 1): de startzin laat haar alleen de opdracht en `git log`/diff van de tak lezen, geen oude context. Sluit `--sublead` uit. |
 | `--droog` | Alleen tonen. |
 
 Wat het doet:
