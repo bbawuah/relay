@@ -4,10 +4,15 @@
 //
 //   bun scripts/lead/besluit.ts nieuw --id <id> --titel <t> --vraag <v> \
 //       --optie ja=Akkoord --optie nee="Niet doen" --voorstel ja [--passkey] [--door <lead>]
-//   bun scripts/lead/besluit.ts lijst
-//   bun scripts/lead/besluit.ts lees <id>
+//   bun scripts/lead/besluit.ts lijst [--audit <pad>]
+//   bun scripts/lead/besluit.ts lees <id> [--audit <pad>]
 //
 // Map: --map <pad>, anders TMUX_PWA_BESLUITEN, anders ~/vault-b-status/besluiten (700; bestanden 600).
+// Een keuze op een besluit met passkey geldt pas als het auditlog van de tmux-server een regel
+// "passkey-actie" ok heeft voor doel besluit:<id>, van hetzelfde apparaat, kort vóór de keuze;
+// anders tonen lijst en lees hem als "onbevestigd" (wie de map kan schrijven, kan geen keuze
+// vervalsen die de lead voor echt aanziet). Auditlog: --audit <pad>, anders
+// $TMUX_PWA_DATA/audit.jsonl, anders ~/.local/share/tmux-pwa/audit.jsonl.
 // Het bestand moet het schema van de server halen (leesBesluit); anders weigert dit script.
 // Een bestaand id overschrijft het nooit. Een nieuw besluit geeft binnen 30 s een melding op
 // de telefoon (alleen de titel).
@@ -15,6 +20,10 @@ import { mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import path from "node:path";
 import { geldigBesluitId, leesBesluit, type Besluit } from "../../apps/tmux/server/besluiten";
+
+export const standaardAudit = () => path.join(process.env.TMUX_PWA_DATA || path.join(homedir(), ".local/share/tmux-pwa"), "audit.jsonl");
+/** How long before the choice the passkey may have been given (the challenge lives 60 s; room for typing a note). */
+export const BEVESTIG_MS = 10 * 60_000;
 
 export const standaardMap = () => process.env.TMUX_PWA_BESLUITEN || path.join(homedir(), "vault-b-status/besluiten");
 
@@ -85,7 +94,41 @@ export function leesEen(map: string, id: string): Besluit | null {
   }
 }
 
-export function lijstRegels(map: string): string[] {
+/** The ok passkey-actie lines from the audit log text (unparseable lines are skipped). */
+export function passkeyActies(auditTekst: string): { tijd: string; apparaat: string; doel: string }[] {
+  const uit: { tijd: string; apparaat: string; doel: string }[] = [];
+  for (const r of auditTekst.split("\n")) {
+    if (!r.includes('"passkey-actie"')) continue;
+    try {
+      const j = JSON.parse(r);
+      if (j.gebeurtenis === "passkey-actie" && j.ok === true && typeof j.doel === "string" && typeof j.apparaat === "string" && typeof j.tijd === "string")
+        uit.push({ tijd: j.tijd, apparaat: j.apparaat, doel: j.doel });
+    } catch {}
+  }
+  return uit;
+}
+
+/** "bevestigd" when a choice needs no passkey or the audit log holds its passkey; "onbevestigd" otherwise; null without a choice. */
+export function controle(b: Besluit, acties: ReturnType<typeof passkeyActies>): "bevestigd" | "onbevestigd" | null {
+  if (!b.keuze) return null;
+  if (!b.passkey) return "bevestigd";
+  const k = Date.parse(b.keuze.tijd);
+  const ok = acties.some((a) => {
+    const t = Date.parse(a.tijd);
+    return a.doel === `besluit:${b.id}` && a.apparaat === b.keuze!.door && t <= k && k - t <= BEVESTIG_MS;
+  });
+  return ok ? "bevestigd" : "onbevestigd";
+}
+
+export function leesAudit(pad: string) {
+  try {
+    return passkeyActies(readFileSync(pad, "utf8"));
+  } catch {
+    return [];
+  }
+}
+
+export function lijstRegels(map: string, acties: ReturnType<typeof passkeyActies> = []): string[] {
   let namen: string[] = [];
   try {
     namen = readdirSync(map).filter((n) => n.endsWith(".json"));
@@ -96,7 +139,10 @@ export function lijstRegels(map: string): string[] {
   for (const n of namen.sort()) {
     const b = leesEen(map, n.slice(0, -5));
     if (!b) regels.push(`ongeldig  ${n}`);
-    else if (b.keuze) regels.push(`beslist   ${b.id}  → ${b.keuze.optie}${b.keuze.toelichting ? " (met toelichting)" : ""}  ${b.titel}`);
+    else if (b.keuze) {
+      const c = controle(b, acties);
+      regels.push(`${c === "onbevestigd" ? "ONBEVESTIGD" : "beslist  "} ${b.id}  → ${b.keuze.optie}${b.keuze.toelichting ? " (met toelichting)" : ""}  ${b.titel}${c === "onbevestigd" ? "  [geen passkey in het auditlog]" : ""}`);
+    }
     else regels.push(`open      ${b.id}  ${b.titel}${b.passkey ? "  [passkey]" : ""}`);
   }
   return regels;
@@ -105,6 +151,7 @@ export function lijstRegels(map: string): string[] {
 function hoofd(argv: string[]): number {
   const { pos, o } = leesArgs(argv);
   const map = typeof o.map === "string" ? o.map : standaardMap();
+  const audit = typeof o.audit === "string" ? o.audit : standaardAudit();
   const [opdracht, id] = pos;
   if (opdracht === "nieuw") {
     const b = maakBesluit(o);
@@ -112,7 +159,7 @@ function hoofd(argv: string[]): number {
     return 0;
   }
   if (opdracht === "lijst") {
-    const r = lijstRegels(map);
+    const r = lijstRegels(map, leesAudit(audit));
     console.log(r.length ? r.join("\n") : "Geen besluiten.");
     return 0;
   }
@@ -122,10 +169,12 @@ function hoofd(argv: string[]): number {
       console.error(`Geen geldig besluit ${id} in ${map}.`);
       return 1;
     }
-    console.log(JSON.stringify(b, null, 2));
+    const c = controle(b, leesAudit(audit));
+    console.log(JSON.stringify(c ? { ...b, controle: c } : b, null, 2));
+    if (c === "onbevestigd") console.error(`Let op: ${id} vraagt een passkey, maar het auditlog (${audit}) heeft er geen voor deze keuze. Behandel de keuze als onbevestigd.`);
     return 0;
   }
-  console.error("Gebruik: besluit.ts nieuw --id … --titel … --vraag … --optie id=label … [--voorstel id] [--passkey] | lijst | lees <id>   [--map <pad>]");
+  console.error("Gebruik: besluit.ts nieuw --id … --titel … --vraag … --optie id=label … [--voorstel id] [--passkey] | lijst | lees <id>   [--map <pad>] [--audit <pad>]");
   return 2;
 }
 

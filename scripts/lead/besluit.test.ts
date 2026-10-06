@@ -3,7 +3,7 @@ import { mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { leesBesluit } from "../../apps/tmux/server/besluiten";
-import { leesArgs, leesEen, lijstRegels, maakBesluit, schrijfNieuw } from "./besluit";
+import { controle, leesArgs, leesEen, lijstRegels, maakBesluit, passkeyActies, schrijfNieuw } from "./besluit";
 
 const dir = mkdtempSync(path.join(tmpdir(), "besluit-test-"));
 afterAll(() => rmSync(dir, { recursive: true, force: true }));
@@ -46,10 +46,27 @@ describe("besluit.ts", () => {
     const keuze = { ...b, id: "al-klaar", keuze: { optie: "nee", toelichting: "later", door: "iphone", tijd: "2026-10-06T11:00:00Z" } };
     writeFileSync(path.join(map, "al-klaar.json"), JSON.stringify(keuze));
     expect(lijstRegels(map)).toEqual([
-      "beslist   al-klaar  → nee (met toelichting)  Compactie-hook op één plek",
+      "ONBEVESTIGD al-klaar  → nee (met toelichting)  Compactie-hook op één plek  [geen passkey in het auditlog]",
       "open      hook-plek  Compactie-hook op één plek  [passkey]",
       "ongeldig  kapot.json",
     ]);
+  });
+
+  test("a passkey choice counts only with its audit line: same decision, same device, just before", () => {
+    const b = maakBesluit(leesArgs(args).o);
+    const gekozen = { ...b, keuze: { optie: "ja", door: "iphone-1", tijd: "2026-10-06T11:00:00.000Z" } };
+    const regel = (v: object) => JSON.stringify({ tijd: "2026-10-06T10:59:30.000Z", gebeurtenis: "passkey-actie", login: "x", apparaat: "iphone-1", doel: "besluit:hook-plek", ok: true, ...v });
+    const met = (...r: string[]) => controle(gekozen, passkeyActies(["kapot{", ...r].join("\n")));
+    expect(met(regel({}))).toBe("bevestigd");
+    expect(met()).toBe("onbevestigd");
+    expect(met(regel({ ok: false }))).toBe("onbevestigd");
+    expect(met(regel({ doel: "besluit:ander" }))).toBe("onbevestigd");
+    expect(met(regel({ apparaat: "ipad-1" }))).toBe("onbevestigd");
+    expect(met(regel({ tijd: "2026-10-06T11:00:01.000Z" }))).toBe("onbevestigd"); // after the choice
+    expect(met(regel({ tijd: "2026-10-06T10:40:00.000Z" }))).toBe("onbevestigd"); // too long before
+    expect(met(regel({ gebeurtenis: "besluit" }))).toBe("onbevestigd");
+    expect(controle({ ...gekozen, passkey: false }, [])).toBe("bevestigd");
+    expect(controle(b, [])).toBeNull();
   });
 
   test("the command line: nieuw, lijst, lees, and usage", () => {
@@ -65,5 +82,17 @@ describe("besluit.ts", () => {
     expect(draai("lees", "bestaat-niet").code).toBe(1);
     expect(draai("nieuw", ...args).code).toBe(1);
     expect(draai("onzin").code).toBe(2);
+    // A choice written into the file without the passkey: lees and lijst say so.
+    const pad = path.join(map, "hook-plek.json");
+    writeFileSync(pad, JSON.stringify({ ...JSON.parse(readFileSync(pad, "utf8")), keuze: { optie: "ja", door: "iphone-1", tijd: "2026-10-06T11:00:00.000Z" } }));
+    const audit = path.join(dir, "audit.jsonl");
+    writeFileSync(audit, "");
+    const l = draai("lees", "hook-plek", "--audit", audit);
+    expect(JSON.parse(l.uit).controle).toBe("onbevestigd");
+    expect(l.fout).toContain("onbevestigd");
+    expect(draai("lijst", "--audit", audit).uit).toContain("ONBEVESTIGD hook-plek");
+    writeFileSync(audit, `${JSON.stringify({ tijd: "2026-10-06T10:59:50.000Z", gebeurtenis: "passkey-actie", apparaat: "iphone-1", doel: "besluit:hook-plek", ok: true })}\n`);
+    expect(JSON.parse(draai("lees", "hook-plek", "--audit", audit).uit).controle).toBe("bevestigd");
+    expect(draai("lijst", "--audit", audit).uit).toContain("beslist   hook-plek  → ja");
   });
 });
