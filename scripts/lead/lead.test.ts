@@ -189,6 +189,13 @@ describe("merge.sh", () => {
     geweigerd(draai(MERGE, ["71"]), /niet groen/);
   });
 
+  test("weigert met een eigen melding als er geen enkele check-run is", () => {
+    pr({ statusCheckRollup: [] });
+    const r = draai(MERGE, ["71"]);
+    geweigerd(r, /geen CI-run voor abc1234; sluit en heropen de PR of push opnieuw/);
+    expect(r.fout).not.toMatch(/niet groen|staat niet/);
+  });
+
   test("weigert als de check poort ontbreekt (een andere check groen telt niet)", () => {
     pr({ statusCheckRollup: [{ name: "lint", conclusion: "SUCCESS" }] });
     geweigerd(draai(MERGE, ["71"]), /'poort' staat niet/);
