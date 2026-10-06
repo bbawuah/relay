@@ -19,6 +19,7 @@
 //   taken       turbo run lint typecheck test                    (affected)
 //   build       turbo run build, zonder de site (zie baseline)   (affected)
 //   e2e         turbo run e2e --concurrency=1                    (affected; tmux, watchparty, storybook-axe)
+//               met een machinebreed slot (scripts/e2e-slot.ts): standaard 2 runs tegelijk, POORT_E2E_SLOTS
 //
 // sherif, boundaries en ds-regels vergelijken met scripts/poort-baseline.json:
 // bekende schendingen zijn schuld, een nieuwe is FOUT, en een opgeloste die nog in
@@ -53,6 +54,7 @@
 import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import path from "node:path";
+import { aantalSlots, echteOmgeving, neemSlot } from "./e2e-slot";
 import { ongebruikt, sleutels as dsSleutels, zoek as dsZoek } from "./ds-regels";
 import { beschrijf as ekBeschrijf, nieuweTreffers as ekNieuw, OPLOSSING as EK_OPLOSSING, sleutel as ekSleutel, zoek as ekZoek } from "./echte-klok";
 import { beoordeelBare, beschrijf as gsBeschrijf, nieuweTreffers as gsNieuw, OPLOSSING as GS_OPLOSSING, sleutel as gsSleutel, zoek as gsZoek } from "./git-scrub";
@@ -385,7 +387,7 @@ function stapBuild(ctx: Context): Resultaat {
   return turboResultaat(turbo(ctx, ["build"], zonder.map((p) => `--filter=!${p}`)));
 }
 
-function stapE2e(ctx: Context): Resultaat {
+async function stapE2e(ctx: Context): Promise<Resultaat> {
   const dry = turbo(ctx, ["e2e"], ["--dry=json"]);
   if (dry.code !== 0) return { status: "FOUT", detail: "turbo --dry faalde", uitleg: staart(dry.uit) };
   const plan = JSON.parse(dry.uit.slice(dry.uit.indexOf("{")));
@@ -396,8 +398,18 @@ function stapE2e(ctx: Context): Resultaat {
   if (inStiltevenster()) {
     return { status: "FOUT", detail: `stiltevenster 05:00–07:15, e2e van ${e2e.join(", ")} niet gedraaid; na 07:15 opnieuw, of --zonder-e2e` };
   }
-  const r = turboResultaat(turbo(ctx, ["e2e"], ["--concurrency=1"]));
-  return { ...r, detail: `${e2e.join(", ")}: ${r.detail}` };
+  // Maximaal POORT_E2E_SLOTS (standaard 2) volledige e2e-runs tegelijk op de machine;
+  // binnen een run blijft turbo op --concurrency=1.
+  const slot = await neemSlot(echteOmgeving(process.cwd()), aantalSlots());
+  const vrij = () => slot.vrij();
+  process.on("exit", vrij);
+  try {
+    const r = turboResultaat(turbo(ctx, ["e2e"], ["--concurrency=1"]));
+    return { ...r, detail: `${e2e.join(", ")}: ${r.detail}` };
+  } finally {
+    vrij();
+    process.off("exit", vrij);
+  }
 }
 
 // ── Base ────────────────────────────────────────────────────────────────────
@@ -461,7 +473,7 @@ async function poort(o: Opties): Promise<number> {
       : s === "biome" ? stapBiome()
       : s === "taken" ? stapTaken(ctx, o.ci)
       : s === "build" ? stapBuild(ctx)
-      : stapE2e(ctx);
+      : await stapE2e(ctx);
     if (r.status === "FOUT") fouten++;
     const tijd = r.status === "SKIP" ? "" : ` (${duur(Date.now() - t0)})`;
     console.log(`${r.status.padEnd(4)} ${s.padEnd(14)}${r.detail ? ` ${r.detail}` : ""}${tijd}`);
