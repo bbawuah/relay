@@ -46,7 +46,7 @@
 // Een groene volledige run op een schone werkkopie laat een stempel achter in
 // ~/.cache/lab-bawuah/poort/<sha>.json, voor de uitrolscripts (besluit 10, later).
 
-import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import path from "node:path";
 import { ongebruikt, sleutels as dsSleutels, zoek as dsZoek } from "./ds-regels";
@@ -303,8 +303,8 @@ function stapTestIntegriteit(base: string): Resultaat {
 }
 
 /** Rood op de basis: alleen voor een fix; draait de unittests van de fix tegen de merge-base (scripts/rood-op-basis.ts). */
-function stapRoodOpBasis(base: string): Resultaat {
-  return roStap(base, roLees());
+function stapRoodOpBasis(base: string, ci: boolean): Resultaat {
+  return roStap(base, roLees(), ROOT, ci);
 }
 
 /** De root is geen workspace, dus turbo draait deze tests niet; deze stap wel (altijd, < 1 s). */
@@ -421,7 +421,7 @@ async function poort(o: Opties): Promise<number> {
       : s === "werk-commentaar" ? stapWerkCommentaar()
       : s === "echte-klok" ? stapEchteKlok()
       : s === "test-integriteit" ? stapTestIntegriteit(stapBase())
-      : s === "rood-op-basis" ? stapRoodOpBasis(stapBase())
+      : s === "rood-op-basis" ? stapRoodOpBasis(stapBase(), o.ci)
       : s === "scripts-tests" ? stapScriptsTests()
       : s === "biome" ? stapBiome()
       : s === "taken" ? stapTaken(ctx, o.ci)
@@ -584,6 +584,12 @@ export const KANARIES: Kanarie[] = [
       const p = path.join(m, "scripts/echte-klok.test.ts");
       writeFileSync(p, readFileSync(p, "utf8").replace("test(", "bewaar("));
     },
+  },
+  {
+    stap: "test-integriteit",
+    wat: "een testbestand hernoemd naar buiten het testpatroon (scripts/werk-commentaar.test.ts → .ts)",
+    verwacht: /FOUT test-integriteit .*1 testwijziging/,
+    zet: (m) => renameSync(path.join(m, "scripts/werk-commentaar.test.ts"), path.join(m, "scripts/werk-commentaar-oud.ts")),
   },
   {
     stap: "test-integriteit",
