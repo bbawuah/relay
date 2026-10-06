@@ -46,6 +46,7 @@ Weigert met exit 1 en een duidelijke reden als:
 - de PR niet OPEN is;
 - de PR uit een fork komt (`isCrossRepository`) of de tak `main`/`master` is;
 - er geen PR-comment is die begint met "Lead-review: akkoord <sha7>", met de eerste 7 tekens van de huidige head. Een akkoord van vóór een nieuwe push telt dus niet ("push na akkoord"). Voorbeeld: `Lead-review: akkoord b80ed00`;
+- de PR geen enkele CheckRun van workflow `CI` heeft (de Vercel-entries in de rollup tellen niet mee; GitHub startte soms geen CI bij een nieuwe PR: #85, #87, #88): de melding is `geen CI-run voor <sha7>; sluit en heropen de PR of push opnieuw`, geen "niet groen" en geen wachten;
 - de verplichte check `poort` ontbreekt of niet groen is (de nieuwste run op starttijd telt; andere checks niet);
 - `mergeable` niet `MERGEABLE` is, of de tak achterloopt op main (`BEHIND`, de ruleset is strict), of `mergeStateStatus` iets anders is dan CLEAN of UNSTABLE (allowlist). Bij UNSTABLE volgt een waarschuwing.
 
@@ -84,8 +85,13 @@ Stappen:
 | `--prs <n,n,…>` | Vaste lijst, bijvoorbeeld `--prs 81,82`: alleen deze PR's, in deze volgorde. Een genoemde PR zonder geldig akkoord valt af met reden. De lead controleert de lijst in de integratie-PR. |
 | `--poort-cmd <cmd>` | Vervangt de standaardpoort (voor tests). De body zegt dan "geen e2e-bewijs" in plaats van "met e2e". |
 | `--nu <jjjjmmdd-hhmm>` | Bepaalt alleen de naam van de tak (`wachtrij/<stempel>`). Het stiltevenster gaat altijd op de echte klok. |
+| `--ci-wacht <s>` | Seconden (standaard 30, of env `LAB_WACHTRIJ_CI_WACHT`) die na het openen van de integratie-PR gewacht wordt op de eerste CI-CheckRun (`__typename` CheckRun, `workflowName` CI; Vercel-entries tellen niet). Is er dan nog geen, dan staat in de uitvoer `WAARSCHUWING: geen CI-run voor <sha7>; sluit en heropen de PR of push opnieuw`. |
 | `--map <pad>` | Pad van de worktree. |
 | `--basis <ref>` | Basis van de wachtrij en van de poort (`--base`), standaard `origin/main`; de body noemt deze basis. De integratie-PR zelf gaat altijd naar `main`. |
+
+## CI-team
+
+`TURBO_TEAM` in `.github/workflows/ci.yml` moet gelijk zijn aan `remoteCache.teamSlug` in `turbo.json`. De workflow heeft de slug als terugval (`${{ vars.TURBO_TEAM || '<slug>' }}`); `scripts/ci-turbo-team.test.ts` (draait in de poortstap `scripts-tests`) leest beide bestanden (`Bun.YAML`, `Bun.JSONC`) en faalt als ze uiteenlopen.
 
 ## Tests
 

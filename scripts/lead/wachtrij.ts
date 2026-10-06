@@ -183,6 +183,8 @@ type Opties = {
   pr: string | null;
   /** Vaste lijst PR-nummers (--prs), in deze volgorde; null = alles met een geldig akkoord. */
   prs: number[] | null;
+  /** Seconden wachten op de eerste check-run van de integratie-PR (--ci-wacht; env LAB_WACHTRIJ_CI_WACHT). */
+  ciWacht: number;
 };
 
 /** De volledige poort met e2e, tegen dezelfde basis als de wachtrij. */
@@ -190,7 +192,7 @@ export const standaardPoort = (basis: string) => `bun install --frozen-lockfile 
 export const STANDAARD_POORT = standaardPoort("origin/main");
 
 export function leesOpties(args: string[]): Opties | string {
-  const o: Opties = { droog: false, poortCmd: "", nu: null, basis: "origin/main", map: null, ruim: false, pr: null, prs: null };
+  const o: Opties = { droog: false, poortCmd: "", nu: null, basis: "origin/main", map: null, ruim: false, pr: null, prs: null, ciWacht: Number(process.env.LAB_WACHTRIJ_CI_WACHT ?? 30) || 0 };
   let eigenPoort = false;
   for (let i = 0; i < args.length; i++) {
     const a = args[i];
@@ -206,6 +208,11 @@ export function leesOpties(args: string[]): Opties | string {
         const v = waarde();
         if (!/^\d+(,\d+)*$/.test(v)) return `--prs verwacht nummers met komma's, bijvoorbeeld 81,82; kreeg ${v}`;
         o.prs = [...new Set(v.split(",").map(Number))];
+      }
+      else if (a === "--ci-wacht") {
+        const v = waarde();
+        if (!/^\d+$/.test(v)) return `--ci-wacht verwacht seconden, kreeg ${v}`;
+        o.ciWacht = Number(v);
       }
       else if (a === "--nu") o.nu = waarde();
       else if (a === "--basis") o.basis = waarde();
@@ -384,10 +391,34 @@ function hoofd(args: string[]): never {
   const titel = `wachtrij: ${gemerged.map((p) => `#${p.number}`).join(" ")}`;
   const pr = run(["gh", "pr", "create", "--base", "main", "--head", tak, "--title", titel, "--body", body], map);
   if (pr.code !== 0) return klaar(1, `wachtrij: PR openen mislukt: ${pr.fout}${resten(map, tak, true)}`);
+  // CI start na een paar seconden; pas als er na de wachttijd nog geen check-run is, melden we het.
+  let ciMelding: string | null = null;
+  for (let t = 0; ; t += 5) {
+    const v = run(["gh", "pr", "view", pr.uit, "--json", "statusCheckRollup,headRefOid"], map);
+    let info: { statusCheckRollup?: unknown[]; headRefOid?: string } = {};
+    try {
+      info = JSON.parse(v.uit);
+    } catch {}
+    ciMelding = v.code === 0 ? geenCiMelding(info.statusCheckRollup, info.headRefOid ?? head) : null;
+    if (!ciMelding || t >= o.ciWacht) break;
+    Bun.sleepSync(5000);
+  }
   return klaar(
     0,
-    `wachtrij: integratie-PR geopend: ${pr.uit}\nLead: controleer eerst de lijst PR's in de integratie-PR (samengevoegd: ${gemerged.map((p) => `#${p.number}`).join(" ")}${eruit.length ? `; eruit: ${eruit.map((a) => `#${a.nummer}`).join(" ")}` : ""}).\nGeef daarna "Lead-review: akkoord ${head.slice(0, 7)}" en draai merge.sh. Opruimen na MERGED: worktree ${map}, daarna \`bun scripts/lead/wachtrij.ts --ruim-takken\`.`,
+    `wachtrij: integratie-PR geopend: ${pr.uit}\n${ciMelding ? `wachtrij: WAARSCHUWING: ${ciMelding}\n` : ""}Lead: controleer eerst de lijst PR's in de integratie-PR (samengevoegd: ${gemerged.map((p) => `#${p.number}`).join(" ")}${eruit.length ? `; eruit: ${eruit.map((a) => `#${a.nummer}`).join(" ")}` : ""}).\nGeef daarna "Lead-review: akkoord ${head.slice(0, 7)}" en draai merge.sh. Opruimen na MERGED: worktree ${map}, daarna \`bun scripts/lead/wachtrij.ts --ruim-takken\`.`,
   );
+}
+
+/**
+ * Geen enkele CheckRun van workflow "CI" op de head: GitHub startte soms geen CI (#85, #87, #88). Geeft de melding of null.
+ * Vercel-entries (StatusContext "Vercel", CheckRun "Vercel Preview Comments") tellen niet mee; zelfde criterium als merge.sh.
+ */
+export function geenCiMelding(rollup: unknown[] | null | undefined, sha: string): string | null {
+  const ci = (rollup ?? []).filter((e) => {
+    const r = e as { __typename?: string; workflowName?: string } | null;
+    return r?.__typename === "CheckRun" && r.workflowName === "CI";
+  });
+  return ci.length > 0 ? null : `geen CI-run voor ${sha.slice(0, 7)}; sluit en heropen de PR of push opnieuw`;
 }
 
 /** Wat er na een mislukte stap is blijven staan en hoe je het opruimt (zonder --force). */

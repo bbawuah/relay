@@ -3,7 +3,7 @@ import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, wr
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { schoneEnv } from "../test-integriteit.ts";
-import { STANDAARD_POORT, bouwBody, gevaarScore, onschadelijk, standaardPoort, inStiltevenster, kiesPrs, leesMarker, leesOpties, leesStempel, okRegels, stempelVan, zwaarsteGevaar, type Pr } from "./wachtrij.ts";
+import { STANDAARD_POORT, bouwBody, geenCiMelding, gevaarScore, onschadelijk, standaardPoort, inStiltevenster, kiesPrs, leesMarker, leesOpties, leesStempel, okRegels, stempelVan, zwaarsteGevaar, type Pr } from "./wachtrij.ts";
 
 // Alle CLI-tests draaien met een nep-gh vooraan op PATH en een wegwerp-git-repo met een
 // lokale bare "origin". Geen echte GitHub, geen echte PR's, geen echte poort (--poort-cmd).
@@ -127,6 +127,32 @@ describe("body van de integratie-PR", () => {
   });
 });
 
+// Echte vorm uit #89: Vercel zet eigen entries in de rollup, los van Actions.
+const VERCEL = [
+  { __typename: "StatusContext", context: "Vercel", state: "SUCCESS" },
+  { __typename: "CheckRun", name: "Vercel Preview Comments", status: "COMPLETED", conclusion: "SUCCESS", workflowName: "" },
+];
+
+describe("geenCiMelding", () => {
+  test("leeg of ontbrekend = melding, met sha7", () => {
+    expect(geenCiMelding([], "abcdef1234567")).toBe("geen CI-run voor abcdef1; sluit en heropen de PR of push opnieuw");
+    expect(geenCiMelding(undefined, "abcdef1234567")).toContain("geen CI-run voor abcdef1");
+  });
+  test("alleen Vercel-entries (echte vorm uit #89) = melding", () => {
+    expect(geenCiMelding(VERCEL, "abcdef1234567")).toContain("geen CI-run voor abcdef1");
+  });
+  test("een CI-CheckRun die nog bezig is = null", () => {
+    expect(geenCiMelding([{ __typename: "CheckRun", workflowName: "CI", name: "melding", status: "IN_PROGRESS" }, ...VERCEL], "abcdef1")).toBeNull();
+  });
+  test("met een check-run = null", () => {
+    expect(geenCiMelding([{ __typename: "CheckRun", workflowName: "CI", name: "poort" }], "abcdef1")).toBeNull();
+  });
+  test("--ci-wacht leest seconden", () => {
+    expect((leesOpties(["--ci-wacht", "5"]) as { ciWacht: number }).ciWacht).toBe(5);
+    expect(leesOpties(["--ci-wacht", "x"])).toMatch(/seconden/);
+  });
+});
+
 describe("tijd en opties", () => {
   test("stiltevenster 05:00–07:15", () => {
     expect(inStiltevenster(leesStempel("20261006-0459")!)).toBe(false);
@@ -183,7 +209,7 @@ const maakTak = (naam: string, bestand: string, inhoud: string) => {
   git(repo, "checkout", "-q", "main");
 };
 // LAB_WACHTRIJ_KLOK: vaste klok voor het stiltevenster, zodat de tests niet van het uur afhangen.
-const omgeving = (extra: Record<string, string> = {}) => ({ ...schoneEnv(), PATH: `${bin}:${process.env.PATH}`, FAKE_DIR: dir, TMUX: "", TMUX_PANE: "", LAB_WACHTRIJ_KLOK: "20261006-1200", ...extra });
+const omgeving = (extra: Record<string, string> = {}) => ({ ...schoneEnv(), PATH: `${bin}:${process.env.PATH}`, FAKE_DIR: dir, TMUX: "", TMUX_PANE: "", LAB_WACHTRIJ_KLOK: "20261006-1200", LAB_WACHTRIJ_CI_WACHT: "0", ...extra });
 const draaiWachtrij = (args: string[], extra: Record<string, string> = {}) => {
   const r = Bun.spawnSync(["bun", WACHTRIJ, ...args], { cwd: repo, env: omgeving(extra) });
   return { code: r.exitCode, uit: r.stdout.toString(), fout: r.stderr.toString() };
@@ -206,7 +232,7 @@ beforeEach(() => {
 echo "gh $*" >> "$FAKE_DIR/gh.log"
 case "$1 $2" in
   "pr list") cat "$FAKE_DIR/prlist.json"; exit 0 ;;
-  "pr view") if [ -f "$FAKE_DIR/prview-$3.json" ]; then cat "$FAKE_DIR/prview-$3.json"; else cat "$FAKE_DIR/prview.json"; fi; exit 0 ;;
+  "pr view") if [ "$3" = "https://github.com/nep/nep/pull/99" ] && [ -f "$FAKE_DIR/ci.json" ]; then cat "$FAKE_DIR/ci.json"; exit 0; elif [ -f "$FAKE_DIR/prview-$3.json" ]; then cat "$FAKE_DIR/prview-$3.json"; else cat "$FAKE_DIR/prview.json"; fi; exit 0 ;;
   "pr merge") printf "%s\\n" "$@" > "$FAKE_DIR/merge.txt"; sed -i.bak 's/"state":"OPEN"/"state":"MERGED"/' "$FAKE_DIR/prview.json"; exit 0 ;;
   "pr create") [ -f "$FAKE_DIR/create-faalt" ] && { echo "nep: create mislukt" >&2; exit 1; }; printf "%s\n" "$@" > "$FAKE_DIR/create.txt"; echo "https://github.com/nep/nep/pull/99"; exit 0 ;;
 esac
@@ -289,6 +315,42 @@ describe("wachtrij.ts", () => {
     const hoofd = log("gh.log");
     expect(hoofd).toContain("--head wachtrij/20261006-1200");
     expect(hoofd).toContain("--base main");
+  });
+
+  test("integratie-PR zonder enige check-run: expliciete waarschuwing", () => {
+    maakTak("tak-1", "b.txt", "een\n");
+    zetPrs([prVoorTak(1, "tak-1")]);
+    writeFileSync(join(dir, "ci.json"), JSON.stringify({ statusCheckRollup: [], headRefOid: "1234567abcdef" }));
+    const r = draaiWachtrij(["--nu", "20261006-1200", "--map", wt, "--poort-cmd", "true"]);
+    expect(r.code).toBe(0);
+    expect(r.uit).toContain("geen CI-run voor 1234567; sluit en heropen de PR of push opnieuw");
+  });
+
+  test("integratie-PR met alleen Vercel-entries: waarschuwing", () => {
+    maakTak("tak-1", "b.txt", "een\n");
+    zetPrs([prVoorTak(1, "tak-1")]);
+    writeFileSync(join(dir, "ci.json"), JSON.stringify({ statusCheckRollup: VERCEL, headRefOid: "1234567abcdef" }));
+    const r = draaiWachtrij(["--nu", "20261006-1200", "--map", wt, "--poort-cmd", "true"]);
+    expect(r.code).toBe(0);
+    expect(r.uit).toContain("geen CI-run voor 1234567; sluit en heropen de PR of push opnieuw");
+  });
+
+  test("integratie-PR met een bezige CI-CheckRun (melding): geen CI-waarschuwing", () => {
+    maakTak("tak-1", "b.txt", "een\n");
+    zetPrs([prVoorTak(1, "tak-1")]);
+    writeFileSync(join(dir, "ci.json"), JSON.stringify({ statusCheckRollup: [{ __typename: "CheckRun", workflowName: "CI", name: "melding", status: "IN_PROGRESS" }, ...VERCEL], headRefOid: "1234567abcdef" }));
+    const r = draaiWachtrij(["--nu", "20261006-1200", "--map", wt, "--poort-cmd", "true"]);
+    expect(r.code).toBe(0);
+    expect(r.uit).not.toContain("geen CI-run");
+  });
+
+  test("integratie-PR met een check-run: geen CI-waarschuwing", () => {
+    maakTak("tak-1", "b.txt", "een\n");
+    zetPrs([prVoorTak(1, "tak-1")]);
+    writeFileSync(join(dir, "ci.json"), JSON.stringify({ statusCheckRollup: [{ __typename: "CheckRun", workflowName: "CI", name: "poort", status: "IN_PROGRESS" }], headRefOid: "1234567abcdef" }));
+    const r = draaiWachtrij(["--nu", "20261006-1200", "--map", wt, "--poort-cmd", "true"]);
+    expect(r.code).toBe(0);
+    expect(r.uit).not.toContain("geen CI-run");
   });
 
   test("een verschoven tak (andere sha dan het akkoord) valt eruit", () => {
@@ -569,7 +631,7 @@ describe("merge.sh bezitscheck", () => {
         mergeable: "MERGEABLE",
         mergeStateStatus: "CLEAN",
         comments: [{ body: "Lead-review: akkoord abc1234" }],
-        statusCheckRollup: [{ name: "poort", conclusion: "SUCCESS", status: "COMPLETED" }],
+        statusCheckRollup: [{ __typename: "CheckRun", workflowName: "CI", name: "poort", conclusion: "SUCCESS", status: "COMPLETED" }],
         files: files.map((path) => ({ path })),
       }),
     );
