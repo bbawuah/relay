@@ -60,9 +60,10 @@ if [ "$akkoord" -lt 1 ]; then
   fout "PR $pr heeft geen comment die begint met \"Lead-review: akkoord $sha\""
 fi
 
-# Geen enkele check-run: GitHub startte soms geen CI bij een nieuwe PR (#85, #87, #88). Dat is iets anders
-# dan "poort niet groen" of "poort ontbreekt": wachten helpt niet, de PR moet opnieuw een run krijgen.
-if [ "$(j '[.statusCheckRollup[]?] | length')" -eq 0 ]; then
+# Geen enkele CheckRun van workflow "CI": GitHub startte soms geen CI bij een nieuwe PR (#85, #87, #88). Dat is
+# iets anders dan "poort niet groen" of "poort ontbreekt": wachten helpt niet, de PR moet opnieuw een run krijgen.
+# Vercel zet eigen entries in de rollup (StatusContext "Vercel", CheckRun "Vercel Preview Comments"); die tellen niet.
+if [ "$(j '[.statusCheckRollup[]? | select(.__typename == "CheckRun" and .workflowName == "CI")] | length')" -eq 0 ]; then
   fout "geen CI-run voor $sha; sluit en heropen de PR of push opnieuw"
 fi
 

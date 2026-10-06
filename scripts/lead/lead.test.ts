@@ -103,6 +103,12 @@ const draai = (script: string, args: string[], extra: Record<string, string> = {
 const log = (naam: string) => (existsSync(join(dir, naam)) ? readFileSync(join(dir, naam), "utf8") : "");
 const remoteTakken = () => git(repo, "ls-remote", "--heads", "origin").stdout.toString();
 
+// Echte vorm uit #89 (gh pr view 89 --json statusCheckRollup): Vercel zet eigen entries naast die van Actions.
+const VERCEL = [
+  { __typename: "StatusContext", context: "Vercel", startedAt: "2026-10-06T17:26:07Z", state: "SUCCESS", targetUrl: "https://vercel.com/x" },
+  { __typename: "CheckRun", name: "Vercel Preview Comments", status: "COMPLETED", conclusion: "SUCCESS", startedAt: "2026-10-06T17:26:08Z", completedAt: "2026-10-06T17:26:08Z", workflowName: "" },
+];
+
 describe("merge.sh", () => {
   const pr = (o: Record<string, unknown> = {}) =>
     writeFileSync(
@@ -115,7 +121,7 @@ describe("merge.sh", () => {
         mergeable: "MERGEABLE",
         mergeStateStatus: "CLEAN",
         comments: [{ body: "Lead-review: akkoord abc1234, ziet er goed uit" }],
-        statusCheckRollup: [{ name: "poort", conclusion: "SUCCESS", status: "COMPLETED" }],
+        statusCheckRollup: [{ __typename: "CheckRun", workflowName: "CI", name: "poort", conclusion: "SUCCESS", status: "COMPLETED" }],
         ...o,
       }),
     );
@@ -168,24 +174,24 @@ describe("merge.sh", () => {
   test("telt de nieuwste run van poort, niet de laatste in de array", () => {
     pr({
       statusCheckRollup: [
-        { name: "poort", conclusion: "FAILURE", startedAt: "2026-10-06T10:00:00Z" },
-        { name: "poort", conclusion: "SUCCESS", startedAt: "2026-10-06T11:00:00Z" },
-        { name: "poort", conclusion: "FAILURE", startedAt: "2026-10-06T09:00:00Z" },
+        { __typename: "CheckRun", workflowName: "CI", name: "poort", conclusion: "FAILURE", startedAt: "2026-10-06T10:00:00Z" },
+        { __typename: "CheckRun", workflowName: "CI", name: "poort", conclusion: "SUCCESS", startedAt: "2026-10-06T11:00:00Z" },
+        { __typename: "CheckRun", workflowName: "CI", name: "poort", conclusion: "FAILURE", startedAt: "2026-10-06T09:00:00Z" },
       ],
     });
     expect(draai(MERGE, ["71", "--droog"]).code).toBe(0);
     pr({
       statusCheckRollup: [
-        { name: "poort", conclusion: "SUCCESS", startedAt: "2026-10-06T09:00:00Z" },
-        { name: "poort", conclusion: "FAILURE", startedAt: "2026-10-06T11:00:00Z" },
-        { name: "poort", conclusion: "SUCCESS", startedAt: "2026-10-06T08:00:00Z" },
+        { __typename: "CheckRun", workflowName: "CI", name: "poort", conclusion: "SUCCESS", startedAt: "2026-10-06T09:00:00Z" },
+        { __typename: "CheckRun", workflowName: "CI", name: "poort", conclusion: "FAILURE", startedAt: "2026-10-06T11:00:00Z" },
+        { __typename: "CheckRun", workflowName: "CI", name: "poort", conclusion: "SUCCESS", startedAt: "2026-10-06T08:00:00Z" },
       ],
     });
     expect(draai(MERGE, ["71", "--droog"]).fout).toMatch(/niet groen/);
   });
 
   test("weigert als de check poort niet groen is", () => {
-    pr({ statusCheckRollup: [{ name: "poort", conclusion: "FAILURE" }] });
+    pr({ statusCheckRollup: [{ __typename: "CheckRun", workflowName: "CI", name: "poort", conclusion: "FAILURE" }] });
     geweigerd(draai(MERGE, ["71"]), /niet groen/);
   });
 
@@ -196,8 +202,22 @@ describe("merge.sh", () => {
     expect(r.fout).not.toMatch(/niet groen|staat niet/);
   });
 
+  test("alleen de twee Vercel-entries in de rollup is ook geen CI-run", () => {
+    pr({ statusCheckRollup: VERCEL });
+    const r = draai(MERGE, ["71"]);
+    geweigerd(r, /geen CI-run voor abc1234; sluit en heropen de PR of push opnieuw/);
+    expect(r.fout).not.toMatch(/niet groen|staat niet/);
+  });
+
+  test("alleen een bezige CI-CheckRun (melding) is wel een CI-run: dan 'poort ontbreekt'", () => {
+    pr({ statusCheckRollup: [{ __typename: "CheckRun", workflowName: "CI", name: "melding", status: "IN_PROGRESS", conclusion: "" }, ...VERCEL] });
+    const r = draai(MERGE, ["71"]);
+    geweigerd(r, /'poort' staat niet/);
+    expect(r.fout).not.toMatch(/geen CI-run/);
+  });
+
   test("weigert als de check poort ontbreekt (een andere check groen telt niet)", () => {
-    pr({ statusCheckRollup: [{ name: "lint", conclusion: "SUCCESS" }] });
+    pr({ statusCheckRollup: [{ __typename: "CheckRun", workflowName: "CI", name: "lint", conclusion: "SUCCESS" }] });
     geweigerd(draai(MERGE, ["71"]), /'poort' staat niet/);
   });
 

@@ -127,13 +127,25 @@ describe("body van de integratie-PR", () => {
   });
 });
 
+// Echte vorm uit #89: Vercel zet eigen entries in de rollup, los van Actions.
+const VERCEL = [
+  { __typename: "StatusContext", context: "Vercel", state: "SUCCESS" },
+  { __typename: "CheckRun", name: "Vercel Preview Comments", status: "COMPLETED", conclusion: "SUCCESS", workflowName: "" },
+];
+
 describe("geenCiMelding", () => {
   test("leeg of ontbrekend = melding, met sha7", () => {
     expect(geenCiMelding([], "abcdef1234567")).toBe("geen CI-run voor abcdef1; sluit en heropen de PR of push opnieuw");
     expect(geenCiMelding(undefined, "abcdef1234567")).toContain("geen CI-run voor abcdef1");
   });
+  test("alleen Vercel-entries (echte vorm uit #89) = melding", () => {
+    expect(geenCiMelding(VERCEL, "abcdef1234567")).toContain("geen CI-run voor abcdef1");
+  });
+  test("een CI-CheckRun die nog bezig is = null", () => {
+    expect(geenCiMelding([{ __typename: "CheckRun", workflowName: "CI", name: "melding", status: "IN_PROGRESS" }, ...VERCEL], "abcdef1")).toBeNull();
+  });
   test("met een check-run = null", () => {
-    expect(geenCiMelding([{ name: "poort" }], "abcdef1")).toBeNull();
+    expect(geenCiMelding([{ __typename: "CheckRun", workflowName: "CI", name: "poort" }], "abcdef1")).toBeNull();
   });
   test("--ci-wacht leest seconden", () => {
     expect((leesOpties(["--ci-wacht", "5"]) as { ciWacht: number }).ciWacht).toBe(5);
@@ -314,10 +326,28 @@ describe("wachtrij.ts", () => {
     expect(r.uit).toContain("geen CI-run voor 1234567; sluit en heropen de PR of push opnieuw");
   });
 
+  test("integratie-PR met alleen Vercel-entries: waarschuwing", () => {
+    maakTak("tak-1", "b.txt", "een\n");
+    zetPrs([prVoorTak(1, "tak-1")]);
+    writeFileSync(join(dir, "ci.json"), JSON.stringify({ statusCheckRollup: VERCEL, headRefOid: "1234567abcdef" }));
+    const r = draaiWachtrij(["--nu", "20261006-1200", "--map", wt, "--poort-cmd", "true"]);
+    expect(r.code).toBe(0);
+    expect(r.uit).toContain("geen CI-run voor 1234567; sluit en heropen de PR of push opnieuw");
+  });
+
+  test("integratie-PR met een bezige CI-CheckRun (melding): geen CI-waarschuwing", () => {
+    maakTak("tak-1", "b.txt", "een\n");
+    zetPrs([prVoorTak(1, "tak-1")]);
+    writeFileSync(join(dir, "ci.json"), JSON.stringify({ statusCheckRollup: [{ __typename: "CheckRun", workflowName: "CI", name: "melding", status: "IN_PROGRESS" }, ...VERCEL], headRefOid: "1234567abcdef" }));
+    const r = draaiWachtrij(["--nu", "20261006-1200", "--map", wt, "--poort-cmd", "true"]);
+    expect(r.code).toBe(0);
+    expect(r.uit).not.toContain("geen CI-run");
+  });
+
   test("integratie-PR met een check-run: geen CI-waarschuwing", () => {
     maakTak("tak-1", "b.txt", "een\n");
     zetPrs([prVoorTak(1, "tak-1")]);
-    writeFileSync(join(dir, "ci.json"), JSON.stringify({ statusCheckRollup: [{ name: "poort", status: "IN_PROGRESS" }], headRefOid: "1234567abcdef" }));
+    writeFileSync(join(dir, "ci.json"), JSON.stringify({ statusCheckRollup: [{ __typename: "CheckRun", workflowName: "CI", name: "poort", status: "IN_PROGRESS" }], headRefOid: "1234567abcdef" }));
     const r = draaiWachtrij(["--nu", "20261006-1200", "--map", wt, "--poort-cmd", "true"]);
     expect(r.code).toBe(0);
     expect(r.uit).not.toContain("geen CI-run");
@@ -601,7 +631,7 @@ describe("merge.sh bezitscheck", () => {
         mergeable: "MERGEABLE",
         mergeStateStatus: "CLEAN",
         comments: [{ body: "Lead-review: akkoord abc1234" }],
-        statusCheckRollup: [{ name: "poort", conclusion: "SUCCESS", status: "COMPLETED" }],
+        statusCheckRollup: [{ __typename: "CheckRun", workflowName: "CI", name: "poort", conclusion: "SUCCESS", status: "COMPLETED" }],
         files: files.map((path) => ({ path })),
       }),
     );

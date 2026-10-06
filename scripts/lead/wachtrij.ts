@@ -409,9 +409,16 @@ function hoofd(args: string[]): never {
   );
 }
 
-/** Geen enkele check-run op de head: GitHub startte soms geen CI (#85, #87, #88). Geeft de melding of null. */
+/**
+ * Geen enkele CheckRun van workflow "CI" op de head: GitHub startte soms geen CI (#85, #87, #88). Geeft de melding of null.
+ * Vercel-entries (StatusContext "Vercel", CheckRun "Vercel Preview Comments") tellen niet mee; zelfde criterium als merge.sh.
+ */
 export function geenCiMelding(rollup: unknown[] | null | undefined, sha: string): string | null {
-  return rollup && rollup.length > 0 ? null : `geen CI-run voor ${sha.slice(0, 7)}; sluit en heropen de PR of push opnieuw`;
+  const ci = (rollup ?? []).filter((e) => {
+    const r = e as { __typename?: string; workflowName?: string } | null;
+    return r?.__typename === "CheckRun" && r.workflowName === "CI";
+  });
+  return ci.length > 0 ? null : `geen CI-run voor ${sha.slice(0, 7)}; sluit en heropen de PR of push opnieuw`;
 }
 
 /** Wat er na een mislukte stap is blijven staan en hoe je het opruimt (zonder --force). */
