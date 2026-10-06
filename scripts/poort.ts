@@ -19,6 +19,7 @@
 //   taken       turbo run lint typecheck test                    (affected)
 //   build       turbo run build, zonder de site (zie baseline)   (affected)
 //   e2e         turbo run e2e --concurrency=1                    (affected; tmux, watchparty, storybook-axe)
+//               met een machinebreed slot (scripts/e2e-slot.ts): standaard 2 runs tegelijk, POORT_E2E_SLOTS
 //
 // sherif, boundaries en ds-regels vergelijken met scripts/poort-baseline.json:
 // bekende schendingen zijn schuld, een nieuwe is FOUT, en een opgeloste die nog in
@@ -53,6 +54,7 @@
 import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import path from "node:path";
+import { aantalSlots, echteOmgeving, neemSlot } from "./e2e-slot";
 import { ongebruikt, sleutels as dsSleutels, zoek as dsZoek } from "./ds-regels";
 import { beschrijf as ekBeschrijf, nieuweTreffers as ekNieuw, OPLOSSING as EK_OPLOSSING, sleutel as ekSleutel, zoek as ekZoek } from "./echte-klok";
 import { beoordeelBare, beschrijf as gsBeschrijf, nieuweTreffers as gsNieuw, OPLOSSING as GS_OPLOSSING, sleutel as gsSleutel, zoek as gsZoek } from "./git-scrub";
@@ -103,17 +105,29 @@ export function leesOpties(args: string[]): Opties {
 
 // ── Hulp ────────────────────────────────────────────────────────────────────
 
-type Uitkomst = { code: number; uit: string };
+/** `uit` = stdout en stderr samen (voor meldingen); `stdout` alleen stdout (voor JSON: turbo meldt waarschuwingen op stderr). */
+type Uitkomst = { code: number; uit: string; stdout: string };
 
-function draai(cmd: string[], env: Record<string, string> = {}, cwd = ROOT): Uitkomst {
+export function draai(cmd: string[], env: Record<string, string> = {}, cwd = ROOT): Uitkomst {
   const p = Bun.spawnSync(cmd, {
     cwd,
     env: { ...Object.fromEntries(Object.entries(process.env).filter(([k]) => !k.startsWith("GIT_"))), NO_COLOR: "1", FORCE_COLOR: "0", TURBO_TELEMETRY_DISABLED: "1", ...env },
     stdout: "pipe",
     stderr: "pipe",
   });
-  const uit = (p.stdout.toString() + p.stderr.toString()).replace(/\x1b\[[0-9;]*m/g, "");
-  return { code: p.exitCode ?? 1, uit };
+  const kleurweg = (t: string) => t.replace(/\x1b\[[0-9;]*m/g, "");
+  const stdout = kleurweg(p.stdout.toString());
+  return { code: p.exitCode ?? 1, uit: stdout + kleurweg(p.stderr.toString()), stdout };
+}
+
+/** De taken uit `turbo run … --dry=json`, alleen uit stdout; null als dat geen JSON is. */
+export function leesDryTaken(stdout: string): { task: string; package: string; command: string }[] | null {
+  try {
+    const plan = JSON.parse(stdout.slice(stdout.indexOf("{")));
+    return Array.isArray(plan?.tasks) ? plan.tasks : null;
+  } catch {
+    return null;
+  }
 }
 
 function git(...args: string[]): string {
@@ -385,19 +399,36 @@ function stapBuild(ctx: Context): Resultaat {
   return turboResultaat(turbo(ctx, ["build"], zonder.map((p) => `--filter=!${p}`)));
 }
 
-function stapE2e(ctx: Context): Resultaat {
+async function stapE2e(ctx: Context): Promise<Resultaat> {
   const dry = turbo(ctx, ["e2e"], ["--dry=json"]);
   if (dry.code !== 0) return { status: "FOUT", detail: "turbo --dry faalde", uitleg: staart(dry.uit) };
-  const plan = JSON.parse(dry.uit.slice(dry.uit.indexOf("{")));
-  const e2e = (plan.tasks as { task: string; package: string; command: string }[])
+  // Alleen stdout: turbo meldt waarschuwingen (remote cache niet beschikbaar, 403) op stderr.
+  const taken = leesDryTaken(dry.stdout);
+  if (!taken) return { status: "FOUT", detail: "turbo --dry gaf geen JSON", uitleg: staart(dry.uit) };
+  const e2e = taken
     .filter((t) => t.task === "e2e" && t.command !== "<NONEXISTENT>")
     .map((t) => t.package);
   if (!e2e.length) return { status: "SKIP", detail: "geen e2e geraakt" };
   if (inStiltevenster()) {
     return { status: "FOUT", detail: `stiltevenster 05:00–07:15, e2e van ${e2e.join(", ")} niet gedraaid; na 07:15 opnieuw, of --zonder-e2e` };
   }
-  const r = turboResultaat(turbo(ctx, ["e2e"], ["--concurrency=1"]));
-  return { ...r, detail: `${e2e.join(", ")}: ${r.detail}` };
+  // Maximaal POORT_E2E_SLOTS (standaard 2) volledige e2e-runs tegelijk op de machine;
+  // binnen een run blijft turbo op --concurrency=1.
+  let slot: Awaited<ReturnType<typeof neemSlot>>;
+  try {
+    slot = await neemSlot(echteOmgeving(process.cwd()), aantalSlots());
+  } catch (e) {
+    return { status: "FOUT", detail: (e as Error).message };
+  }
+  const vrij = () => slot.vrij();
+  process.on("exit", vrij);
+  try {
+    const r = turboResultaat(turbo(ctx, ["e2e"], ["--concurrency=1"]));
+    return { ...r, detail: `${e2e.join(", ")}: ${r.detail}` };
+  } finally {
+    vrij();
+    process.off("exit", vrij);
+  }
 }
 
 // ── Base ────────────────────────────────────────────────────────────────────
@@ -461,7 +492,7 @@ async function poort(o: Opties): Promise<number> {
       : s === "biome" ? stapBiome()
       : s === "taken" ? stapTaken(ctx, o.ci)
       : s === "build" ? stapBuild(ctx)
-      : stapE2e(ctx);
+      : await stapE2e(ctx);
     if (r.status === "FOUT") fouten++;
     const tijd = r.status === "SKIP" ? "" : ` (${duur(Date.now() - t0)})`;
     console.log(`${r.status.padEnd(4)} ${s.padEnd(14)}${r.detail ? ` ${r.detail}` : ""}${tijd}`);
