@@ -18,4 +18,4 @@ Per taak één regel: `<id>: PR #<n>, <sha7>, review <akkoord|wijzigingen>, open
 Alles uit "Vaste grenzen" geldt voor de sub-lead en voor elke bouwer en reviewer die zij start: eigen tak en worktree, alleen het bezit van het spoor, geen sleutels, geen echte tmux of live poorten. Een sub-lead start geen nieuwe sessies met `spawn.sh`; dat doet de lead.
 
 ## Workflow (alleen met toestemming)
-`scripts/lead/vaste-cyclus.js` voert dezelfde cyclus als workflow uit (`args.taken`: id, tak, opdracht, zwaar). De Workflow-tool draait alleen als Brian daarvoor toestemming gaf; de startzin noemt dat letterlijk ("Brian gaf op <datum> toestemming voor workflows (zie lead.md)"), en dat gebeurt alleen met `spawn.sh --sublead --workflow <datum>`. Zonder die zin: Agent-tool.
+`scripts/lead/vaste-cyclus.js` voert dezelfde cyclus als workflow uit (`args.taken`: id, tak, opdracht, zwaar). De Workflow-tool draait alleen als Brian daarvoor toestemming gaf; de startzin noemt dat letterlijk ("Brian gaf op <datum> toestemming voor workflows (zie ~/vault-b-status/lead.md)"), en dat gebeurt alleen met `spawn.sh --sublead --workflow <datum>`. Zonder die zin: Agent-tool.

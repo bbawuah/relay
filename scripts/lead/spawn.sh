@@ -67,8 +67,10 @@ case $pad in *[[:space:]]*) pad="'$pad'" ;; esac
 zin="Je lead is $lead. Jij bent sessie $naam. Lees $pad en voer die uit. Rapporteer aan de lead via SendMessage (to: $lead)."
 if [ "$sublead" = 1 ]; then
   zin="Je lead is $lead. Jij bent sessie $naam, sub-lead. Lees $pad en voer die uit volgens scripts/lead/sublead.md: per taak een bouwer, dan een reviewer die niet plant, hooguit één herstelronde, met de Agent-tool."
-  if [ -n "$workflow" ]; then
-    zin="$zin Brian gaf op $workflow toestemming voor workflows (zie lead.md): draai de cyclus als workflow met scripts/lead/vaste-cyclus.js."
+  if [ -z "$workflow" ]; then
+    zin="$zin Geen Workflow-tool."
+  else
+    zin="$zin Brian gaf op $workflow toestemming voor workflows (zie ~/vault-b-status/lead.md): draai de cyclus als workflow met scripts/lead/vaste-cyclus.js."
   fi
   zin="$zin Rapporteer aan de lead via SendMessage (to: $lead), kort: PR-nummer, sha, reviewoordeel en open punten per taak."
 elif [ -n "$vervolg" ]; then

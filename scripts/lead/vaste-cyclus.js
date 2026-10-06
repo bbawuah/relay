@@ -1,3 +1,5 @@
+// Niet door biome gelint (biome.json sluit dit bestand uit): een workflow-script is een functie-body
+// met top-level return en global args en parset daarom niet als module.
 // Sjabloon voor de sub-lead (scripts/lead/sublead.md). Draait alleen als Brian workflows toestond
 // (spawn.sh --sublead --workflow <datum>). Zonder die toestemming volgt de sub-lead hetzelfde
 // stappenplan met de Agent-tool. Args: { taken: [{ id, tak, opdracht, zwaar? }] }; zwaar = true

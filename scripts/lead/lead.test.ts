@@ -364,13 +364,15 @@ describe("spawn.sh", () => {
     expect(r.uit).toContain("scripts/lead/sublead.md");
     expect(r.uit).toContain("Agent-tool");
     expect(r.uit).toContain("SendMessage (to: lead-x)");
+    expect(r.uit).toContain("Geen Workflow-tool.");
     expect(r.uit).not.toContain("workflows");
     expect(r.uit).not.toContain("vaste-cyclus.js");
   });
 
   test("--sublead --workflow noemt Brians toestemming met de datum; --workflow alleen met --sublead", () => {
     const r = draai(SPAWN, ["--naam", "s1", "--opdracht", opdracht(), "--lead", "l", "--sublead", "--workflow", "2026-10-06", "--droog"], basis());
-    expect(r.uit).toContain("Brian gaf op 2026-10-06 toestemming voor workflows (zie lead.md)");
+    expect(r.uit).toContain("Brian gaf op 2026-10-06 toestemming voor workflows (zie ~/vault-b-status/lead.md)");
+    expect(r.uit).not.toContain("Geen Workflow-tool.");
     expect(r.uit).toContain("scripts/lead/vaste-cyclus.js");
     const zonder = draai(SPAWN, ["--naam", "s1", "--opdracht", opdracht(), "--lead", "l", "--workflow", "2026-10-06", "--droog"], basis());
     expect(zonder.code).toBe(1);
