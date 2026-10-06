@@ -8,6 +8,8 @@
 //   ds-regels   designsysteem-regels R1–R7 (scripts/ds-regels.ts) (alle apps)
 //   werk-commentaar  TODO/HACK/FIXME/XXX/workaround alleen als TODO(JJJJ-MM-DD): reden; verlopen = FOUT
 //   echte-klok  unittests wachten niet op de echte klok: Bun.sleep/setTimeout ≥ 10 ms = FOUT (scripts/echte-klok.ts)
+//   test-integriteit  geen verwijderd testbestand, minder test(/it( of nieuwe .skip/.only/.todo zonder "// test-weg: reden" (scripts/test-integriteit.ts)
+//   rood-op-basis  een fix (tak of PR-titel met "fix") brengt een unittest mee die op de basis faalt en op de tak slaagt (scripts/rood-op-basis.ts)
 //   scripts-tests  bun test ./scripts/ (de tests van poort en ds-regels; < 1 s, altijd)
 //   biome       biome ci: lint (alleen foutregels), geen format  (hele repo)
 //   taken       turbo run lint typecheck test                    (affected)
@@ -31,7 +33,7 @@
 //   --base <ref>     vergelijk met deze ref in plaats van main
 //   --ci             voor .github/workflows/ci.yml: sla de taken over die in
 //                    uitzonderingen.ci van de baseline staan (alleen op de mini)
-//   --alleen <s,…>   alleen deze stappen (sherif,boundaries,ds-regels,werk-commentaar,echte-klok,scripts-tests,biome,taken,build,e2e)
+//   --alleen <s,…>   alleen deze stappen (sherif,boundaries,ds-regels,werk-commentaar,echte-klok,test-integriteit,rood-op-basis,scripts-tests,biome,taken,build,e2e)
 //   --zelftest       bewijs dat elke stap afkeurt: per stap een bewuste fout in een
 //                    tijdelijke kopie van de werkkopie; de poort moet daar rood worden
 //   --baseline       schrijf de huidige sherif-, boundaries- en ds-regels-schendingen naar de
@@ -44,16 +46,19 @@
 // Een groene volledige run op een schone werkkopie laat een stempel achter in
 // ~/.cache/lab-bawuah/poort/<sha>.json, voor de uitrolscripts (besluit 10, later).
 
-import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import path from "node:path";
 import { ongebruikt, sleutels as dsSleutels, zoek as dsZoek } from "./ds-regels";
 import { beschrijf as ekBeschrijf, nieuweTreffers as ekNieuw, OPLOSSING as EK_OPLOSSING, sleutel as ekSleutel, zoek as ekZoek } from "./echte-klok";
+import { leesPr } from "./bewijs-pr";
+import { leesContext as roLees, stap as roStap } from "./rood-op-basis";
+import { analyseer as tiAnalyseer } from "./test-integriteit";
 import { JUISTE_VORM, sleutel as wcSleutel, zoek as wcZoek } from "./werk-commentaar";
 
 const ROOT = path.resolve(import.meta.dir, "..");
 const BASELINE_PAD = path.join(ROOT, "scripts/poort-baseline.json");
-const STAPPEN = ["sherif", "boundaries", "ds-regels", "werk-commentaar", "echte-klok", "scripts-tests", "biome", "taken", "build", "e2e"] as const;
+const STAPPEN = ["sherif", "boundaries", "ds-regels", "werk-commentaar", "echte-klok", "test-integriteit", "rood-op-basis", "scripts-tests", "biome", "taken", "build", "e2e"] as const;
 type Stap = (typeof STAPPEN)[number];
 
 // ── Opties ──────────────────────────────────────────────────────────────────
@@ -98,7 +103,7 @@ type Uitkomst = { code: number; uit: string };
 function draai(cmd: string[], env: Record<string, string> = {}, cwd = ROOT): Uitkomst {
   const p = Bun.spawnSync(cmd, {
     cwd,
-    env: { ...process.env, NO_COLOR: "1", FORCE_COLOR: "0", TURBO_TELEMETRY_DISABLED: "1", ...env },
+    env: { ...Object.fromEntries(Object.entries(process.env).filter(([k]) => !k.startsWith("GIT_"))), NO_COLOR: "1", FORCE_COLOR: "0", TURBO_TELEMETRY_DISABLED: "1", ...env },
     stdout: "pipe",
     stderr: "pipe",
   });
@@ -283,6 +288,25 @@ function stapEchteKlok(): Resultaat {
      Op een trage runner wordt dat flaky; oplossing: ${EK_OPLOSSING}` };
 }
 
+/**
+ * Test-integriteit draait in-process op de diff met de basis (merge-base): een verwijderd
+ * testbestand, minder test(/it( of een nieuwe skip/only/todo is FOUT, tenzij met reden.
+ * Redenen ("// test-weg: …") worden apart getoond, ook bij OK, voor de reviewer.
+ */
+function stapTestIntegriteit(base: string): Resultaat {
+  const u = tiAnalyseer(base, { prBody: leesPr()?.body ?? null });
+  const redenen = u.redenen.map((r) => `     reden voor de reviewer: ${r}`);
+  if (u.fouten.length) {
+    return { status: "FOUT", detail: `${u.fouten.length} testwijziging(en) zonder reden`, uitleg: [...u.fouten.map((f) => `     ${f}`), ...redenen].join("\n") };
+  }
+  return { status: "OK", detail: `${u.bestanden} testbestand(en) gewijzigd${redenen.length ? `, ${redenen.length} met reden` : ""}`, uitleg: redenen.join("\n") || undefined };
+}
+
+/** Rood op de basis: alleen voor een fix; draait de unittests van de fix tegen de merge-base (scripts/rood-op-basis.ts). */
+function stapRoodOpBasis(base: string): Resultaat {
+  return roStap(base, roLees());
+}
+
 /** De root is geen workspace, dus turbo draait deze tests niet; deze stap wel (altijd, < 1 s). */
 function stapScriptsTests(): Resultaat {
   const r = draai(["bun", "test", "./scripts/"]);
@@ -381,6 +405,7 @@ async function poort(o: Opties): Promise<number> {
     console.log(`poort: affected t.o.v. ${base.ref} (merge-base ${base.sha.slice(0, 9)})`);
   } else console.log("poort: alles");
 
+  const stapBase = () => ctx.base ?? kiesBase(o.base).sha;
   const begin = Date.now();
   let fouten = 0;
   for (const s of STAPPEN) {
@@ -395,6 +420,8 @@ async function poort(o: Opties): Promise<number> {
       : s === "ds-regels" ? stapDsRegels()
       : s === "werk-commentaar" ? stapWerkCommentaar()
       : s === "echte-klok" ? stapEchteKlok()
+      : s === "test-integriteit" ? stapTestIntegriteit(stapBase())
+      : s === "rood-op-basis" ? stapRoodOpBasis(stapBase())
       : s === "scripts-tests" ? stapScriptsTests()
       : s === "biome" ? stapBiome()
       : s === "taken" ? stapTaken(ctx, o.ci)
@@ -403,7 +430,7 @@ async function poort(o: Opties): Promise<number> {
     if (r.status === "FOUT") fouten++;
     const tijd = r.status === "SKIP" ? "" : ` (${duur(Date.now() - t0)})`;
     console.log(`${r.status.padEnd(4)} ${s.padEnd(14)}${r.detail ? ` ${r.detail}` : ""}${tijd}`);
-    if (r.status === "FOUT" && r.uitleg) console.log(r.uitleg);
+    if (r.uitleg && r.status !== "SKIP") console.log(r.uitleg);
   }
   console.log(`poort: ${fouten ? `${fouten} FOUT` : "groen"} in ${duur(Date.now() - begin)}`);
 
@@ -440,7 +467,7 @@ function schrijfBaseline(): void {
 
 // ── Zelftest ────────────────────────────────────────────────────────────────
 
-type Kanarie = { stap: Stap; wat: string; verwacht: RegExp; zet: (map: string) => void };
+type Kanarie = { stap: Stap; wat: string; verwacht: RegExp; zet: (map: string) => void; env?: Record<string, string> };
 
 const schrijf = (map: string, pad: string, inhoud: string) => {
   mkdirSync(path.dirname(path.join(map, pad)), { recursive: true });
@@ -544,6 +571,47 @@ export const KANARIES: Kanarie[] = [
     zet: (m) => schrijf(m, "apps/watchparty/src/ui/paneel.test.tsx", git("show", "9fe29d5^:apps/watchparty/src/ui/paneel.test.tsx") + "\n"),
   },
   {
+    stap: "test-integriteit",
+    wat: "een verwijderd testbestand (scripts/werk-commentaar.test.ts)",
+    verwacht: /FOUT test-integriteit .*1 testwijziging/,
+    zet: (m) => rmSync(path.join(m, "scripts/werk-commentaar.test.ts")),
+  },
+  {
+    stap: "test-integriteit",
+    wat: "minder test(/it( in een bestaand testbestand (scripts/echte-klok.test.ts)",
+    verwacht: /FOUT test-integriteit .*1 testwijziging/,
+    zet: (m) => {
+      const p = path.join(m, "scripts/echte-klok.test.ts");
+      writeFileSync(p, readFileSync(p, "utf8").replace("test(", "bewaar("));
+    },
+  },
+  {
+    stap: "test-integriteit",
+    wat: "een nieuwe test.skip zonder reden",
+    verwacht: /FOUT test-integriteit .*1 testwijziging/,
+    zet: (m) => {
+      const p = path.join(m, "scripts/echte-klok.test.ts");
+      writeFileSync(p, `${readFileSync(p, "utf8")}\ntest.skip("kanarie", () => {});\n`);
+    },
+  },
+  {
+    stap: "rood-op-basis",
+    wat: 'een fix ("fix: kanarie") zonder nieuwe of gewijzigde test',
+    verwacht: /FOUT rood-op-basis .*fix zonder/,
+    env: { PR_TITEL: "fix: kanarie" },
+    zet: (m) => schrijf(m, "apps/template/src/kanarie-fix.ts", "export const kanarie = 1;\n"),
+  },
+  {
+    stap: "rood-op-basis",
+    wat: 'een fix ("fix: kanarie") met een test die ook op de basis slaagt',
+    verwacht: /FOUT rood-op-basis .*slaagt ook op de basis/,
+    env: { PR_TITEL: "fix: kanarie" },
+    zet: (m) => {
+      schrijf(m, "apps/template/src/kanarie-fix.ts", "export const kanarie = 1;\n");
+      schrijf(m, "apps/template/src/kanarie-fix.test.ts", 'import { expect, test } from "bun:test";\ntest("kanarie", () => expect(1).toBe(1));\n');
+    },
+  },
+  {
     stap: "scripts-tests",
     wat: "falende test in scripts/",
     verwacht: /FOUT scripts-tests .*1 mislukt/,
@@ -616,6 +684,9 @@ function maakKopie(): string {
     const r = draai(["git", ...args], {}, map);
     if (r.code !== 0) throw new Error(`zelftest: git ${args.join(" ")}: ${r.uit}`);
   }
+  // Vangnet: de kopie moet een eigen repo zijn, nooit de echte (GIT_DIR uit een hook wordt al weggefilterd in draai()).
+  const gitDir = draai(["git", "rev-parse", "--absolute-git-dir"], {}, map).uit.trim();
+  if (realpathSync(gitDir) !== realpathSync(path.join(map, ".git"))) throw new Error(`zelftest: kopie gebruikt de verkeerde repo (${gitDir})`);
   const inst = draai(["bun", "install", "--frozen-lockfile"], {}, map);
   if (inst.code !== 0) throw new Error(`zelftest: bun install faalde\n${inst.uit}`);
   return map;
@@ -631,8 +702,10 @@ async function zelftest(): Promise<number> {
   const begin = Date.now();
   console.log("zelftest: kopie van de werkkopie maken en installeren…");
   const map = maakKopie();
-  const poortIn = (alleen: string) =>
-    draai(["bun", "run", "scripts/poort.ts", "--base", "HEAD", "--alleen", alleen], {}, map);
+  // Zonder de PR-context van de omgeving (CI): anders beoordeelt de kopie de echte PR.
+  const geenPr = { GITHUB_EVENT_PATH: "", GITHUB_HEAD_REF: "", PR_TITEL: "", PR_BODY: "", PR_BRANCH: "main" };
+  const poortIn = (alleen: string, env: Record<string, string> = {}) =>
+    draai(["bun", "run", "scripts/poort.ts", "--base", "HEAD", "--alleen", alleen], { ...geenPr, ...env }, map);
   let fouten = 0;
   try {
     // Controle: zonder kanarie moet elke stap groen zijn, anders bewijst rood niets.
@@ -648,7 +721,7 @@ async function zelftest(): Promise<number> {
       // een nieuw bestand, dus eerst stagen.
       draai(["git", "add", "-A"], {}, map);
       const t0 = Date.now();
-      const r = poortIn(k.stap);
+      const r = poortIn(k.stap, k.env);
       const rood = r.code !== 0 && k.verwacht.test(r.uit);
       if (!rood) fouten++;
       console.log(
