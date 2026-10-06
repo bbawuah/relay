@@ -7,18 +7,38 @@ set -euo pipefail
 CHECK="${LAB_MERGE_CHECK:-poort}"
 fout() { echo "merge: geweigerd: $*" >&2; exit 1; }
 
-pr="" droog=0
-for a in "$@"; do
-  case $a in
+pr="" droog=0 contract="" spoor=""
+while [ $# -gt 0 ]; do
+  case $1 in
     --droog) droog=1 ;;
+    --contract) [ $# -ge 2 ] || fout "--contract mist een bestand"; contract=$2; shift ;;
+    --spoor) [ $# -ge 2 ] || fout "--spoor mist een id"; spoor=$2; shift ;;
     -h|--help) sed -n '2,4p' "$0"; exit 0 ;;
-    -*) fout "onbekende optie: $a" ;;
-    *) [ -z "$pr" ] || fout "maar één PR-nummer"; pr=$a ;;
+    -*) fout "onbekende optie: $1" ;;
+    *) [ -z "$pr" ] || fout "maar één PR-nummer"; pr=$1 ;;
   esac
+  shift
 done
 [[ $pr =~ ^[0-9]+$ ]] || fout "geef een PR-nummer, bijvoorbeeld: merge.sh 71"
+{ [ -z "$contract" ] && [ -z "$spoor" ]; } || { [ -n "$contract" ] && [ -n "$spoor" ]; } || fout "--contract en --spoor horen bij elkaar"
+if [ -n "$contract" ]; then
+  [ -f "$contract" ] || fout "contractbestand niet gevonden: $contract"
+  [[ $spoor =~ ^[A-Za-z0-9]+$ ]] || fout "--spoor is een id zoals D2 of W1"
+  # De Bezit:-regel in de sectie "## <spoor> ·" (tot de volgende "## "); paden = stukken tussen backticks.
+  bezitregel=$(awk -v id="$spoor" '
+    /^## / { insec = (index($0, "## " id " ") == 1); next }
+    insec && /^Bezit:/ { print; exit }' "$contract")
+  [ -n "$bezitregel" ] || fout "geen \"Bezit:\"-regel voor spoor $spoor in $contract"
+  bezit=()
+  while IFS= read -r t; do
+    t=${t//\`/}
+    # alleen padachtige stukken: tekens van een pad en een / of . erin; "stapE2e" en "<header>" vallen af
+    if [[ $t =~ ^[A-Za-z0-9_.@*/-]+$ ]] && [[ $t == */* || $t == *.* ]]; then bezit+=("$t"); fi
+  done < <(printf '%s\n' "$bezitregel" | grep -o '`[^`]*`' || true)
+  [ "${#bezit[@]}" -gt 0 ] || fout "de Bezit:-regel van spoor $spoor noemt geen paden tussen backticks"
+fi
 
-json=$(gh pr view "$pr" --json state,headRefName,headRefOid,isCrossRepository,mergeable,mergeStateStatus,comments,statusCheckRollup) \
+json=$(gh pr view "$pr" --json state,headRefName,headRefOid,isCrossRepository,mergeable,mergeStateStatus,comments,statusCheckRollup,files) \
   || fout "PR $pr niet op te halen met gh"
 j() { printf '%s' "$json" | jq -r "$1"; }
 
@@ -54,6 +74,30 @@ case $status in
   BEHIND) fout "tak $tak loopt achter op main: eerst bijwerken (strict)" ;;
   *) fout "PR $pr kan nog niet mergen (mergeStateStatus: $status)" ;;
 esac
+
+# Bezitscheck: waarschuwing, geen weigering (de lead beslist).
+if [ -n "$contract" ]; then
+  buiten=()
+  while IFS= read -r f; do
+    [ -n "$f" ] || continue
+    binnen=0
+    for b in "${bezit[@]}"; do
+      case $b in
+        */) [[ $f == "$b"* || $f == *"/$b"* ]] && binnen=1 ;;
+        *\**) [[ $f == $b || $f == */$b ]] && binnen=1 ;;
+        *) [[ $f == "$b" || $f == */"$b" ]] && binnen=1 ;;
+      esac
+      [ "$binnen" = 1 ] && break
+    done
+    [ "$binnen" = 1 ] || buiten+=("$f")
+  done < <(printf '%s' "$json" | jq -r '.files[]?.path')
+  if [ "${#buiten[@]}" -gt 0 ]; then
+    echo "merge: waarschuwing: PR $pr raakt ${#buiten[@]} bestand(en) buiten het Bezit van spoor $spoor:" >&2
+    printf 'merge:   %s\n' "${buiten[@]}" >&2
+  else
+    echo "merge: bezitscheck: alle bestanden van PR $pr vallen binnen het Bezit van spoor $spoor"
+  fi
+fi
 
 if [ "$droog" = 1 ]; then
   echo "droog: PR $pr voldoet; zou draaien: gh pr merge $pr --merge, controleren op MERGED, dan git push origin --delete $tak"

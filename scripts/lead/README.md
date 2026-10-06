@@ -1,6 +1,6 @@
 # Lead-scripts
 
-Twee scripts voor de lead: een sessie starten met een opdrachtbestand, en een PR mergen zonder de voorwaarden te vergeten. Beide kennen `--droog` (laat zien wat er zou gebeuren, doet niets).
+Drie scripts voor de lead: een sessie starten met een opdrachtbestand, een PR mergen zonder de voorwaarden te vergeten, en een merge-wachtrij die meerdere goedgekeurde PR's als één integratie-PR door de poort haalt. Alle kennen `--droog` (laat zien wat er zou gebeuren, doet niets).
 
 ## spawn.sh
 
@@ -48,7 +48,40 @@ Weigert met exit 1 en een duidelijke reden als:
 
 Zijn de voorwaarden in orde, dan: `gh pr merge <pr> --merge`, daarna controleren dat `state` `MERGED` is, en pas dan `git push origin --delete <tak>`. Staat de PR niet op MERGED, dan blijft de remote tak staan en eindigt het script met exit 1.
 
+### Bezitscheck (optioneel)
+
+```sh
+scripts/lead/merge.sh 71 --droog --contract ~/vault-b-status/werkwijze-b/CONTRACT-fase3.md --spoor D2
+```
+
+Leest de regel `Bezit: …` in de sectie `## <spoor> ·` van het contract, haalt de paden uit de stukken tussen backticks (een stuk telt als pad als het een `/` of `.` bevat; `scripts/lead/*.test.ts` is een patroon, `docs/` een map, een kaal `merge.sh` telt als bestandsnaam in welke map dan ook) en vergelijkt ze met de bestanden van de PR. Bestanden buiten het Bezit komen als waarschuwing op stderr; het mergen gaat door, de lead beslist. Zonder `--contract` en `--spoor` doet merge.sh niets extra's; één van de twee alleen, een onbekend spoor of een contract zonder paden in de Bezit-regel is een weigering.
+
 Het script gebruikt `gh` en `jq` en pusht vanuit de huidige git-map; draai het vanuit een clone van de repo.
+
+## wachtrij.ts
+
+```sh
+bun scripts/lead/wachtrij.ts --droog          # alleen laten zien
+bun scripts/lead/wachtrij.ts                  # bouwen, poort draaien, integratie-PR openen
+bun scripts/lead/wachtrij.ts --ruim-takken    # na MERGED: remote takken van de onderliggende PR's weg
+```
+
+Stappen:
+
+1. Open PR's met een comment die begint met `Lead-review: akkoord <sha7>`, waarbij de sha7 de huidige head is. Forks, concepten en eerdere `wachtrij/`-PR's tellen niet; een verouderd akkoord wordt gemeld.
+2. Tak `wachtrij/<jjjjmmdd-hhmm>` in een eigen worktree (naast de repo, `<repo>-wachtrij-<stempel>`) vanaf `origin/main`. De PR's worden in volgorde van nummer samengevoegd met `git merge --no-ff` van de echte head (dus geen squash: GitHub ziet de commits en sluit de onderliggende PR's als gemerged). Een conflict of een tak die na het akkoord is verschoven haalt die PR eruit, met een melding.
+3. `bun install && bun run poort` in de worktree: de volledige poort mét e2e. Rood = geen push, geen PR; worktree en tak blijven staan. In het stiltevenster 05:00–07:15 weigert het script (ook `--droog` meldt het).
+4. Push en één integratie-PR met het sjabloon: Samenvatting (de lijst), Bewijs (`poort: groen (met e2e) op <sha7>: #n, #m` pas na de geslaagde run, plus de `OK bekijk <app>`-regels uit de onderliggende PR's) en Merge-gevaar (de sectie van de zwaarste onderliggende PR). Een regel `Wachtrij-PR's: <nr>=<tak>=<sha> …` in de body is voor `--ruim-takken`.
+5. De lead geeft op de integratie-PR `Lead-review: akkoord <sha7>` en draait `merge.sh <pr>`.
+6. `--ruim-takken [<pr>]` (zonder nummer: de laatste gemergede `wachtrij/`-PR): weigert als de PR niet MERGED is, en verwijdert per onderliggende PR de remote tak alleen als de head in `origin/main` staat én de remote tak nog op die sha staat. Standaard worden de takken dus niet verwijderd.
+
+| Optie | Betekenis |
+|---|---|
+| `--droog` | Alleen tonen; ook bij `--ruim-takken`. |
+| `--poort-cmd <cmd>` | Vervangt `bun install && bun run poort` (voor tests). |
+| `--nu <jjjjmmdd-hhmm>` | Vaste tijd voor de tak en het stiltevenster (voor tests). |
+| `--map <pad>` | Pad van de worktree. |
+| `--basis <ref>` | Basis van de wachtrij, standaard `origin/main`. |
 
 ## Tests
 
