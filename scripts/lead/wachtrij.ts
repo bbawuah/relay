@@ -13,6 +13,7 @@ export type Pr = {
   body: string;
   headRefName: string;
   headRefOid: string;
+  baseRefName?: string;
   isCrossRepository: boolean;
   isDraft?: boolean;
   comments: { body: string }[];
@@ -26,7 +27,8 @@ export function kiesPrs(prs: Pr[]): { gekozen: Pr[]; afgevallen: Afgevallen[] } 
   const afgevallen: Afgevallen[] = [];
   for (const pr of [...prs].sort((a, b) => a.number - b.number)) {
     const sha = pr.headRefOid.slice(0, 7);
-    if (pr.isCrossRepository) afgevallen.push({ nummer: pr.number, reden: "komt uit een fork" });
+    if (pr.baseRefName !== "main") afgevallen.push({ nummer: pr.number, reden: `base is ${pr.baseRefName ?? "onbekend"}, niet main (gestapelde PR)` });
+    else if (pr.isCrossRepository) afgevallen.push({ nummer: pr.number, reden: "komt uit een fork" });
     else if (pr.isDraft) afgevallen.push({ nummer: pr.number, reden: "is een concept" });
     else if (["main", "master"].includes(pr.headRefName)) afgevallen.push({ nummer: pr.number, reden: `tak is ${pr.headRefName}` });
     else if (pr.headRefName.startsWith("wachtrij/")) afgevallen.push({ nummer: pr.number, reden: "is zelf een integratie-PR" });
@@ -80,7 +82,8 @@ export const MARKER = "Wachtrij-PR's:";
 export const markerRegel = (prs: Pr[]) => `${MARKER} ${prs.map((p) => `${p.number}=${p.headRefName}=${p.headRefOid}`).join(" ")}`;
 
 export function leesMarker(body: string): { nummer: number; tak: string; sha: string }[] {
-  const r = body.split("\n").find((x) => x.startsWith(MARKER));
+  // de laatste marker-regel telt: de echte staat onderaan, na ingevoegde tekst van onderliggende PR's
+  const r = body.split("\n").filter((x) => x.startsWith(MARKER)).pop();
   if (!r) return [];
   return r
     .slice(MARKER.length)
@@ -90,8 +93,12 @@ export function leesMarker(body: string): { nummer: number; tak: string; sha: st
     .map((d) => {
       const [n, tak, sha] = d.split("=");
       return { nummer: Number(n), tak, sha };
-    });
+    })
+    .filter((d) => /^\d+$/.test(String(d.nummer)) && /^[A-Za-z0-9][A-Za-z0-9._/-]*$/.test(d.tak ?? "") && /^[0-9a-f]{40}$/.test(d.sha ?? ""));
 }
+
+/** Tekst van een onderliggende PR zonder regels die op onze marker lijken. */
+const zonderMarker = (t: string) => t.split("\n").filter((r) => !r.trim().startsWith(MARKER)).join("\n");
 
 export function bouwBody(opts: { gemerged: Pr[]; afgevallen: Afgevallen[]; head: string; poortCmd: string }): string {
   const { gemerged, afgevallen, head } = opts;
@@ -108,13 +115,16 @@ export function bouwBody(opts: { gemerged: Pr[]; afgevallen: Afgevallen[]; head:
     "",
     "## Bewijs",
     "",
-    `- poort: groen (met e2e) op ${head.slice(0, 7)} (\`${opts.poortCmd}\`): ${gemerged.map((p) => `#${p.number}`).join(", ")}`,
+    // "met e2e" alleen bij de standaardpoort; een eigen commando bewijst dat niet (bewijs-pr leest alleen de regel)
+    opts.poortCmd === STANDAARD_POORT
+      ? `- poort: groen (met e2e) op ${head.slice(0, 7)} (\`${opts.poortCmd}\`): ${gemerged.map((p) => `#${p.number}`).join(", ")}`
+      : `- poort: eigen commando \`${opts.poortCmd}\` op ${head.slice(0, 7)}, geen e2e-bewijs: ${gemerged.map((p) => `#${p.number}`).join(", ")}`,
     ...(ok.length ? ok.map((r) => `- ${r}`) : ["- Geen app-wijziging met bekijk-regel in de onderliggende PR's."]),
     "",
     "## Merge-gevaar",
     "",
     gevaar
-      ? `Zwaarste van de onderliggende PR's: #${gevaar.nummer}.\n\n${gevaar.tekst}`
+      ? `Zwaarste van de onderliggende PR's: #${gevaar.nummer}.\n\n${zonderMarker(gevaar.tekst)}`
       : "Geen Merge-gevaar-sectie gevonden in de onderliggende PR's; lees ze zelf na.",
     "",
     markerRegel(gemerged),
@@ -154,7 +164,7 @@ type Opties = {
   pr: string | null;
 };
 
-const STANDAARD_POORT = "bun install && bun run poort";
+export const STANDAARD_POORT = "bun install --frozen-lockfile && bun run poort";
 
 export function leesOpties(args: string[]): Opties | string {
   const o: Opties = { droog: false, poortCmd: STANDAARD_POORT, nu: null, basis: "origin/main", map: null, ruim: false, pr: null };
@@ -211,7 +221,7 @@ function ruimTakken(o: Opties, root: string): never {
   if (info.state !== "MERGED") return klaar(1, `wachtrij: PR ${pr} staat op ${info.state}, niet MERGED; niets verwijderd`);
   if (!info.headRefName.startsWith("wachtrij/")) return klaar(1, `wachtrij: PR ${pr} is geen integratie-PR (tak ${info.headRefName})`);
   const onderliggend = leesMarker(info.body);
-  if (!onderliggend.length) return klaar(1, `wachtrij: PR ${pr} bevat geen "${MARKER}"-regel`);
+  if (!onderliggend.length) return klaar(1, `wachtrij: PR ${pr} bevat geen geldige "${MARKER}"-regel`);
   const f = run(["git", "fetch", "origin", "main"], root);
   if (f.code !== 0) return klaar(1, `wachtrij: git fetch mislukt: ${f.fout}`);
   let fouten = 0;
@@ -222,12 +232,22 @@ function ruimTakken(o: Opties, root: string): never {
       fouten++;
       continue;
     }
-    const staat = run(["git", "ls-remote", "--heads", "origin", d.tak], root).uit;
+    // de body is niet te vertrouwen: de PR zelf moet MERGED zijn met precies deze tak en head
+    const onder = run(["gh", "pr", "view", String(d.nummer), "--json", "state,headRefName,headRefOid"]);
+    const o2 = onder.code === 0 ? (JSON.parse(onder.uit) as { state: string; headRefName: string; headRefOid: string }) : null;
+    if (!o2 || o2.state !== "MERGED" || o2.headRefName !== d.tak || o2.headRefOid !== d.sha) {
+      console.error(`wachtrij: #${d.nummer} (${d.tak}): PR is niet MERGED met deze tak en head volgens GitHub, tak blijft staan`);
+      fouten++;
+      continue;
+    }
+    const ref = `refs/heads/${d.tak}`;
+    const staat = run(["git", "ls-remote", "origin", ref], root).uit;
+    const [staatSha, staatRef] = staat.split(/\s+/);
     if (!staat) {
       console.log(`wachtrij: #${d.nummer}: remote tak ${d.tak} bestond al niet meer`);
       continue;
     }
-    if (!staat.startsWith(d.sha)) {
+    if (staatRef !== ref || staatSha !== d.sha) {
       console.error(`wachtrij: #${d.nummer} (${d.tak}): remote tak staat op een andere sha dan gemerged, blijft staan`);
       fouten++;
       continue;
@@ -236,7 +256,8 @@ function ruimTakken(o: Opties, root: string): never {
       console.log(`droog: zou remote tak ${d.tak} (#${d.nummer}) verwijderen`);
       continue;
     }
-    const del = run(["git", "push", "origin", "--delete", d.tak], root);
+    // met lease: een commit die tussen controle en verwijderen is gepusht, blokkeert het verwijderen
+    const del = run(["git", "push", `--force-with-lease=${ref}:${d.sha}`, "origin", `:${ref}`], root);
     if (del.code !== 0) {
       console.error(`wachtrij: verwijderen van ${d.tak} mislukt: ${del.fout}`);
       fouten++;
@@ -254,13 +275,15 @@ function hoofd(args: string[]): never {
 
   const lijst = ghJson<Pr[]>([
     "pr", "list", "--state", "open", "--limit", "100",
-    "--json", "number,title,body,headRefName,headRefOid,isCrossRepository,isDraft,comments",
+    "--json", "number,title,body,headRefName,headRefOid,baseRefName,isCrossRepository,isDraft,comments",
   ]);
   const { gekozen, afgevallen } = kiesPrs(lijst);
   for (const a of afgevallen) console.log(`wachtrij: #${a.nummer} overgeslagen: ${a.reden}`);
   if (!gekozen.length) return klaar(0, "wachtrij: leeg, geen open PR met een geldig \"Lead-review: akkoord <sha7>\"");
 
-  const nu = o.nu ? leesStempel(o.nu)! : new Date();
+  // --nu bepaalt alleen de naam van de tak; het stiltevenster gaat op de echte klok
+  // (alleen de test overschrijft die, met env LAB_WACHTRIJ_KLOK).
+  const nu = process.env.LAB_WACHTRIJ_KLOK ? (leesStempel(process.env.LAB_WACHTRIJ_KLOK) ?? new Date()) : new Date();
   const stempel = o.nu ?? stempelVan(nu);
   const tak = `wachtrij/${stempel}`;
   const map = o.map ?? path.join(path.dirname(root), `${path.basename(root)}-wachtrij-${stempel}`);
@@ -312,6 +335,8 @@ function hoofd(args: string[]): never {
   if (poort.exitCode !== 0) {
     return klaar(1, `wachtrij: poort rood (exit ${poort.exitCode}); geen push, geen PR. Worktree ${map} en tak ${tak} blijven staan om te kijken`);
   }
+  const vies = run(["git", "status", "--porcelain"], map).uit;
+  if (vies) return klaar(1, `wachtrij: de poort liet gewijzigde bestanden achter (de gepushte commit is dan niet wat de poort zag); geen push, geen PR:\n${vies}`);
   const head = run(["git", "rev-parse", "HEAD"], map).uit;
   const push = run(["git", "push", "-u", "origin", tak], map);
   if (push.code !== 0) return klaar(1, `wachtrij: push mislukt: ${push.fout}`);

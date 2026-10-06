@@ -70,7 +70,7 @@ Stappen:
 
 1. Open PR's met een comment die begint met `Lead-review: akkoord <sha7>`, waarbij de sha7 de huidige head is. Forks, concepten en eerdere `wachtrij/`-PR's tellen niet; een verouderd akkoord wordt gemeld.
 2. Tak `wachtrij/<jjjjmmdd-hhmm>` in een eigen worktree (naast de repo, `<repo>-wachtrij-<stempel>`) vanaf `origin/main`. De PR's worden in volgorde van nummer samengevoegd met `git merge --no-ff` van de echte head (dus geen squash: GitHub ziet de commits en sluit de onderliggende PR's als gemerged). Een conflict of een tak die na het akkoord is verschoven haalt die PR eruit, met een melding.
-3. `bun install && bun run poort` in de worktree: de volledige poort mét e2e. Rood = geen push, geen PR; worktree en tak blijven staan. In het stiltevenster 05:00–07:15 weigert het script (ook `--droog` meldt het).
+3. `bun install --frozen-lockfile && bun run poort` in de worktree: de volledige poort mét e2e. Rood = geen push, geen PR; worktree en tak blijven staan. In het stiltevenster 05:00–07:15 weigert het script (ook `--droog` meldt het).
 4. Push en één integratie-PR met het sjabloon: Samenvatting (de lijst), Bewijs (`poort: groen (met e2e) op <sha7>: #n, #m` pas na de geslaagde run, plus de `OK bekijk <app>`-regels uit de onderliggende PR's) en Merge-gevaar (de sectie van de zwaarste onderliggende PR). Een regel `Wachtrij-PR's: <nr>=<tak>=<sha> …` in de body is voor `--ruim-takken`.
 5. De lead geeft op de integratie-PR `Lead-review: akkoord <sha7>` en draait `merge.sh <pr>`.
 6. `--ruim-takken [<pr>]` (zonder nummer: de laatste gemergede `wachtrij/`-PR): weigert als de PR niet MERGED is, en verwijdert per onderliggende PR de remote tak alleen als de head in `origin/main` staat én de remote tak nog op die sha staat. Standaard worden de takken dus niet verwijderd.
@@ -78,7 +78,7 @@ Stappen:
 | Optie | Betekenis |
 |---|---|
 | `--droog` | Alleen tonen; ook bij `--ruim-takken`. |
-| `--poort-cmd <cmd>` | Vervangt `bun install && bun run poort` (voor tests). |
+| `--poort-cmd <cmd>` | Vervangt `bun install --frozen-lockfile && bun run poort` (voor tests). |
 | `--nu <jjjjmmdd-hhmm>` | Vaste tijd voor de tak en het stiltevenster (voor tests). |
 | `--map <pad>` | Pad van de worktree. |
 | `--basis <ref>` | Basis van de wachtrij, standaard `origin/main`. |

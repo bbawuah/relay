@@ -38,7 +38,7 @@ if [ -n "$contract" ]; then
   [ "${#bezit[@]}" -gt 0 ] || fout "de Bezit:-regel van spoor $spoor noemt geen paden tussen backticks"
 fi
 
-json=$(gh pr view "$pr" --json state,headRefName,headRefOid,isCrossRepository,mergeable,mergeStateStatus,comments,statusCheckRollup,files) \
+json=$(gh pr view "$pr" --json state,headRefName,headRefOid,isCrossRepository,mergeable,mergeStateStatus,comments,statusCheckRollup,files,changedFiles) \
   || fout "PR $pr niet op te halen met gh"
 j() { printf '%s' "$json" | jq -r "$1"; }
 
@@ -83,7 +83,7 @@ if [ -n "$contract" ]; then
     binnen=0
     for b in "${bezit[@]}"; do
       case $b in
-        */) [[ $f == "$b"* || $f == *"/$b"* ]] && binnen=1 ;;
+        */) [[ $f == "$b"* ]] && binnen=1 ;;
         *\**) [[ $f == $b || $f == */$b ]] && binnen=1 ;;
         *) [[ $f == "$b" || $f == */"$b" ]] && binnen=1 ;;
       esac
@@ -91,6 +91,12 @@ if [ -n "$contract" ]; then
     done
     [ "$binnen" = 1 ] || buiten+=("$f")
   done < <(printf '%s' "$json" | jq -r '.files[]?.path')
+  # gh geeft maximaal ~100 bestanden; is de lijst korter dan het echte aantal, dan is de check niet volledig
+  totaal=$(j '.changedFiles // 0')
+  gezien=$(j '[.files[]?] | length')
+  if [ "$totaal" -gt "$gezien" ]; then
+    echo "merge: waarschuwing: de bezitscheck zag $gezien van $totaal bestanden (gh kapt de lijst af); controleer de rest zelf" >&2
+  fi
   if [ "${#buiten[@]}" -gt 0 ]; then
     echo "merge: waarschuwing: PR $pr raakt ${#buiten[@]} bestand(en) buiten het Bezit van spoor $spoor:" >&2
     printf 'merge:   %s\n' "${buiten[@]}" >&2

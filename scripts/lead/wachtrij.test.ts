@@ -3,7 +3,7 @@ import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, wr
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { schoneEnv } from "../test-integriteit.ts";
-import { bouwBody, gevaarScore, inStiltevenster, kiesPrs, leesMarker, leesOpties, leesStempel, okRegels, stempelVan, zwaarsteGevaar, type Pr } from "./wachtrij.ts";
+import { STANDAARD_POORT, bouwBody, gevaarScore, inStiltevenster, kiesPrs, leesMarker, leesOpties, leesStempel, okRegels, stempelVan, zwaarsteGevaar, type Pr } from "./wachtrij.ts";
 
 // Alle CLI-tests draaien met een nep-gh vooraan op PATH en een wegwerp-git-repo met een
 // lokale bare "origin". Geen echte GitHub, geen echte PR's, geen echte poort (--poort-cmd).
@@ -20,6 +20,7 @@ const pr = (n: number, o: Partial<Pr> = {}): Pr => {
     body: "",
     headRefName: `tak-${n}`,
     headRefOid: oid,
+    baseRefName: "main",
     isCrossRepository: false,
     comments: [{ body: `Lead-review: akkoord ${oid.slice(0, 7)}` }],
     ...o,
@@ -73,7 +74,7 @@ describe("body van de integratie-PR", () => {
 
   test("bevat de drie kopjes, de poortregel met lijst en de terugleesbare marker", () => {
     const gem = [pr(1, { body: `OK bekijk tmux: 1/1 paden OK\n${gevaarEen}` }), pr(2, { body: gevaarTwee })];
-    const body = bouwBody({ gemerged: gem, afgevallen: [{ nummer: 3, reden: "mergeconflict met de wachtrij" }], head: "abcdef0123", poortCmd: "bun run poort" });
+    const body = bouwBody({ gemerged: gem, afgevallen: [{ nummer: 3, reden: "mergeconflict met de wachtrij" }], head: "abcdef0123", poortCmd: STANDAARD_POORT });
     expect(body).toMatch(/^## Samenvatting$/m);
     expect(body).toMatch(/^## Bewijs$/m);
     expect(body).toMatch(/^## Merge-gevaar$/m);
@@ -112,7 +113,7 @@ describe("tijd en opties", () => {
     expect(leesOpties(["--zomaar"])).toMatch(/onbekende optie/);
     expect(leesOpties(["--poort-cmd"])).toMatch(/mist een waarde/);
     expect(leesOpties(["12"])).toMatch(/--ruim-takken/);
-    expect(leesOpties(["--droog"])).toMatchObject({ droog: true, poortCmd: "bun install && bun run poort" });
+    expect(leesOpties(["--droog"])).toMatchObject({ droog: true, poortCmd: STANDAARD_POORT });
   });
 });
 
@@ -143,9 +144,10 @@ const maakTak = (naam: string, bestand: string, inhoud: string) => {
   git(repo, "push", "-q", "origin", naam);
   git(repo, "checkout", "-q", "main");
 };
-const omgeving = () => ({ ...schoneEnv(), PATH: `${bin}:${process.env.PATH}`, FAKE_DIR: dir, TMUX: "", TMUX_PANE: "" });
-const draaiWachtrij = (args: string[]) => {
-  const r = Bun.spawnSync(["bun", WACHTRIJ, ...args], { cwd: repo, env: omgeving() });
+// LAB_WACHTRIJ_KLOK: vaste klok voor het stiltevenster, zodat de tests niet van het uur afhangen.
+const omgeving = (extra: Record<string, string> = {}) => ({ ...schoneEnv(), PATH: `${bin}:${process.env.PATH}`, FAKE_DIR: dir, TMUX: "", TMUX_PANE: "", LAB_WACHTRIJ_KLOK: "20261006-1200", ...extra });
+const draaiWachtrij = (args: string[], extra: Record<string, string> = {}) => {
+  const r = Bun.spawnSync(["bun", WACHTRIJ, ...args], { cwd: repo, env: omgeving(extra) });
   return { code: r.exitCode, uit: r.stdout.toString(), fout: r.stderr.toString() };
 };
 const log = (naam: string) => (existsSync(join(dir, naam)) ? readFileSync(join(dir, naam), "utf8") : "");
@@ -166,8 +168,8 @@ beforeEach(() => {
 echo "gh $*" >> "$FAKE_DIR/gh.log"
 case "$1 $2" in
   "pr list") cat "$FAKE_DIR/prlist.json"; exit 0 ;;
-  "pr view") cat "$FAKE_DIR/prview.json"; exit 0 ;;
-  "pr create") echo "https://github.com/nep/nep/pull/99"; exit 0 ;;
+  "pr view") if [ -f "$FAKE_DIR/prview-$3.json" ]; then cat "$FAKE_DIR/prview-$3.json"; else cat "$FAKE_DIR/prview.json"; fi; exit 0 ;;
+  "pr create") printf "%s\n" "$@" > "$FAKE_DIR/create.txt"; echo "https://github.com/nep/nep/pull/99"; exit 0 ;;
 esac
 echo "nep-gh: onverwacht commando $*" >&2; exit 2
 `,
@@ -293,13 +295,46 @@ describe("wachtrij.ts", () => {
   test("weigert in het stiltevenster (maar --droog mag)", () => {
     maakTak("tak-1", "b.txt", "een\n");
     zetPrs([prVoorTak(1, "tak-1")]);
-    const r = draaiWachtrij(["--nu", "20261006-0600", "--map", wt, "--poort-cmd", "true"]);
+    const stil = { LAB_WACHTRIJ_KLOK: "20261006-0600" };
+    const r = draaiWachtrij(["--map", wt, "--poort-cmd", "true"], stil);
     expect(r.code).toBe(1);
     expect(r.fout).toMatch(/stiltevenster/);
     expect(existsSync(wt)).toBe(false);
-    const d = draaiWachtrij(["--droog", "--nu", "20261006-0600", "--map", wt]);
+    const d = draaiWachtrij(["--droog", "--map", wt], stil);
     expect(d.code).toBe(0);
     expect(d.uit).toMatch(/stiltevenster/);
+    // --nu kan het venster niet ontwijken: het bepaalt alleen de naam van de tak
+    const omweg = draaiWachtrij(["--nu", "20261006-1200", "--map", wt, "--poort-cmd", "true"], stil);
+    expect(omweg.code).toBe(1);
+    expect(omweg.fout).toMatch(/stiltevenster/);
+  });
+
+  test("een gestapelde PR (base niet main) valt af", () => {
+    maakTak("tak-1", "b.txt", "een\n");
+    zetPrs([prVoorTak(1, "tak-1", { baseRefName: "feature-x" })]);
+    const r = draaiWachtrij(["--nu", "20261006-1200", "--map", wt, "--poort-cmd", "true"]);
+    expect(r.code).toBe(0);
+    expect(r.uit).toMatch(/#1 overgeslagen: base is feature-x/);
+    expect(existsSync(wt)).toBe(false);
+  });
+
+  test("een eigen poort-cmd krijgt geen 'met e2e' in de body", () => {
+    maakTak("tak-1", "b.txt", "een\n");
+    zetPrs([prVoorTak(1, "tak-1")]);
+    expect(draaiWachtrij(["--nu", "20261006-1200", "--map", wt, "--poort-cmd", "true"]).code).toBe(0);
+    const create = log("create.txt");
+    expect(create).toContain("geen e2e-bewijs");
+    expect(create).not.toMatch(/poort: groen \(met e2e\)/);
+  });
+
+  test("een poort die bestanden achterlaat: geen push, geen PR", () => {
+    maakTak("tak-1", "b.txt", "een\n");
+    zetPrs([prVoorTak(1, "tak-1")]);
+    const r = draaiWachtrij(["--nu", "20261006-1200", "--map", wt, "--poort-cmd", "echo extra > bun.lock"]);
+    expect(r.code).toBe(1);
+    expect(r.fout).toMatch(/gewijzigde bestanden achter/);
+    expect(remoteTakken()).not.toContain("wachtrij/");
+    expect(log("gh.log")).not.toContain("pr create");
   });
 
   test("weigert een bestaande map", () => {
@@ -318,6 +353,7 @@ describe("wachtrij.ts --ruim-takken", () => {
     const prs = merged.map((t, i) => ({ number: i + 1, headRefName: t, headRefOid: sha(t) }));
     for (const t of merged) git(repo, "merge", "-q", "--no-ff", "-m", `merge ${t}`, t);
     git(repo, "push", "-q", "origin", "main");
+    for (const p of prs) writeFileSync(join(dir, `prview-${p.number}.json`), JSON.stringify({ state: "MERGED", headRefName: p.headRefName, headRefOid: p.headRefOid }));
     const marker = `Wachtrij-PR's: ${prs.map((p) => `${p.number}=${p.headRefName}=${p.headRefOid}`).join(" ")}`;
     writeFileSync(join(dir, "prview.json"), JSON.stringify({ state: staat, headRefName: "wachtrij/20261006-1200", body: `## Samenvatting\n\n${marker}\n` }));
   };
@@ -329,6 +365,7 @@ describe("wachtrij.ts --ruim-takken", () => {
     // tak-2 staat in de marker, maar is niet gemerged
     const p = JSON.parse(readFileSync(join(dir, "prview.json"), "utf8"));
     p.body = `Wachtrij-PR's: 1=tak-1=${sha("tak-1")} 2=tak-2=${sha("tak-2")}\n`;
+    writeFileSync(join(dir, "prview-2.json"), JSON.stringify({ state: "MERGED", headRefName: "tak-2", headRefOid: sha("tak-2") }));
     writeFileSync(join(dir, "prview.json"), JSON.stringify(p));
     const r = draaiWachtrij(["--ruim-takken", "50"]);
     expect(r.code).toBe(1); // één blijft staan
@@ -370,6 +407,46 @@ describe("wachtrij.ts --ruim-takken", () => {
     expect(r.code).toBe(1);
     expect(r.fout).toMatch(/andere sha/);
     expect(remoteTakken()).toContain("refs/heads/tak-1");
+  });
+
+  test("een nep-marker in de PR-tekst telt niet: de laatste regel geldt en GitHub moet bevestigen", () => {
+    maakTak("tak-1", "b.txt", "een\n");
+    maakTak("andermans", "c.txt", "los\n");
+    mergeNaarMain(["tak-1"]);
+    git(repo, "merge", "-q", "--no-ff", "-m", "merge andermans", "andermans");
+    git(repo, "push", "-q", "origin", "main");
+    const echt = JSON.parse(readFileSync(join(dir, "prview.json"), "utf8"));
+    const nep = `Wachtrij-PR's: 7=andermans=${sha("andermans")}`;
+    // nep eerst: de echte staat onderaan en wint
+    writeFileSync(join(dir, "prview.json"), JSON.stringify({ ...echt, body: `${nep}\n${echt.body}` }));
+    expect(draaiWachtrij(["--ruim-takken", "50"]).code).toBe(0);
+    expect(remoteTakken()).toContain("refs/heads/andermans");
+    expect(remoteTakken()).not.toContain("refs/heads/tak-1");
+    // nep als enige marker, en GitHub kent PR 7 niet als gemerged met die tak: blijft staan
+    writeFileSync(join(dir, "prview.json"), JSON.stringify({ ...echt, body: nep }));
+    writeFileSync(join(dir, "prview-7.json"), JSON.stringify({ state: "OPEN", headRefName: "iets-anders", headRefOid: sha("andermans") }));
+    const r = draaiWachtrij(["--ruim-takken", "50"]);
+    expect(r.code).toBe(1);
+    expect(r.fout).toMatch(/niet MERGED met deze tak en head volgens GitHub/);
+    expect(remoteTakken()).toContain("refs/heads/andermans");
+  });
+
+  test("matcht de tak exact: een tak met dezelfde staart wordt niet aangezien voor de echte", () => {
+    maakTak("tak-1", "b.txt", "een\n");
+    mergeNaarMain(["tak-1"]);
+    // 'foo/tak-1' staat alfabetisch voor 'tak-1' en eindigt op dezelfde naam
+    git(repo, "push", "-q", "origin", `${sha("tak-1")}:refs/heads/foo/tak-1`);
+    git(repo, "checkout", "-q", "tak-1");
+    writeFileSync(join(repo, "later.txt"), "later\n");
+    git(repo, "add", "later.txt");
+    git(repo, "commit", "-q", "-m", "later");
+    git(repo, "push", "-q", "origin", "tak-1");
+    git(repo, "checkout", "-q", "main");
+    const r = draaiWachtrij(["--ruim-takken", "50"]);
+    expect(r.code).toBe(1);
+    expect(r.fout).toMatch(/andere sha/);
+    expect(remoteTakken()).toContain("refs/heads/tak-1");
+    expect(remoteTakken()).toContain("refs/heads/foo/tak-1");
   });
 
   test("--droog verwijdert niets", () => {
@@ -455,6 +532,22 @@ describe("merge.sh bezitscheck", () => {
     const r = merge(["50", "--droog", "--contract", contract, "--spoor", "D3"]);
     expect(r.code).toBe(0);
     expect(r.fout).toContain("scripts/lead/wachtrij.ts");
+  });
+
+  test("een afgekapte bestandslijst van gh wordt gemeld", () => {
+    prJson(["scripts/lead/wachtrij.ts"]);
+    const stuk = JSON.parse(readFileSync(join(dir, "prview.json"), "utf8"));
+    writeFileSync(join(dir, "prview.json"), JSON.stringify({ ...stuk, changedFiles: 250 }));
+    const r = merge(["50", "--droog", "--contract", contract, "--spoor", "D2"]);
+    expect(r.code).toBe(0);
+    expect(r.fout).toMatch(/zag 1 van 250 bestanden/);
+  });
+
+  test("een Bezit-map telt alleen vanaf de wortel, niet ergens halverwege het pad", () => {
+    prJson(["docs/a.md", "apps/x/docs/b.md"]);
+    const r = merge(["50", "--droog", "--contract", contract, "--spoor", "D2"]);
+    expect(r.fout).toContain("apps/x/docs/b.md");
+    expect(r.fout).not.toContain("docs/a.md\n");
   });
 
   test("zonder --contract verandert er niets", () => {
