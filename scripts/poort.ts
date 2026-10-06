@@ -400,7 +400,12 @@ async function stapE2e(ctx: Context): Promise<Resultaat> {
   }
   // Maximaal POORT_E2E_SLOTS (standaard 2) volledige e2e-runs tegelijk op de machine;
   // binnen een run blijft turbo op --concurrency=1.
-  const slot = await neemSlot(echteOmgeving(process.cwd()), aantalSlots());
+  let slot: Awaited<ReturnType<typeof neemSlot>>;
+  try {
+    slot = await neemSlot(echteOmgeving(process.cwd()), aantalSlots());
+  } catch (e) {
+    return { status: "FOUT", detail: (e as Error).message };
+  }
   const vrij = () => slot.vrij();
   process.on("exit", vrij);
   try {
