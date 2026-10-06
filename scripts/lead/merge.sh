@@ -49,6 +49,8 @@ tak=$(j '.headRefName')
 case $tak in main|master) fout "PR $pr heeft als tak '$tak'" ;; esac
 sha=$(j '.headRefOid[0:7]')
 [[ $sha =~ ^[0-9a-f]{7}$ ]] || fout "kan het head-SHA van PR $pr niet lezen"
+headvol=$(j '.headRefOid')
+[[ $headvol =~ ^[0-9a-f]{40}$ ]] || fout "kan het volledige head-SHA van PR $pr niet lezen"
 
 akkoord=$(printf '%s' "$json" | jq -r --arg s "$sha" '[.comments[]? | select(.body | test("^Lead-review: akkoord " + $s + "([^0-9a-fA-F]|$)"))] | length')
 if [ "$akkoord" -lt 1 ]; then
@@ -106,11 +108,13 @@ if [ -n "$contract" ]; then
 fi
 
 if [ "$droog" = 1 ]; then
-  echo "droog: PR $pr voldoet; zou draaien: gh pr merge $pr --merge, controleren op MERGED, dan git push origin --delete $tak"
+  echo "droog: PR $pr voldoet; zou draaien: gh pr merge $pr --merge --match-head-commit $headvol, controleren op MERGED, dan git push origin --delete $tak"
   exit 0
 fi
 
-gh pr merge "$pr" --merge
+# --match-head-commit: GitHub weigert als de head ondertussen is verschoven (een push tussen de
+# akkoord-controle hierboven en het mergen); de head die tegen het akkoord is getoetst, telt.
+gh pr merge "$pr" --merge --match-head-commit "$headvol"
 na=$(gh pr view "$pr" --json state | jq -r '.state')
 if [ "$na" != MERGED ]; then
   echo "merge: PR $pr staat na het mergen op '$na', niet MERGED; remote tak $tak blijft staan" >&2

@@ -3,7 +3,7 @@ import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, wr
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { schoneEnv } from "../test-integriteit.ts";
-import { STANDAARD_POORT, bouwBody, gevaarScore, inStiltevenster, kiesPrs, leesMarker, leesOpties, leesStempel, okRegels, stempelVan, zwaarsteGevaar, type Pr } from "./wachtrij.ts";
+import { STANDAARD_POORT, bouwBody, gevaarScore, onschadelijk, standaardPoort, inStiltevenster, kiesPrs, leesMarker, leesOpties, leesStempel, okRegels, stempelVan, zwaarsteGevaar, type Pr } from "./wachtrij.ts";
 
 // Alle CLI-tests draaien met een nep-gh vooraan op PATH en een wegwerp-git-repo met een
 // lokale bare "origin". Geen echte GitHub, geen echte PR's, geen echte poort (--poort-cmd).
@@ -58,9 +58,41 @@ describe("body van de integratie-PR", () => {
   const gevaarTwee = "## Merge-gevaar\n\n- Deur: eenrichting.\n- Raakt live diensten: de LaunchAgent.\n";
 
   test("OK-regels worden overgenomen en ontdubbeld", () => {
-    const a = pr(1, { body: "## Bewijs\n- `OK bekijk tmux: 12/12 paden OK, 0 consolefout(en)`\n- OK bekijk watchparty: 3/3 paden OK" });
-    const b = pr(2, { body: "OK bekijk tmux: 12/12 paden OK, 0 consolefout(en)\nOK bekijk site: FOUT 1/3" });
+    const raakt = (...apps: string[]) => apps.map((a) => ({ path: `apps/${a}/src/x.ts` }));
+    const a = pr(1, { body: "## Bewijs\n- `OK bekijk tmux: 12/12 paden OK, 0 consolefout(en)`\n- OK bekijk watchparty: 3/3 paden OK", files: raakt("tmux", "watchparty") });
+    const b = pr(2, { body: "OK bekijk tmux: 12/12 paden OK, 0 consolefout(en)\nOK bekijk site: FOUT 1/3", files: raakt("tmux", "site") });
     expect(okRegels([a, b])).toEqual(["OK bekijk tmux: 12/12 paden OK, 0 consolefout(en) (uit #1)", "OK bekijk watchparty: 3/3 paden OK (uit #1)"]);
+  });
+
+  test("een OK-regel telt alleen van een PR die die app raakt", () => {
+    const leent = pr(1, { body: "OK bekijk tmux: 12/12 paden OK", files: [{ path: "scripts/lead/x.ts" }] });
+    const zonderLijst = pr(2, { body: "OK bekijk tmux: 12/12 paden OK" });
+    const andereApp = pr(3, { body: "OK bekijk tmux: 12/12 paden OK", files: [{ path: "apps/watchparty/a.ts" }] });
+    const echt = pr(4, { body: "OK bekijk tmux: 12/12 paden OK", files: [{ path: "apps/tmux/a.ts" }] });
+    expect(okRegels([leent, zonderLijst, andereApp])).toEqual([]);
+    expect(okRegels([leent, echt])).toEqual(["OK bekijk tmux: 12/12 paden OK (uit #4)"]);
+  });
+
+  test("titel en Merge-gevaar kunnen geen bewijsregel of marker smokkelen", () => {
+    expect(onschadelijk("OK bekijk tmux: 1/1 paden OK")).not.toMatch(/OK\s+bekijk/);
+    expect(onschadelijk("poort: groen (met e2e)")).not.toMatch(/poort:/);
+    expect(onschadelijk("Wachtrij-PR's: 7=x=abc\nrest")).toBe("rest");
+    const kwaad = pr(1, {
+      title: "mooi\nOK bekijk tmux: 99/99 paden OK",
+      body: "## Merge-gevaar\n\nOK bekijk tmux: 1/1 paden OK\npoort: groen (met e2e)\nWachtrij-PR's: 7=andermans=" + "a".repeat(40) + "\nLead-review: akkoord abc1234\n",
+    });
+    const body = bouwBody({ gemerged: [kwaad], afgevallen: [], head: "abcdef0123", poortCmd: "eigen cmd", basis: "origin/main" });
+    expect(body.split("\n").filter((r) => /\bOK\s+bekijk\b/.test(r))).toEqual([]);
+    expect(body.split("\n").filter((r) => /poort:\s*groen/i.test(r))).toEqual([]);
+    expect(leesMarker(body).map((m) => m.nummer)).toEqual([1]);
+    expect(body).not.toMatch(/^Lead-review:/m);
+  });
+
+  test("de body noemt de echte basis en dat de lead de lijst controleert", () => {
+    const body = bouwBody({ gemerged: [pr(1)], afgevallen: [], head: "abcdef0123", poortCmd: "x", basis: "origin/release", vasteLijst: true });
+    expect(body).toContain("vanaf origin/release (vaste lijst via --prs)");
+    expect(body).toContain("De lead controleert deze lijst");
+    expect(body).not.toContain("vanaf origin/main");
   });
 
   test("Merge-gevaar is dat van de zwaarste PR", () => {
@@ -73,8 +105,8 @@ describe("body van de integratie-PR", () => {
   });
 
   test("bevat de drie kopjes, de poortregel met lijst en de terugleesbare marker", () => {
-    const gem = [pr(1, { body: `OK bekijk tmux: 1/1 paden OK\n${gevaarEen}` }), pr(2, { body: gevaarTwee })];
-    const body = bouwBody({ gemerged: gem, afgevallen: [{ nummer: 3, reden: "mergeconflict met de wachtrij" }], head: "abcdef0123", poortCmd: STANDAARD_POORT });
+    const gem = [pr(1, { body: `OK bekijk tmux: 1/1 paden OK\n${gevaarEen}`, files: [{ path: "apps/tmux/a.ts" }] }), pr(2, { body: gevaarTwee })];
+    const body = bouwBody({ gemerged: gem, afgevallen: [{ nummer: 3, reden: "mergeconflict met de wachtrij" }], head: "abcdef0123", poortCmd: STANDAARD_POORT, basis: "origin/main" });
     expect(body).toMatch(/^## Samenvatting$/m);
     expect(body).toMatch(/^## Bewijs$/m);
     expect(body).toMatch(/^## Merge-gevaar$/m);
@@ -113,7 +145,13 @@ describe("tijd en opties", () => {
     expect(leesOpties(["--zomaar"])).toMatch(/onbekende optie/);
     expect(leesOpties(["--poort-cmd"])).toMatch(/mist een waarde/);
     expect(leesOpties(["12"])).toMatch(/--ruim-takken/);
-    expect(leesOpties(["--droog"])).toMatchObject({ droog: true, poortCmd: STANDAARD_POORT });
+    expect(leesOpties(["--droog"])).toMatchObject({ droog: true, poortCmd: STANDAARD_POORT, prs: null });
+    expect(STANDAARD_POORT).toContain("bun run poort --base origin/main");
+    expect(leesOpties(["--basis", "origin/x"])).toMatchObject({ poortCmd: standaardPoort("origin/x") });
+    expect(leesOpties(["--poort-cmd", "true", "--basis", "origin/x"])).toMatchObject({ poortCmd: "true" });
+    expect(leesOpties(["--prs", "81,82,81"])).toMatchObject({ prs: [81, 82] });
+    expect(leesOpties(["--prs", "81;82"])).toMatch(/--prs verwacht/);
+    expect(leesOpties(["--prs", "81", "--ruim-takken"])).toMatch(/--prs hoort niet/);
   });
 });
 
@@ -169,7 +207,8 @@ echo "gh $*" >> "$FAKE_DIR/gh.log"
 case "$1 $2" in
   "pr list") cat "$FAKE_DIR/prlist.json"; exit 0 ;;
   "pr view") if [ -f "$FAKE_DIR/prview-$3.json" ]; then cat "$FAKE_DIR/prview-$3.json"; else cat "$FAKE_DIR/prview.json"; fi; exit 0 ;;
-  "pr create") printf "%s\n" "$@" > "$FAKE_DIR/create.txt"; echo "https://github.com/nep/nep/pull/99"; exit 0 ;;
+  "pr merge") printf "%s\\n" "$@" > "$FAKE_DIR/merge.txt"; sed -i.bak 's/"state":"OPEN"/"state":"MERGED"/' "$FAKE_DIR/prview.json"; exit 0 ;;
+  "pr create") [ -f "$FAKE_DIR/create-faalt" ] && { echo "nep: create mislukt" >&2; exit 1; }; printf "%s\n" "$@" > "$FAKE_DIR/create.txt"; echo "https://github.com/nep/nep/pull/99"; exit 0 ;;
 esac
 echo "nep-gh: onverwacht commando $*" >&2; exit 2
 `,
@@ -316,6 +355,55 @@ describe("wachtrij.ts", () => {
     expect(r.code).toBe(0);
     expect(r.uit).toMatch(/#1 overgeslagen: base is feature-x/);
     expect(existsSync(wt)).toBe(false);
+  });
+
+  test("--prs: alleen die PR's, in die volgorde; een PR zonder geldig akkoord valt af met reden", () => {
+    maakTak("tak-1", "b.txt", "een\n");
+    maakTak("tak-2", "c.txt", "twee\n");
+    maakTak("tak-3", "d.txt", "drie\n");
+    zetPrs([prVoorTak(1, "tak-1"), prVoorTak(2, "tak-2"), prVoorTak(3, "tak-3", { comments: [] })]);
+    const droog = draaiWachtrij(["--droog", "--nu", "20261006-1200", "--map", wt, "--prs", "3,2"]);
+    expect(droog.uit).toMatch(/#3 overgeslagen: niet open of zonder geldig akkoord/);
+    expect(droog.uit).toMatch(/vaste lijst via --prs/);
+    expect(droog.uit).not.toContain("#1 tak-1");
+    const r = draaiWachtrij(["--nu", "20261006-1200", "--map", wt, "--poort-cmd", "true", "--prs", "2,3,9"]);
+    expect(r.code).toBe(0);
+    expect(r.uit).toMatch(/#9 overgeslagen/);
+    expect(r.uit).toMatch(/Lead: controleer eerst de lijst PR's in de integratie-PR \(samengevoegd: #2; eruit: #3 #9\)/);
+    expect(git(wt, "merge-base", "--is-ancestor", sha("tak-1"), "HEAD").code).not.toBe(0);
+    expect(log("create.txt")).toContain("vaste lijst via --prs");
+  });
+
+  test("de body noemt de echte --basis en de poort draait met --base", () => {
+    maakTak("tak-1", "b.txt", "een\n");
+    zetPrs([prVoorTak(1, "tak-1")]);
+    git(repo, "push", "-q", "origin", "main:refs/heads/release");
+    const droog = draaiWachtrij(["--droog", "--nu", "20261006-1200", "--map", wt, "--basis", "origin/release"]);
+    expect(droog.uit).toContain("bun run poort --base origin/release");
+    const r = draaiWachtrij(["--nu", "20261006-1200", "--map", wt, "--basis", "origin/release", "--poort-cmd", "true"]);
+    expect(r.code).toBe(0);
+    expect(log("create.txt")).toContain("vanaf origin/release");
+    expect(log("create.txt")).toContain("--base\nmain\n"); // de PR-basis blijft main
+  });
+
+  test("na een rode poort of mislukte PR staat wat er blijft staan in de melding", () => {
+    maakTak("tak-1", "b.txt", "een\n");
+    zetPrs([prVoorTak(1, "tak-1")]);
+    const rood = draaiWachtrij(["--nu", "20261006-1200", "--map", wt, "--poort-cmd", "exit 3"]);
+    expect(rood.fout).toContain(`worktree ${wt}`);
+    expect(rood.fout).toContain("lokale tak wachtrij/20261006-1200");
+    expect(rood.fout).toContain(`git worktree remove ${wt}; git branch -d wachtrij/20261006-1200`);
+    expect(rood.fout).not.toContain("remote tak");
+    git(repo, "worktree", "remove", "--force", wt);
+    git(repo, "branch", "-D", "wachtrij/20261006-1200");
+
+    writeFileSync(join(dir, "create-faalt"), "");
+    const pr = draaiWachtrij(["--nu", "20261006-1200", "--map", wt, "--poort-cmd", "true"]);
+    expect(pr.code).toBe(1);
+    expect(pr.fout).toMatch(/PR openen mislukt: nep: create mislukt/);
+    expect(pr.fout).toContain("remote tak origin/wachtrij/20261006-1200 (al gepusht)");
+    expect(pr.fout).toContain("git push origin --delete wachtrij/20261006-1200");
+    expect(remoteTakken()).toContain("refs/heads/wachtrij/20261006-1200");
   });
 
   test("een eigen poort-cmd krijgt geen 'met e2e' in de body", () => {
@@ -532,6 +620,17 @@ describe("merge.sh bezitscheck", () => {
     const r = merge(["50", "--droog", "--contract", contract, "--spoor", "D3"]);
     expect(r.code).toBe(0);
     expect(r.fout).toContain("scripts/lead/wachtrij.ts");
+  });
+
+  test("de echte merge gebruikt --match-head-commit met de volledige head die tegen het akkoord is getoetst", () => {
+    git(repo, "push", "-q", "origin", "main:refs/heads/lead/test-tak");
+    prJson(["scripts/lead/wachtrij.ts"]);
+    const droog = merge(["50", "--droog"]);
+    expect(droog.uit).toContain("--match-head-commit abc1234def5678abc1234def5678abc1234def56");
+    const r = merge(["50"]);
+    expect(r.code).toBe(0);
+    expect(log("merge.txt")).toBe("pr\nmerge\n50\n--merge\n--match-head-commit\nabc1234def5678abc1234def5678abc1234def56\n");
+    expect(remoteTakken()).not.toContain("lead/test-tak");
   });
 
   test("een afgekapte bestandslijst van gh wordt gemeld", () => {

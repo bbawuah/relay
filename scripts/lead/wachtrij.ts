@@ -14,6 +14,7 @@ export type Pr = {
   headRefName: string;
   headRefOid: string;
   baseRefName?: string;
+  files?: { path: string }[];
   isCrossRepository: boolean;
   isDraft?: boolean;
   comments: { body: string }[];
@@ -38,13 +39,34 @@ export function kiesPrs(prs: Pr[]): { gekozen: Pr[]; afgevallen: Afgevallen[] } 
   return { gekozen, afgevallen };
 }
 
-/** Alle `OK bekijk <app>: …`-regels uit de bodies, ontdubbeld, met het PR-nummer erbij. */
+/**
+ * Tekst van een onderliggende PR (titel, Merge-gevaar) onschadelijk maken voor in de body van de
+ * integratie-PR: geen regel die bewijs-pr voor een OK-bekijk- of poortregel kan aanzien en geen
+ * marker-regel. De tekst blijft leesbaar ("OK-bekijk", "poort -").
+ */
+export function onschadelijk(t: string): string {
+  return t
+    .split("\n")
+    .filter((r) => !r.trim().startsWith(MARKER))
+    .join("\n")
+    .replace(/\bOK\s+bekijk\b/gi, "OK-bekijk")
+    .replace(/\bpoort\s*:/gi, "poort -")
+    .replace(/Wachtrij-PR's\s*:/gi, "Wachtrij-PR's -")
+    .replace(/^Lead-review\s*:/gim, "Lead-review -");
+}
+
+/**
+ * `OK bekijk <app>: …`-regels uit de bodies, ontdubbeld, met het PR-nummer erbij. Een regel telt alleen
+ * van een PR die die app echt raakt (een bestand onder apps/<app>/); anders kan een PR bewijs lenen.
+ */
 export function okRegels(prs: Pr[]): string[] {
   const uit: string[] = [];
   for (const pr of prs) {
     for (const r of pr.body.split("\n")) {
-      const m = r.match(/OK\s+bekijk\s+[^\n`]+/);
-      if (m && !/\bFOUT\b/.test(m[0]) && !uit.some((x) => x.startsWith(m[0].trim()))) uit.push(`${m[0].trim()} (uit #${pr.number})`);
+      const m = r.match(/OK\s+bekijk\s+([a-z0-9-]+)\b[^\n`]*/);
+      if (!m || /\bFOUT\b/.test(m[0])) continue;
+      if (!(pr.files ?? []).some((f) => f.path.startsWith(`apps/${m[1]}/`))) continue;
+      if (!uit.some((x) => x.startsWith(m[0].trim()))) uit.push(`${m[0].trim()} (uit #${pr.number})`);
     }
   }
   return uit;
@@ -97,26 +119,23 @@ export function leesMarker(body: string): { nummer: number; tak: string; sha: st
     .filter((d) => /^\d+$/.test(String(d.nummer)) && /^[A-Za-z0-9][A-Za-z0-9._/-]*$/.test(d.tak ?? "") && /^[0-9a-f]{40}$/.test(d.sha ?? ""));
 }
 
-/** Tekst van een onderliggende PR zonder regels die op onze marker lijken. */
-const zonderMarker = (t: string) => t.split("\n").filter((r) => !r.trim().startsWith(MARKER)).join("\n");
-
-export function bouwBody(opts: { gemerged: Pr[]; afgevallen: Afgevallen[]; head: string; poortCmd: string }): string {
+export function bouwBody(opts: { gemerged: Pr[]; afgevallen: Afgevallen[]; head: string; poortCmd: string; basis: string; vasteLijst?: boolean }): string {
   const { gemerged, afgevallen, head } = opts;
-  const lijst = gemerged.map((p) => `- #${p.number} ${p.title} (${p.headRefName}, ${p.headRefOid.slice(0, 7)})`).join("\n");
+  const lijst = gemerged.map((p) => `- #${p.number} ${onschadelijk(p.title).replace(/\n/g, " ")} (${p.headRefName}, ${p.headRefOid.slice(0, 7)})`).join("\n");
   const ok = okRegels(gemerged);
   const gevaar = zwaarsteGevaar(gemerged);
   const eruit = afgevallen.length ? `\n\nNiet meegenomen:\n${afgevallen.map((a) => `- #${a.nummer}: ${a.reden}`).join("\n")}` : "";
   return [
     "## Samenvatting",
     "",
-    `Integratie-PR van de merge-wachtrij: ${gemerged.length} onderliggende PR's, in volgorde samengevoegd vanaf origin/main. Na het mergen van deze ene PR sluit GitHub de onderliggende PR's als gemerged; hun remote takken blijven staan tot \`wachtrij.ts --ruim-takken\`.`,
+    `Integratie-PR van de merge-wachtrij: ${gemerged.length} onderliggende PR's, in volgorde samengevoegd vanaf ${opts.basis}${opts.vasteLijst ? " (vaste lijst via --prs)" : ""}. De lead controleert deze lijst voor het akkoord. Na het mergen van deze ene PR sluit GitHub de onderliggende PR's als gemerged; hun remote takken blijven staan tot \`wachtrij.ts --ruim-takken\`.`,
     "",
     lijst + eruit,
     "",
     "## Bewijs",
     "",
     // "met e2e" alleen bij de standaardpoort; een eigen commando bewijst dat niet (bewijs-pr leest alleen de regel)
-    opts.poortCmd === STANDAARD_POORT
+    opts.poortCmd === standaardPoort(opts.basis)
       ? `- poort: groen (met e2e) op ${head.slice(0, 7)} (\`${opts.poortCmd}\`): ${gemerged.map((p) => `#${p.number}`).join(", ")}`
       : `- poort: eigen commando \`${opts.poortCmd}\` op ${head.slice(0, 7)}, geen e2e-bewijs: ${gemerged.map((p) => `#${p.number}`).join(", ")}`,
     ...(ok.length ? ok.map((r) => `- ${r}`) : ["- Geen app-wijziging met bekijk-regel in de onderliggende PR's."]),
@@ -124,7 +143,7 @@ export function bouwBody(opts: { gemerged: Pr[]; afgevallen: Afgevallen[]; head:
     "## Merge-gevaar",
     "",
     gevaar
-      ? `Zwaarste van de onderliggende PR's: #${gevaar.nummer}.\n\n${zonderMarker(gevaar.tekst)}`
+      ? `Zwaarste van de onderliggende PR's: #${gevaar.nummer}.\n\n${onschadelijk(gevaar.tekst)}`
       : "Geen Merge-gevaar-sectie gevonden in de onderliggende PR's; lees ze zelf na.",
     "",
     markerRegel(gemerged),
@@ -162,12 +181,17 @@ type Opties = {
   map: string | null;
   ruim: boolean;
   pr: string | null;
+  /** Vaste lijst PR-nummers (--prs), in deze volgorde; null = alles met een geldig akkoord. */
+  prs: number[] | null;
 };
 
-export const STANDAARD_POORT = "bun install --frozen-lockfile && bun run poort";
+/** De volledige poort met e2e, tegen dezelfde basis als de wachtrij. */
+export const standaardPoort = (basis: string) => `bun install --frozen-lockfile && bun run poort --base ${basis}`;
+export const STANDAARD_POORT = standaardPoort("origin/main");
 
 export function leesOpties(args: string[]): Opties | string {
-  const o: Opties = { droog: false, poortCmd: STANDAARD_POORT, nu: null, basis: "origin/main", map: null, ruim: false, pr: null };
+  const o: Opties = { droog: false, poortCmd: "", nu: null, basis: "origin/main", map: null, ruim: false, pr: null, prs: null };
+  let eigenPoort = false;
   for (let i = 0; i < args.length; i++) {
     const a = args[i];
     const waarde = () => {
@@ -177,7 +201,12 @@ export function leesOpties(args: string[]): Opties | string {
     };
     try {
       if (a === "--droog") o.droog = true;
-      else if (a === "--poort-cmd") o.poortCmd = waarde();
+      else if (a === "--poort-cmd") (o.poortCmd = waarde()), (eigenPoort = true);
+      else if (a === "--prs") {
+        const v = waarde();
+        if (!/^\d+(,\d+)*$/.test(v)) return `--prs verwacht nummers met komma's, bijvoorbeeld 81,82; kreeg ${v}`;
+        o.prs = [...new Set(v.split(",").map(Number))];
+      }
       else if (a === "--nu") o.nu = waarde();
       else if (a === "--basis") o.basis = waarde();
       else if (a === "--map") o.map = waarde();
@@ -188,6 +217,8 @@ export function leesOpties(args: string[]): Opties | string {
       return (e as Error).message;
     }
   }
+  if (!eigenPoort) o.poortCmd = standaardPoort(o.basis);
+  if (o.prs && o.ruim) return "--prs hoort niet bij --ruim-takken";
   if (o.nu && !leesStempel(o.nu)) return `--nu moet jjjjmmdd-hhmm zijn, kreeg ${o.nu}`;
   if (o.pr && !o.ruim) return "een PR-nummer hoort bij --ruim-takken";
   return o;
@@ -275,9 +306,18 @@ function hoofd(args: string[]): never {
 
   const lijst = ghJson<Pr[]>([
     "pr", "list", "--state", "open", "--limit", "100",
-    "--json", "number,title,body,headRefName,headRefOid,baseRefName,isCrossRepository,isDraft,comments",
+    "--json", "number,title,body,headRefName,headRefOid,baseRefName,isCrossRepository,isDraft,comments,files",
   ]);
-  const { gekozen, afgevallen } = kiesPrs(lijst);
+  const kies = kiesPrs(lijst);
+  let { gekozen } = kies;
+  let afgevallen = kies.afgevallen;
+  if (o.prs) {
+    // vaste lijst: alleen deze PR's, in deze volgorde; een genoemde PR zonder geldig akkoord valt af met reden
+    const geldig = new Map(gekozen.map((p) => [p.number, p]));
+    const reden = new Map(afgevallen.map((a) => [a.nummer, a.reden]));
+    gekozen = o.prs.flatMap((n) => (geldig.has(n) ? [geldig.get(n)!] : []));
+    afgevallen = o.prs.filter((n) => !geldig.has(n)).map((n) => ({ nummer: n, reden: reden.get(n) ?? "niet open of zonder geldig akkoord" }));
+  }
   for (const a of afgevallen) console.log(`wachtrij: #${a.nummer} overgeslagen: ${a.reden}`);
   if (!gekozen.length) return klaar(0, "wachtrij: leeg, geen open PR met een geldig \"Lead-review: akkoord <sha7>\"");
 
@@ -289,7 +329,7 @@ function hoofd(args: string[]): never {
   const map = o.map ?? path.join(path.dirname(root), `${path.basename(root)}-wachtrij-${stempel}`);
 
   if (o.droog) {
-    console.log(`droog: wachtrij van ${gekozen.length} PR('s):`);
+    console.log(`droog: wachtrij van ${gekozen.length} PR('s)${o.prs ? " (vaste lijst via --prs)" : ""}:`);
     for (const p of gekozen) console.log(`  #${p.number} ${p.headRefName} ${p.headRefOid.slice(0, 7)} ${p.title}`);
     console.log(`droog: zou tak ${tak} maken in ${map} vanaf ${o.basis}, ze in deze volgorde samenvoegen (--no-ff),`);
     console.log(`droog: dan \`${o.poortCmd}\` draaien, de tak pushen en één integratie-PR openen.`);
@@ -333,18 +373,34 @@ function hoofd(args: string[]): never {
   console.log(`wachtrij: poort draaien in ${map}: ${o.poortCmd}`);
   const poort = Bun.spawnSync(["sh", "-c", o.poortCmd], { cwd: map, env: schoneEnv(), stdout: "inherit", stderr: "inherit" });
   if (poort.exitCode !== 0) {
-    return klaar(1, `wachtrij: poort rood (exit ${poort.exitCode}); geen push, geen PR. Worktree ${map} en tak ${tak} blijven staan om te kijken`);
+    return klaar(1, `wachtrij: poort rood (exit ${poort.exitCode}); geen push, geen PR.${resten(map, tak, false)}`);
   }
   const vies = run(["git", "status", "--porcelain"], map).uit;
-  if (vies) return klaar(1, `wachtrij: de poort liet gewijzigde bestanden achter (de gepushte commit is dan niet wat de poort zag); geen push, geen PR:\n${vies}`);
+  if (vies) return klaar(1, `wachtrij: de poort liet gewijzigde bestanden achter (de gepushte commit is dan niet wat de poort zag); geen push, geen PR:\n${vies}${resten(map, tak, false)}`);
   const head = run(["git", "rev-parse", "HEAD"], map).uit;
   const push = run(["git", "push", "-u", "origin", tak], map);
-  if (push.code !== 0) return klaar(1, `wachtrij: push mislukt: ${push.fout}`);
-  const body = bouwBody({ gemerged, afgevallen: eruit, head, poortCmd: o.poortCmd });
+  if (push.code !== 0) return klaar(1, `wachtrij: push mislukt: ${push.fout}${resten(map, tak, false)}`);
+  const body = bouwBody({ gemerged, afgevallen: eruit, head, poortCmd: o.poortCmd, basis: o.basis, vasteLijst: !!o.prs });
   const titel = `wachtrij: ${gemerged.map((p) => `#${p.number}`).join(" ")}`;
   const pr = run(["gh", "pr", "create", "--base", "main", "--head", tak, "--title", titel, "--body", body], map);
-  if (pr.code !== 0) return klaar(1, `wachtrij: PR openen mislukt: ${pr.fout}`);
-  return klaar(0, `wachtrij: integratie-PR geopend: ${pr.uit}\nGeef daarop "Lead-review: akkoord ${head.slice(0, 7)}" en draai merge.sh. Opruimen na MERGED: worktree ${map}, daarna \`bun scripts/lead/wachtrij.ts --ruim-takken\`.`);
+  if (pr.code !== 0) return klaar(1, `wachtrij: PR openen mislukt: ${pr.fout}${resten(map, tak, true)}`);
+  return klaar(
+    0,
+    `wachtrij: integratie-PR geopend: ${pr.uit}\nLead: controleer eerst de lijst PR's in de integratie-PR (samengevoegd: ${gemerged.map((p) => `#${p.number}`).join(" ")}${eruit.length ? `; eruit: ${eruit.map((a) => `#${a.nummer}`).join(" ")}` : ""}).\nGeef daarna "Lead-review: akkoord ${head.slice(0, 7)}" en draai merge.sh. Opruimen na MERGED: worktree ${map}, daarna \`bun scripts/lead/wachtrij.ts --ruim-takken\`.`,
+  );
+}
+
+/** Wat er na een mislukte stap is blijven staan en hoe je het opruimt (zonder --force). */
+function resten(map: string, tak: string, gepusht: boolean): string {
+  return [
+    "",
+    "Blijft staan:",
+    `- worktree ${map}`,
+    `- lokale tak ${tak}`,
+    ...(gepusht ? [`- remote tak origin/${tak} (al gepusht)`] : []),
+    `Opruimen: git worktree remove ${map}; git branch -d ${tak}${gepusht ? `; git push origin --delete ${tak}` : ""}`,
+    ...(gepusht ? [`Of de PR alsnog openen: gh pr create --base main --head ${tak}`] : []),
+  ].join("\n");
 }
 
 if (import.meta.main) hoofd(process.argv.slice(2));

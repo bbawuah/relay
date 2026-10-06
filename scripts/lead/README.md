@@ -46,7 +46,7 @@ Weigert met exit 1 en een duidelijke reden als:
 - de verplichte check `poort` ontbreekt of niet groen is (de nieuwste run op starttijd telt; andere checks niet);
 - `mergeable` niet `MERGEABLE` is, of de tak achterloopt op main (`BEHIND`, de ruleset is strict), of `mergeStateStatus` iets anders is dan CLEAN of UNSTABLE (allowlist). Bij UNSTABLE volgt een waarschuwing.
 
-Zijn de voorwaarden in orde, dan: `gh pr merge <pr> --merge`, daarna controleren dat `state` `MERGED` is, en pas dan `git push origin --delete <tak>`. Staat de PR niet op MERGED, dan blijft de remote tak staan en eindigt het script met exit 1.
+Zijn de voorwaarden in orde, dan: de merge met `--merge --match-head-commit <volledige head-sha>` (de head die net tegen het akkoord is getoetst; verschuift de head tussen controle en merge, dan weigert GitHub), daarna controleren dat `state` `MERGED` is, en pas dan `git push origin --delete <tak>`. Staat de PR niet op MERGED, dan blijft de remote tak staan en eindigt het script met exit 1.
 
 ### Bezitscheck (optioneel)
 
@@ -70,18 +70,19 @@ Stappen:
 
 1. Open PR's met een comment die begint met `Lead-review: akkoord <sha7>`, waarbij de sha7 de huidige head is. Forks, concepten en eerdere `wachtrij/`-PR's tellen niet; een verouderd akkoord wordt gemeld.
 2. Tak `wachtrij/<jjjjmmdd-hhmm>` in een eigen worktree (naast de repo, `<repo>-wachtrij-<stempel>`) vanaf `origin/main`. De PR's worden in volgorde van nummer samengevoegd met `git merge --no-ff` van de echte head (dus geen squash: GitHub ziet de commits en sluit de onderliggende PR's als gemerged). Een conflict of een tak die na het akkoord is verschoven haalt die PR eruit, met een melding.
-3. `bun install --frozen-lockfile && bun run poort` in de worktree: de volledige poort mét e2e. Rood = geen push, geen PR; worktree en tak blijven staan. In het stiltevenster 05:00–07:15 weigert het script (ook `--droog` meldt het).
-4. Push en één integratie-PR met het sjabloon: Samenvatting (de lijst), Bewijs (`poort: groen (met e2e) op <sha7>: #n, #m` pas na de geslaagde run, plus de `OK bekijk <app>`-regels uit de onderliggende PR's) en Merge-gevaar (de sectie van de zwaarste onderliggende PR). Een regel `Wachtrij-PR's: <nr>=<tak>=<sha> …` in de body is voor `--ruim-takken`.
-5. De lead geeft op de integratie-PR `Lead-review: akkoord <sha7>` en draait `merge.sh <pr>`.
+3. `bun install --frozen-lockfile && bun run poort --base <basis>` in de worktree (basis standaard `origin/main`): de volledige poort mét e2e. Rood of een poort die bestanden achterlaat = geen push, geen PR. De melding noemt wat er blijft staan (worktree, lokale tak, na een push ook de remote tak) en hoe je het opruimt; hetzelfde na een mislukte push of PR-aanmaak. In het stiltevenster 05:00–07:15 weigert het script (ook `--droog` meldt het).
+4. Push en één integratie-PR met het sjabloon: Samenvatting (de lijst), Bewijs (`poort: groen (met e2e) op <sha7>: #n, #m` pas na de geslaagde run, plus de `OK bekijk <app>`-regels uit de onderliggende PR's, alleen van een PR die die app echt raakt) en Merge-gevaar (de sectie van de zwaarste onderliggende PR). Titels en Merge-gevaar-tekst uit de onderliggende PR's worden onschadelijk gemaakt (`OK bekijk` wordt `OK-bekijk`, `poort:` wordt `poort -`, marker- en akkoordregels vallen weg), zodat ze geen bewijsregel kunnen nabootsen. Een regel `Wachtrij-PR's: <nr>=<tak>=<sha> …` in de body is voor `--ruim-takken`.
+5. **De lead controleert de lijst PR's in de integratie-PR** (ook bij een vaste lijst met `--prs`: wat samengevoegd is, wat eruit viel en waarom), geeft dan op de integratie-PR `Lead-review: akkoord <sha7>` en draait `merge.sh <pr>`.
 6. `--ruim-takken [<pr>]` (zonder nummer: de laatste gemergede `wachtrij/`-PR): weigert als de PR niet MERGED is, en verwijdert per onderliggende PR de remote tak alleen als de head in `origin/main` staat én de remote tak nog op die sha staat. Standaard worden de takken dus niet verwijderd.
 
 | Optie | Betekenis |
 |---|---|
 | `--droog` | Alleen tonen; ook bij `--ruim-takken`. |
-| `--poort-cmd <cmd>` | Vervangt `bun install --frozen-lockfile && bun run poort` (voor tests). |
-| `--nu <jjjjmmdd-hhmm>` | Vaste tijd voor de tak en het stiltevenster (voor tests). |
+| `--prs <n,n,…>` | Vaste lijst, bijvoorbeeld `--prs 81,82`: alleen deze PR's, in deze volgorde. Een genoemde PR zonder geldig akkoord valt af met reden. De lead controleert de lijst in de integratie-PR. |
+| `--poort-cmd <cmd>` | Vervangt de standaardpoort (voor tests). De body zegt dan "geen e2e-bewijs" in plaats van "met e2e". |
+| `--nu <jjjjmmdd-hhmm>` | Bepaalt alleen de naam van de tak (`wachtrij/<stempel>`). Het stiltevenster gaat altijd op de echte klok. |
 | `--map <pad>` | Pad van de worktree. |
-| `--basis <ref>` | Basis van de wachtrij, standaard `origin/main`. |
+| `--basis <ref>` | Basis van de wachtrij en van de poort (`--base`), standaard `origin/main`; de body noemt deze basis. De integratie-PR zelf gaat altijd naar `main`. |
 
 ## Tests
 
