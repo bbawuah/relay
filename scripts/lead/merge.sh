@@ -18,18 +18,27 @@ for a in "$@"; do
 done
 [[ $pr =~ ^[0-9]+$ ]] || fout "geef een PR-nummer, bijvoorbeeld: merge.sh 71"
 
-json=$(gh pr view "$pr" --json state,headRefName,mergeable,mergeStateStatus,comments,statusCheckRollup) \
+json=$(gh pr view "$pr" --json state,headRefName,headRefOid,isCrossRepository,mergeable,mergeStateStatus,comments,statusCheckRollup) \
   || fout "PR $pr niet op te halen met gh"
 j() { printf '%s' "$json" | jq -r "$1"; }
 
 state=$(j '.state')
 tak=$(j '.headRefName')
 [ "$state" = OPEN ] || fout "PR $pr staat op $state, niet OPEN"
+[ "$(j '.isCrossRepository')" = false ] || fout "PR $pr komt uit een fork (isCrossRepository)"
+case $tak in main|master) fout "PR $pr heeft als tak '$tak'" ;; esac
+sha=$(j '.headRefOid[0:7]')
+[[ $sha =~ ^[0-9a-f]{7}$ ]] || fout "kan het head-SHA van PR $pr niet lezen"
 
-akkoord=$(j '[.comments[]? | select(.body | startswith("Lead-review: akkoord"))] | length')
-[ "$akkoord" -ge 1 ] || fout "PR $pr heeft geen comment die begint met \"Lead-review: akkoord\""
+akkoord=$(printf '%s' "$json" | jq -r --arg s "$sha" '[.comments[]? | select(.body | test("^Lead-review: akkoord " + $s + "([^0-9a-fA-F]|$)"))] | length')
+if [ "$akkoord" -lt 1 ]; then
+  if [ "$(j '[.comments[]? | select(.body | startswith("Lead-review: akkoord"))] | length')" -ge 1 ]; then
+    fout "push na akkoord: geen \"Lead-review: akkoord $sha\" voor de huidige head van PR $pr"
+  fi
+  fout "PR $pr heeft geen comment die begint met \"Lead-review: akkoord $sha\""
+fi
 
-uitslag=$(printf '%s' "$json" | jq -r --arg c "$CHECK" '[.statusCheckRollup[]? | select((.name // .context) == $c)] | if length == 0 then "ontbreekt" else (.[-1] | (.conclusion // .state // "bezig")) end')
+uitslag=$(printf '%s' "$json" | jq -r --arg c "$CHECK" '[.statusCheckRollup[]? | select((.name // .context) == $c)] | if length == 0 then "ontbreekt" else (sort_by(.startedAt // .completedAt // "") | last | (if (.conclusion // "") != "" then .conclusion else (.state // .status // "bezig") end)) end')
 case $uitslag in
   SUCCESS|success) ;;
   ontbreekt) fout "de verplichte check '$CHECK' staat niet op PR $pr" ;;
@@ -40,8 +49,10 @@ mergeable=$(j '.mergeable')
 [ "$mergeable" = MERGEABLE ] || fout "PR $pr is niet mergeable (stand: $mergeable)"
 status=$(j '.mergeStateStatus')
 case $status in
+  CLEAN) ;;
+  UNSTABLE) echo "merge: waarschuwing: mergeStateStatus is UNSTABLE (een niet-verplichte check is niet groen)" >&2 ;;
   BEHIND) fout "tak $tak loopt achter op main: eerst bijwerken (strict)" ;;
-  DIRTY|BLOCKED|DRAFT|UNKNOWN) fout "PR $pr kan nog niet mergen (mergeStateStatus: $status)" ;;
+  *) fout "PR $pr kan nog niet mergen (mergeStateStatus: $status)" ;;
 esac
 
 if [ "$droog" = 1 ]; then

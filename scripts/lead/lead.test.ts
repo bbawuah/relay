@@ -110,9 +110,11 @@ describe("merge.sh", () => {
       JSON.stringify({
         state: "OPEN",
         headRefName: "lead/test-tak",
+        headRefOid: "abc1234def5678abc1234def5678abc1234def56",
+        isCrossRepository: false,
         mergeable: "MERGEABLE",
         mergeStateStatus: "CLEAN",
-        comments: [{ body: "Lead-review: akkoord, ziet er goed uit" }],
+        comments: [{ body: "Lead-review: akkoord abc1234, ziet er goed uit" }],
         statusCheckRollup: [{ name: "poort", conclusion: "SUCCESS", status: "COMPLETED" }],
         ...o,
       }),
@@ -133,6 +135,53 @@ describe("merge.sh", () => {
   test("weigert zonder Lead-review-comment", () => {
     pr({ comments: [{ body: "ziet er goed uit" }, { body: "ik: Lead-review: akkoord (niet aan het begin)" }] });
     geweigerd(draai(MERGE, ["71"]), /Lead-review: akkoord/);
+  });
+
+  test("weigert een akkoord voor een oudere head (push na akkoord)", () => {
+    pr({ comments: [{ body: "Lead-review: akkoord 1111111" }, { body: "Lead-review: akkoord" }] });
+    geweigerd(draai(MERGE, ["71"]), /push na akkoord/);
+  });
+
+  test("weigert een fork-PR en de tak main", () => {
+    pr({ isCrossRepository: true });
+    geweigerd(draai(MERGE, ["71"]), /fork/);
+    pr({ headRefName: "main" });
+    expect(draai(MERGE, ["71"]).fout).toMatch(/tak 'main'/);
+    expect(log("gh.log")).not.toContain("pr merge");
+  });
+
+  test("mergeStateStatus is een allowlist: HAS_HOOKS en BLOCKED worden geweigerd", () => {
+    pr({ mergeStateStatus: "HAS_HOOKS" });
+    geweigerd(draai(MERGE, ["71"]), /mergeStateStatus: HAS_HOOKS/);
+    pr({ mergeStateStatus: "BLOCKED" });
+    expect(draai(MERGE, ["71"]).code).toBe(1);
+  });
+
+  test("UNSTABLE merget met een waarschuwing", () => {
+    pr({ mergeStateStatus: "UNSTABLE" });
+    writeFileSync(join(dir, "merge-werkt"), "");
+    const r = draai(MERGE, ["71"]);
+    expect(r.code).toBe(0);
+    expect(r.fout).toMatch(/waarschuwing/);
+  });
+
+  test("telt de nieuwste run van poort, niet de laatste in de array", () => {
+    pr({
+      statusCheckRollup: [
+        { name: "poort", conclusion: "FAILURE", startedAt: "2026-10-06T10:00:00Z" },
+        { name: "poort", conclusion: "SUCCESS", startedAt: "2026-10-06T11:00:00Z" },
+        { name: "poort", conclusion: "FAILURE", startedAt: "2026-10-06T09:00:00Z" },
+      ],
+    });
+    expect(draai(MERGE, ["71", "--droog"]).code).toBe(0);
+    pr({
+      statusCheckRollup: [
+        { name: "poort", conclusion: "SUCCESS", startedAt: "2026-10-06T09:00:00Z" },
+        { name: "poort", conclusion: "FAILURE", startedAt: "2026-10-06T11:00:00Z" },
+        { name: "poort", conclusion: "SUCCESS", startedAt: "2026-10-06T08:00:00Z" },
+      ],
+    });
+    expect(draai(MERGE, ["71", "--droog"]).fout).toMatch(/niet groen/);
   });
 
   test("weigert als de check poort niet groen is", () => {
@@ -221,6 +270,43 @@ describe("spawn.sh", () => {
     expect(draai(SPAWN, ["--naam", "w1", "--lead", "l"], basis()).fout).toMatch(/--opdracht/);
     expect(draai(SPAWN, ["--naam", "w1", "--opdracht", opdracht()], basis()).fout).toMatch(/lead/);
     expect(draai(SPAWN, ["--naam", "w1", "--opdracht", opdracht(), "--lead", "l", "--model", "gpt"], basis()).fout).toMatch(/sonnet of opus/);
+  });
+
+  test("een optie zonder waarde geeft een duidelijke fout", () => {
+    const r = draai(SPAWN, ["--opdracht", opdracht(), "--lead", "l", "--naam"], basis());
+    expect(r.code).toBe(1);
+    expect(r.fout).toMatch(/--naam heeft een waarde nodig/);
+  });
+
+  test("weigert een opdrachtpad met regeleinde of aanhalingsteken; quote een pad met spatie", () => {
+    const r1 = draai(SPAWN, ["--naam", "w1", "--opdracht", "a\nb.md", "--lead", "l"], basis());
+    expect(r1.fout).toMatch(/opdrachtpad/);
+    const r2 = draai(SPAWN, ["--naam", "w1", "--opdracht", "it's.md", "--lead", "l"], basis());
+    expect(r2.fout).toMatch(/opdrachtpad/);
+    const spatie = join(dir, "met spatie.md");
+    writeFileSync(spatie, "x");
+    const r3 = draai(SPAWN, ["--naam", "w1", "--opdracht", spatie, "--lead", "l", "--droog"], basis());
+    expect(r3.uit).toContain(`Lees '${spatie}' en`);
+  });
+
+  test("weigert niet-numerieke LAB_SPAWN_*-waarden", () => {
+    const r = draai(SPAWN, ["--naam", "w1", "--opdracht", opdracht(), "--lead", "l", "--droog"], basis({ LAB_SPAWN_WACHT: "snel" }));
+    expect(r.code).toBe(1);
+    expect(r.fout).toMatch(/LAB_SPAWN_WACHT/);
+  });
+
+  test("stopt bij een trust-dialoog en typt niets", () => {
+    writeFileSync(join(dir, "pane.txt"), "Do you trust the files in this folder?\n❯ 1. Yes, proceed\n  2. No\n");
+    const r = draai(SPAWN, ["--naam", "w1", "--opdracht", opdracht(), "--lead", "l", "--map", dir], basis({ LAB_SPAWN_WACHT: "5" }));
+    expect(r.code).toBe(1);
+    expect(r.fout).toContain("trust-dialoog: Brian moet de map vertrouwen (pane %7)");
+    expect(log("tmux.log")).not.toContain("send-keys");
+  });
+
+  test("een gevulde invoerregel telt niet als klaar; alleen een lege invoerbox", () => {
+    writeFileSync(join(dir, "pane.txt"), "❯ 1. Yes\n");
+    const r = draai(SPAWN, ["--naam", "w1", "--opdracht", opdracht(), "--lead", "l", "--map", dir], basis());
+    expect(r.fout).toMatch(/niet klaar voor invoer/);
   });
 
   test("weigert een naam met spaties of shell-tekens", () => {
