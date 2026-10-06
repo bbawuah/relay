@@ -9,7 +9,7 @@
 //
 // Map: --map <pad>, anders TMUX_PWA_BESLUITEN, anders ~/vault-b-status/besluiten (700; bestanden 600).
 // Een keuze op een besluit met passkey geldt pas als het auditlog van de tmux-server een regel
-// "passkey-actie" ok heeft voor doel besluit:<id>, van hetzelfde apparaat, kort vóór de keuze;
+// "passkey-actie" ok heeft voor doel besluit:<id>:<optie> (de gekozen optie), van hetzelfde apparaat, kort vóór de keuze;
 // anders tonen lijst en lees hem als "onbevestigd" (wie de map kan schrijven, kan geen keuze
 // vervalsen die de lead voor echt aanziet). Auditlog: --audit <pad>, anders
 // $TMUX_PWA_DATA/audit.jsonl, anders ~/.local/share/tmux-pwa/audit.jsonl.
@@ -115,7 +115,7 @@ export function controle(b: Besluit, acties: ReturnType<typeof passkeyActies>): 
   const k = Date.parse(b.keuze.tijd);
   const ok = acties.some((a) => {
     const t = Date.parse(a.tijd);
-    return a.doel === `besluit:${b.id}` && a.apparaat === b.keuze!.door && t <= k && k - t <= BEVESTIG_MS;
+    return a.doel === `besluit:${b.id}:${b.keuze!.optie}` && a.apparaat === b.keuze!.door && t <= k && k - t <= BEVESTIG_MS;
   });
   return ok ? "bevestigd" : "onbevestigd";
 }
