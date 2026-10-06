@@ -55,12 +55,14 @@ describe("besluit.ts", () => {
   test("a passkey choice counts only with its audit line: same decision, same device, just before", () => {
     const b = maakBesluit(leesArgs(args).o);
     const gekozen = { ...b, keuze: { optie: "ja", door: "iphone-1", tijd: "2026-10-06T11:00:00.000Z" } };
-    const regel = (v: object) => JSON.stringify({ tijd: "2026-10-06T10:59:30.000Z", gebeurtenis: "passkey-actie", login: "x", apparaat: "iphone-1", doel: "besluit:hook-plek", ok: true, ...v });
+    const regel = (v: object) => JSON.stringify({ tijd: "2026-10-06T10:59:30.000Z", gebeurtenis: "passkey-actie", login: "x", apparaat: "iphone-1", doel: "besluit:hook-plek:ja", ok: true, ...v });
     const met = (...r: string[]) => controle(gekozen, passkeyActies(["kapot{", ...r].join("\n")));
     expect(met(regel({}))).toBe("bevestigd");
     expect(met()).toBe("onbevestigd");
     expect(met(regel({ ok: false }))).toBe("onbevestigd");
-    expect(met(regel({ doel: "besluit:ander" }))).toBe("onbevestigd");
+    expect(met(regel({ doel: "besluit:ander:ja" }))).toBe("onbevestigd");
+    expect(met(regel({ doel: "besluit:hook-plek:nee" }))).toBe("onbevestigd"); // a passkey for another option
+    expect(met(regel({ doel: "besluit:hook-plek" }))).toBe("onbevestigd"); // the old goal without an option
     expect(met(regel({ apparaat: "ipad-1" }))).toBe("onbevestigd");
     expect(met(regel({ tijd: "2026-10-06T11:00:01.000Z" }))).toBe("onbevestigd"); // after the choice
     expect(met(regel({ tijd: "2026-10-06T10:40:00.000Z" }))).toBe("onbevestigd"); // too long before
@@ -91,7 +93,7 @@ describe("besluit.ts", () => {
     expect(JSON.parse(l.uit).controle).toBe("onbevestigd");
     expect(l.fout).toContain("onbevestigd");
     expect(draai("lijst", "--audit", audit).uit).toContain("ONBEVESTIGD hook-plek");
-    writeFileSync(audit, `${JSON.stringify({ tijd: "2026-10-06T10:59:50.000Z", gebeurtenis: "passkey-actie", apparaat: "iphone-1", doel: "besluit:hook-plek", ok: true })}\n`);
+    writeFileSync(audit, `${JSON.stringify({ tijd: "2026-10-06T10:59:50.000Z", gebeurtenis: "passkey-actie", apparaat: "iphone-1", doel: "besluit:hook-plek:ja", ok: true })}\n`);
     expect(JSON.parse(draai("lees", "hook-plek", "--audit", audit).uit).controle).toBe("bevestigd");
     expect(draai("lijst", "--audit", audit).uit).toContain("beslist   hook-plek  → ja");
   });
