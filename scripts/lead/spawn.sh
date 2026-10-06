@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Start een Claude-sessie in een eigen tmux-venster en geef die een opdracht.
 # Gebruik: scripts/lead/spawn.sh --naam <n> --opdracht <bestand> [--model sonnet|opus]
-#          [--map <pad>] [--lead <naam>] [--droog]
+#          [--map <pad>] [--lead <naam>] [--sublead [--workflow <JJJJ-MM-DD>]] [--vervolg <tak>] [--droog]
 # Zie scripts/lead/README.md.
 set -euo pipefail
 
@@ -16,7 +16,7 @@ for v in WACHT POLS BEWIJS; do
   [[ ${!v} =~ ^[0-9]+$ ]] || fout "LAB_SPAWN_$v moet een geheel getal zijn, niet '${!v}'"
 done
 
-naam="" opdracht="" model="" map="$PWD" lead="${LAB_LEAD_NAAM:-}" droog=0
+naam="" opdracht="" model="" map="$PWD" lead="${LAB_LEAD_NAAM:-}" droog=0 sublead=0 vervolg="" workflow=""
 waarde() { [ "$#" -ge 2 ] || fout "optie $1 heeft een waarde nodig"; }
 while [ $# -gt 0 ]; do
   case $1 in
@@ -25,6 +25,9 @@ while [ $# -gt 0 ]; do
     --model) waarde "$@"; model=$2; shift 2 ;;
     --map) waarde "$@"; map=$2; shift 2 ;;
     --lead) waarde "$@"; lead=$2; shift 2 ;;
+    --sublead) sublead=1; shift ;;
+    --workflow) waarde "$@"; workflow=$2; shift 2 ;;
+    --vervolg) waarde "$@"; vervolg=$2; shift 2 ;;
     --droog) droog=1; shift ;;
     -h|--help) sed -n '2,5p' "$0"; exit 0 ;;
     *) fout "onbekende optie: $1" ;;
@@ -40,6 +43,18 @@ case $model in ""|sonnet|opus) ;; *) fout "--model moet sonnet of opus zijn, nie
 [ -d "$map" ] || fout "map bestaat niet: $map"
 [ -n "$lead" ] || fout "naam van de lead ontbreekt: geef --lead of zet LAB_LEAD_NAAM"
 [[ $lead =~ ^[A-Za-z0-9._-]+$ ]] || fout "lead-naam '$lead' mag alleen letters, cijfers, punt, streepje en underscore bevatten"
+[ -z "$workflow" ] || [ "$sublead" = 1 ] || fout "--workflow hoort bij --sublead"
+[ -z "$workflow" ] || [[ $workflow =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}$ ]] || fout "--workflow wil de datum van Brians toestemming (JJJJ-MM-DD), niet '$workflow'"
+[ "$sublead" = 0 ] || [ -z "$vervolg" ] || fout "--sublead en --vervolg sluiten elkaar uit"
+if [ -n "$vervolg" ]; then
+  [[ $vervolg =~ ^[A-Za-z0-9._/-]+$ ]] || fout "tak '$vervolg' mag alleen letters, cijfers, punt, streepje, underscore en slash bevatten"
+  # GIT_*-variabelen (pre-push-hook) zouden de controle naar een andere repo leiden
+  (
+    while IFS= read -r v; do unset "$v"; done < <(compgen -e | grep '^GIT_' || true)
+    git -C "$map" rev-parse --verify --quiet "refs/heads/$vervolg" >/dev/null ||
+      git -C "$map" rev-parse --verify --quiet "refs/remotes/origin/$vervolg" >/dev/null
+  ) || fout "tak '$vervolg' bestaat niet (lokaal of op origin) in $map"
+fi
 [ "$droog" = 1 ] || [ -f "$SPAWN" ] || fout "spawn-script niet gevonden: $SPAWN"
 
 opdracht=$(cd "$(dirname "$opdracht")" && pwd)/$(basename "$opdracht")
@@ -50,6 +65,17 @@ if [ -n "$model" ]; then cmd="$cmd --model $model"; fi
 pad=$opdracht
 case $pad in *[[:space:]]*) pad="'$pad'" ;; esac
 zin="Je lead is $lead. Jij bent sessie $naam. Lees $pad en voer die uit. Rapporteer aan de lead via SendMessage (to: $lead)."
+if [ "$sublead" = 1 ]; then
+  zin="Je lead is $lead. Jij bent sessie $naam, sub-lead. Lees $pad en voer die uit volgens scripts/lead/sublead.md: per taak een bouwer, dan een reviewer die niet plant, hooguit één herstelronde, met de Agent-tool."
+  if [ -z "$workflow" ]; then
+    zin="$zin Geen Workflow-tool."
+  else
+    zin="$zin Brian gaf op $workflow toestemming voor workflows (zie ~/vault-b-status/lead.md): draai de cyclus als workflow met scripts/lead/vaste-cyclus.js."
+  fi
+  zin="$zin Rapporteer aan de lead via SendMessage (to: $lead), kort: PR-nummer, sha, reviewoordeel en open punten per taak."
+elif [ -n "$vervolg" ]; then
+  zin="Je lead is $lead. Jij bent sessie $naam, een vervolgsessie op tak $vervolg. Lees $pad en voer die uit; lees verder alleen git log origin/main..$vervolg en git diff origin/main...$vervolg, geen eerdere sessielogs. Rapporteer aan de lead via SendMessage (to: $lead)."
+fi
 
 if [ "$droog" = 1 ]; then
   echo "droog: $SPAWN window $map \"$cmd\""
