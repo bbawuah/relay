@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, readlinkSync, renameSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { EVENTS, MERK, type Opties, installeer, leesArgs } from "./installeer-hooks";
@@ -195,6 +195,61 @@ describe("installeer-hooks", () => {
     schrijf(j);
     installeer(opties({ verwijder: true }));
     expect(lees().hooks.Stop).toEqual([{ hooks: [{ type: "command", command: "x.sh" }] }]);
+  });
+
+  test("modus van settings.json blijft behouden: 600 blijft 600 (ook na --verwijder), 644 blijft 644", () => {
+    const modus = () => statSync(settings).mode & 0o777;
+    chmodSync(settings, 0o600);
+    installeer(opties());
+    expect(modus()).toBe(0o600);
+    installeer(opties({ verwijder: true }));
+    expect(modus()).toBe(0o600);
+    expect(lees()).toEqual(ORIGINEEL());
+    chmodSync(settings, 0o644);
+    installeer(opties());
+    expect(modus()).toBe(0o644);
+    installeer(opties({ verwijder: true }));
+    expect(modus()).toBe(0o644);
+    const backups = readdirSync(join(dir, "claude")).filter((f) => f.includes("voor-lead-hooks"));
+    expect(backups.length).toBeGreaterThan(0);
+    for (const b of backups) expect(statSync(join(dir, "claude", b)).mode & 0o777).toBeOneOf([0o600, 0o644]);
+  });
+
+  test("een backup krijgt de modus van het bestand", () => {
+    chmodSync(settings, 0o644);
+    installeer(opties());
+    const backup = join(dir, "claude", "settings.json.voor-lead-hooks-20261007-101112345");
+    expect(statSync(backup).mode & 0o777).toBe(0o644);
+  });
+
+  test("een nieuw settings.json krijgt modus 600", () => {
+    rmSync(settings);
+    installeer(opties());
+    expect(statSync(settings).mode & 0o777).toBe(0o600);
+  });
+
+  test("een symlink blijft een symlink: het doel wordt herschreven en houdt zijn modus", () => {
+    const dot = join(dir, "dotfiles");
+    mkdirSync(dot);
+    const echt = join(dot, "settings.json");
+    renameSync(settings, echt);
+    chmodSync(echt, 0o600);
+    symlinkSync(echt, settings);
+    const r = installeer(opties());
+    expect(r.code).toBe(0);
+    expect(lstatSync(settings).isSymbolicLink()).toBe(true);
+    expect(readlinkSync(settings)).toBe(echt);
+    expect(eigenCmds(JSON.parse(readFileSync(echt, "utf8")).hooks).length).toBe(EVENTS.length);
+    expect(statSync(echt).mode & 0o777).toBe(0o600);
+    // backup en tmp horen naast het doel, niet naast de link
+    expect(readdirSync(dot).some((f) => f.includes("voor-lead-hooks"))).toBe(true);
+    expect(readdirSync(join(dir, "claude")).filter((f) => f.includes("voor-lead-hooks"))).toEqual([]);
+  });
+
+  test("na een geslaagde run staat er geen tmp-bestand meer in de map", () => {
+    installeer(opties());
+    installeer(opties({ verwijder: true }));
+    expect(readdirSync(join(dir, "claude")).filter((f) => f.includes("tmp"))).toEqual([]);
   });
 
   test("leesArgs: standaardpaden onder HOME, opties en fouten", () => {

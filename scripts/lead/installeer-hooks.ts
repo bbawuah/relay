@@ -13,9 +13,11 @@
 // commando, dus installeren is idempotent (een eigen entry wordt op zijn plaats vervangen) en
 // bestaande entries blijven gelijk. Voor het schrijven komt er een backup
 // `<settings>.voor-lead-hooks-<stempel>`; het schrijven is atomair (tmp + rename) en daarna wordt
-// de JSON opnieuw gelezen. De opmaak van settings.json wordt herschreven met 2 spaties inspringing.
+// de JSON opnieuw gelezen. Een symlink blijft een symlink (het echte doel wordt herschreven) en de
+// modus van het bestaande bestand blijft behouden (nieuw bestand: 600); faalt het schrijven, dan
+// wordt het tmp-bestand opgeruimd. De opmaak van settings.json wordt herschreven met 2 spaties inspringing.
 
-import { chmodSync, copyFileSync, existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { chmodSync, copyFileSync, existsSync, mkdirSync, readFileSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 
@@ -183,14 +185,24 @@ export function installeer(o: Opties): Uitslag {
   }
   if (!gelijk) {
     mkdirSync(dirname(o.settings), { recursive: true });
+    // Een symlink blijft een symlink: schrijf naar het echte doel, met backup en tmp in dezelfde map (atomaire rename).
+    const doelPad = bestaat ? realpathSync(o.settings) : o.settings;
+    const modus = bestaat ? statSync(doelPad).mode & 0o777 : 0o600;
     if (bestaat) {
-      const backup = `${o.settings}.voor-lead-hooks-${stempel(o.nu)}`;
-      copyFileSync(o.settings, backup);
+      const backup = `${doelPad}.voor-lead-hooks-${stempel(o.nu)}`;
+      copyFileSync(doelPad, backup);
+      chmodSync(backup, modus);
       regels.push(`backup: ${backup}`);
     }
-    const tmp = `${o.settings}.lead-hooks-tmp-${process.pid}`;
-    writeFileSync(tmp, `${JSON.stringify(nieuw, null, 2)}\n`);
-    renameSync(tmp, o.settings);
+    const tmp = `${doelPad}.lead-hooks-tmp-${process.pid}`;
+    try {
+      writeFileSync(tmp, `${JSON.stringify(nieuw, null, 2)}\n`, { mode: 0o600 });
+      chmodSync(tmp, modus);
+      renameSync(tmp, doelPad);
+    } catch (e) {
+      rmSync(tmp, { force: true });
+      throw e;
+    }
     try {
       JSON.parse(readFileSync(o.settings, "utf8"));
     } catch (e) {
