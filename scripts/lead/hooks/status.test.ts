@@ -136,3 +136,45 @@ describe("--git", () => {
     expect(json([], T0)[0].git).toBeUndefined();
   });
 });
+
+describe("status.sh", () => {
+  const SH = join(import.meta.dir, "..", "status.sh");
+  function draai(argv: string[], extra: Record<string, string> = {}) {
+    const p = Bun.spawnSync(["/bin/sh", SH, ...argv], { env: { ...schoneEnv(), PATH: process.env.PATH ?? "/usr/bin:/bin", LAB_LEAD_STAAT: staat, HOME: dir, ...extra }, stdout: "pipe", stderr: "pipe" });
+    return { code: p.exitCode, out: p.stdout.toString(), err: p.stderr.toString() };
+  }
+
+  test("--json met ontbrekend register: geldige JSON ([]), exit 0", () => {
+    const r = draai(["--json"]);
+    expect(r.code).toBe(0);
+    expect(JSON.parse(r.out)).toEqual([]);
+  });
+
+  test("--json met leeg register en met kapotte of lege recordbestanden: geldige JSON ([])", () => {
+    mkdirSync(join(staat, "register"), { recursive: true });
+    expect(JSON.parse(draai(["--json"]).out)).toEqual([]);
+    writeFileSync(join(staat, "register", "leeg.json"), "");
+    writeFileSync(join(staat, "register", "kapot.json"), "{ half");
+    const r = draai(["--json"]);
+    expect(r.code).toBe(0);
+    expect(JSON.parse(r.out)).toEqual([]);
+  });
+
+  test("zonder --json is de uitvoer tekst (niet voor een JSON-parser bedoeld)", () => {
+    const r = draai([]);
+    expect(r.out).toBe("geen sessies in het register\n");
+  });
+
+  test("verdwenen LAB_LEAD_BUN: terugval op bun uit PATH", () => {
+    const r = draai(["--json"], { LAB_LEAD_BUN: join(dir, "Cellar/bun/0/bin/bun") });
+    expect(r.code).toBe(0);
+    expect(JSON.parse(r.out)).toEqual([]);
+  });
+
+  test("geen bun te vinden: stderr-melding, exit 127, lege stdout", () => {
+    const r = draai(["--json"], { PATH: "/nergens", LAB_LEAD_BUN: join(dir, "bestaat-niet") });
+    expect(r.code).toBe(127);
+    expect(r.out).toBe("");
+    expect(r.err).toContain("bun niet gevonden");
+  });
+});
