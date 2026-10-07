@@ -1,6 +1,6 @@
 // Hulp voor spawn.sh: leadnaam uit het register.
 //   bun leadnaam.ts eigen                 naam van de lead in de pane $TMUX_PANE (leeg als onbekend)
-//   bun leadnaam.ts dubbel <naam>         exit 1 + uitleg als een ander levend lead-record die naam draagt
+//   bun leadnaam.ts dubbel <naam>         exit 3 + uitleg als een ander levend lead-record die naam draagt
 // Alleen lezen. Staat: ${LAB_LEAD_STAAT:-~/.local/state/lab-lead}.
 
 import { dubbeleLeads, levendeLeads, staatMap, tmuxPanes } from "./hooks/register";
@@ -21,7 +21,7 @@ if (cmd === "eigen") {
   if (anderen.length > (eigen ? 0 : 1)) {
     const waar = anderen.map((r) => `sessie ${r.id.slice(0, 8)}${r.pane ? ` (pane ${r.pane})` : ""}`).join(", ");
     console.error(`spawn: er draait meer dan een lead met de naam '${naam}' (${waar}); de meldingen zouden door elkaar lopen. Geef --lead <unieke naam> (hernoem de lead eerst met scripts/lead/hernoem.ts).`);
-    process.exit(1);
+    process.exit(3);
   }
 } else {
   console.error("gebruik: leadnaam.ts eigen | dubbel <naam>");

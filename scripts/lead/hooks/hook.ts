@@ -17,7 +17,7 @@
 // Nooit opgeslagen: prompt, tool_input (behalve SendMessage.to en een boolean "vrij"),
 // last_assistant_message, transcripts. Geen netwerk, geen git, geen gh.
 
-import { type Omgeving, type Rec, dubbeleLeads, eigenLeadNaam, inboxGrootte, inboxMelding, leesOfMaak, leesOngelezen, leesRecord, lopendeSubagents, meldAdres, nieuwRecord, regelsTekst, schrijfRecord, staatMap, tmuxPanes, zetGelezen, zetToestand } from "./register";
+import { type Omgeving, type Rec, dubbeleLeads, eigenLeadNaam, inboxGrootte, inboxMelding, leesOfMaak, leesOngelezen, leesRecord, lopendeSubagents, meldAdres, nieuwRecord, regelsTekst, schrijfRecord, staatMap, tmuxPanes, voorgangerInPane, zetGelezen, zetToestand } from "./register";
 
 export type Uitslag = { code: number; stdout: string; stderr: string };
 export type Opties = {
@@ -78,6 +78,13 @@ export async function verwerk(event: string, invoer: Invoer, env: Omgeving, opti
       const vers = nieuwRecord(sessieId, env, cwd, t);
       // naam en lead uit het bestaande record (resume na hernoem.ts); env alleen de eerste keer
       const r: Rec = { ...vers, start: oud.start, blokkades: oud.blokkades, naam: rec0 ? oud.naam : vers.naam, lead: rec0 ? oud.lead : vers.lead };
+      if (!rec0) {
+        const vg = voorgangerInPane(staat, vers.pane, isLead, sessieId, t);
+        if (vg) {
+          r.naam = vg.naam || r.naam;
+          r.lead = vg.lead || r.lead;
+        }
+      }
       schrijfRecord(staat, r);
       if (isLead) {
         const dubbel = dubbeleLeads(staat, r.naam, r.id, (opties.panes ?? tmuxPanes)());

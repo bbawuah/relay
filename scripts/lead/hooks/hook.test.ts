@@ -531,4 +531,17 @@ describe("leadnamen: het register is de bron, env alleen de beginwaarde", () => 
     await verwerk("SessionStart", sid("LA"), { ...envLead(), TMUX_PANE: "%1" }, { ...opt, panes: () => new Set(["%2"]) });
     expect((await verwerk("SessionStart", sid("LB"), { ...envLead(), TMUX_PANE: "%2" }, { ...opt, panes: () => new Set(["%2"]) })).stdout).toBe("");
   });
+
+  test("/clear (nieuw session_id, zelfde pane): naam en lead van het voorgaande record blijven, rol moet gelijk zijn", async () => {
+    await opzet();
+    for (const [id, pane] of [["LA", "%5"], ["WA", "%6"]] as const) schrijfRecord(staat, { ...(leesRecord(staat, id) as Rec), pane });
+    const o = { ...opt, panes: () => null };
+    await verwerk("SessionStart", sid("LA2"), { ...envLead(), TMUX_PANE: "%5" }, o);
+    await verwerk("SessionStart", sid("WA2"), { ...envAgent(), TMUX_PANE: "%6" }, o);
+    expect(leesRecord(staat, "LA2")?.naam).toBe("lead-a");
+    expect(leesRecord(staat, "WA2")?.lead).toBe("lead-a");
+    // andere rol in dezelfde pane: geen overname
+    await verwerk("SessionStart", sid("X1"), { ...envAgent(), TMUX_PANE: "%5" }, o);
+    expect(leesRecord(staat, "X1")?.lead).toBe("lead");
+  });
 });

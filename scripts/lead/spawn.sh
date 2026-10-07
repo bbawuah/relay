@@ -52,7 +52,11 @@ case $model in ""|sonnet|opus) ;; *) fout "--model moet sonnet of opus zijn, nie
 [ -n "$lead" ] || fout "naam van de lead ontbreekt: geef --lead of zet LAB_LEAD_NAAM"
 [[ $lead =~ ^[A-Za-z0-9._-]+$ ]] || fout "lead-naam '$lead' mag alleen letters, cijfers, punt, streepje en underscore bevatten"
 if command -v "$BUN" >/dev/null 2>&1; then
-  dubbel=$("$BUN" "$HIER/leadnaam.ts" dubbel "$lead" 2>&1 >/dev/null) || { echo "$dubbel" >&2; exit 1; }
+  # exit 3 = dubbele naam (blokkeert); elke andere fout: waarschuwing en doorgaan (fail-open)
+  rc=0
+  dubbel=$("$BUN" "$HIER/leadnaam.ts" dubbel "$lead" 2>&1 >/dev/null) || rc=$?
+  if [ "$rc" = 3 ]; then echo "$dubbel" >&2; exit 1; fi
+  [ "$rc" = 0 ] || echo "spawn: waarschuwing: controle op dubbele leadnaam mislukt (exit $rc); ga door. $dubbel" >&2
 fi
 [ -z "$workflow" ] || [ "$sublead" = 1 ] || fout "--workflow hoort bij --sublead"
 [ -z "$workflow" ] || [[ $workflow =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}$ ]] || fout "--workflow wil de datum van Brians toestemming (JJJJ-MM-DD), niet '$workflow'"

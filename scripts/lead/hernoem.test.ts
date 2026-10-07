@@ -22,8 +22,8 @@ const o = (extra: Record<string, unknown> = {}) => ({ sessie: "L1", naam: "lead-
 
 describe("hernoem.ts", () => {
   beforeEach(() => {
-    maak("L1", "lead", "lead", "");
-    maak("L2", "lead", "lead", "");
+    maak("L1", "lead", "lead", "", { sinds: Date.now() });
+    maak("L2", "lead", "lead", "", { sinds: Date.now() });
     maak("w1", "w1", "agent", "lead");
     maak("w2", "w2", "agent", "lead");
     maak("w3", "w3", "agent", "lead", { toestand: "weg" });
@@ -75,5 +75,14 @@ describe("levende leads: hergebruikte panes", () => {
     // na hernoem van "nieuw" is "lead" niet meer dubbel voor "andere"
     maak("nieuw", "lead-eagle", "lead", "", { pane: "%0", start: 5 });
     expect(dubbeleLeads(staat, "lead", "andere", panes)).toEqual([]);
+  });
+});
+
+describe("lead-record zonder pane", () => {
+  test("telt alleen als levend als sinds jonger is dan 24 uur", () => {
+    const nu = 100 * 3600_000;
+    maak("vers", "lead", "lead", "", { pane: "", sinds: nu - 3600_000 });
+    maak("oud", "lead", "lead", "", { pane: "", sinds: nu - 25 * 3600_000 });
+    expect(dubbeleLeads(staat, "lead", "x", null, nu).map((r) => r.id)).toEqual(["vers"]);
   });
 });

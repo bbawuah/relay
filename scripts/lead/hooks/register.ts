@@ -251,9 +251,9 @@ export function tmuxPanes(): Set<string> | null {
   }
 }
 
-/** Levende lead-records: niet `weg`, en de pane bestaat nog (of is onbekend). */
-export function levendeLeads(staat: string, panes: Set<string> | null): Rec[] {
-  const kand = alleRecords(staat).filter((r) => r.soort === "sessie" && r.rol === "lead" && r.toestand !== "weg" && (!r.pane || !panes || panes.has(r.pane)));
+/** Levende lead-records: niet `weg`, en de pane bestaat nog (of is onbekend); zonder pane alleen als `sinds` jonger is dan 24 uur. */
+export function levendeLeads(staat: string, panes: Set<string> | null, nu = Date.now()): Rec[] {
+  const kand = alleRecords(staat).filter((r) => r.soort === "sessie" && r.rol === "lead" && r.toestand !== "weg" && (r.pane ? !panes || panes.has(r.pane) : nu - r.sinds < 24 * 3600_000));
   // Panes worden hergebruikt: per pane telt alleen het record met de jongste start.
   const jongste = new Map<string, number>();
   for (const r of kand) if (r.pane) jongste.set(r.pane, Math.max(jongste.get(r.pane) ?? 0, r.start));
@@ -261,6 +261,15 @@ export function levendeLeads(staat: string, panes: Set<string> | null): Rec[] {
 }
 
 /** Andere levende leads met dezelfde naam als `naam` (het eigen record, `eigenId`, telt niet mee). */
-export function dubbeleLeads(staat: string, naam: string, eigenId: string, panes: Set<string> | null): Rec[] {
-  return levendeLeads(staat, panes).filter((r) => r.naam === naam && r.id !== eigenId);
+export function dubbeleLeads(staat: string, naam: string, eigenId: string, panes: Set<string> | null, nu = Date.now()): Rec[] {
+  return levendeLeads(staat, panes, nu).filter((r) => r.naam === naam && r.id !== eigenId);
+}
+
+/** /clear geeft een nieuw session_id: het jongste record in dezelfde pane met dezelfde rolsoort (lead of niet), levend of net `weg`. */
+export function voorgangerInPane(staat: string, pane: string, isLead: boolean, eigenId: string, nu: number): Rec | null {
+  if (!pane) return null;
+  const k = alleRecords(staat).filter(
+    (r) => r.soort === "sessie" && r.id !== eigenId && r.pane === pane && (r.rol === "lead") === isLead && (r.toestand !== "weg" || (r.einde !== null && nu - r.einde < 60_000)),
+  );
+  return k.sort((a, b) => b.start - a.start)[0] ?? null;
 }

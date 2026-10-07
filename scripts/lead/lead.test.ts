@@ -388,6 +388,13 @@ describe("spawn.sh", () => {
     expect(draai(SPAWN, args, basis({ TMUX_PANE: "%1" })).code).toBe(0);
   });
 
+  test("een mislukte dubbel-controle (andere exit dan 3) geeft een waarschuwing en spawnt toch", () => {
+    schrijfBin("stuk-bun", "#!/bin/sh\nexit 7\n");
+    const r = draai(SPAWN, ["--naam", "w1", "--opdracht", opdracht(), "--lead", "lead", "--droog"], basis({ LAB_LEAD_BUN: join(bin, "stuk-bun") }));
+    expect(r.code).toBe(0);
+    expect(r.fout).toMatch(/waarschuwing.*exit 7/);
+  });
+
   test("zonder --lead geldt de leadnaam uit het register boven LAB_LEAD_NAAM", () => {
     writeFileSync(join(dir, "panes.txt"), "%1\n");
     leadRecord("aaaa1111", "lead-ruimte", "%1");
