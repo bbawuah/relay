@@ -227,3 +227,36 @@ export function regelsTekst(r: { regels: InboxRegel[]; meer: number }): string {
   const t = r.regels.map((x) => `${x.van}: ${x.tekst} ${tijd(x.t)}`).join("; ");
   return r.meer > 0 ? `${t}; +${r.meer} meer` : t;
 }
+
+// ---- leadnamen ----
+
+/** Naam van de lead zoals het register die kent; env (`LAB_AGENT_NAAM`) is alleen de beginwaarde. */
+export function eigenLeadNaam(rec: Rec | null, env: Omgeving): string {
+  return rec?.naam || env.LAB_AGENT_NAAM || env.LAB_LEAD_NAAM || "lead";
+}
+
+/** Naam van de lead van een agent: het record wint, env (`LAB_LEAD_NAAM`) is de beginwaarde. */
+export function meldAdres(rec: Rec | null, env: Omgeving): string {
+  return rec?.lead || env.LAB_LEAD_NAAM || "";
+}
+
+/** Pane-ids die tmux nu kent; null als dat niet te achterhalen is (dan telt elke pane als bestaand). */
+export function tmuxPanes(): Set<string> | null {
+  try {
+    const p = Bun.spawnSync(["tmux", "list-panes", "-a", "-F", "#{pane_id}"], { stdout: "pipe", stderr: "ignore" });
+    if (p.exitCode !== 0) return null;
+    return new Set(p.stdout.toString().split("\n").map((x) => x.trim()).filter(Boolean));
+  } catch {
+    return null;
+  }
+}
+
+/** Levende lead-records: niet `weg`, en de pane bestaat nog (of is onbekend). */
+export function levendeLeads(staat: string, panes: Set<string> | null): Rec[] {
+  return alleRecords(staat).filter((r) => r.soort === "sessie" && r.rol === "lead" && r.toestand !== "weg" && (!r.pane || !panes || panes.has(r.pane)));
+}
+
+/** Andere levende leads met dezelfde naam als `naam` (het eigen record, `eigenId`, telt niet mee). */
+export function dubbeleLeads(staat: string, naam: string, eigenId: string, panes: Set<string> | null): Rec[] {
+  return levendeLeads(staat, panes).filter((r) => r.naam === naam && r.id !== eigenId);
+}

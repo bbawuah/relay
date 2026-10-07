@@ -3,7 +3,7 @@ import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSyn
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { MAX_BLOKKADES, type Opties, verwerk, wekker } from "./hook";
-import { gelezenOffset, inboxMelding, inboxPad, leesRecord } from "./register";
+import { type Rec, gelezenOffset, inboxMelding, inboxPad, leesRecord, schrijfRecord } from "./register";
 
 // Alles draait in een wegwerpmap (LAB_LEAD_STAAT); de echte ~/.claude en ~/.local/state blijven ongemoeid.
 
@@ -428,8 +428,9 @@ describe("privacy", () => {
   test("na een volledige reeks events staat geen geheime string in de staatmap", async () => {
     const env = omgeving();
     const l = LEAD();
-    const basis = { transcript_path: `/x/${GEHEIM[4]}.jsonl` };
     for (const e of [env, l]) {
+      // aparte sessie per rol: het record houdt naam en lead van het eerste event vast
+      const basis = { transcript_path: `/x/${GEHEIM[4]}.jsonl`, session_id: e === l ? "s2" : "s1" };
       await verwerk("SessionStart", inv(basis), e, opt);
       await verwerk("UserPromptSubmit", inv({ ...basis, prompt: GEHEIM[0], user_message: GEHEIM[0] }), e, opt);
       await verwerk("PreToolUse", inv({ ...basis, tool_name: "Bash", tool_input: { command: GEHEIM[1] } }), e, opt);
@@ -456,5 +457,78 @@ describe("privacy", () => {
   test("inbox-regels blijven onder 512 bytes", () => {
     inboxMelding(staat, "lead", "w2", "ä".repeat(2000), T0);
     for (const r of readFileSync(inboxPad(staat, "lead"), "utf8").split("\n").filter(Boolean)) expect(Buffer.byteLength(r) + 1).toBeLessThan(512);
+  });
+});
+
+describe("leadnamen: het register is de bron, env alleen de beginwaarde", () => {
+  // Beide leads en hun agents hebben dezelfde env-naam "lead"; de records hebben verschillende namen.
+  const envLead = () => omgeving({ LAB_AGENT_NAAM: "lead", LAB_AGENT_ROL: "lead", LAB_LEAD_NAAM: "" });
+  const envAgent = () => omgeving({ LAB_AGENT_NAAM: "w", LAB_AGENT_ROL: "agent", LAB_LEAD_NAAM: "lead" });
+  const sid = (id: string) => ({ session_id: id, cwd: "/w" });
+
+  async function opzet() {
+    for (const id of ["LA", "LB"]) await verwerk("SessionStart", sid(id), envLead(), { ...opt, panes: () => null });
+    for (const id of ["WA", "WB"]) await verwerk("SessionStart", sid(id), envAgent(), opt);
+    for (const [id, naam] of [["LA", "lead-a"], ["LB", "lead-b"]] as const) schrijfRecord(staat, { ...(leesRecord(staat, id) as Rec), naam });
+    for (const [id, lead] of [["WA", "lead-a"], ["WB", "lead-b"]] as const) schrijfRecord(staat, { ...(leesRecord(staat, id) as Rec), lead });
+  }
+
+  test("elke lead krijgt alleen de meldingen van haar eigen sessies (prompt en Stop)", async () => {
+    await opzet();
+    for (const id of ["WA", "WB"]) {
+      await verwerk("PreToolUse", { ...sid(id), tool_name: "Bash" }, envAgent(), opt);
+      await verwerk("Stop", sid(id), envAgent(), opt); // blokkeert; tweede stop meldt
+      await verwerk("Stop", { ...sid(id), stop_hook_active: true }, envAgent(), opt);
+    }
+    expect(inboxRegels("lead")).toHaveLength(0);
+    expect(inboxRegels("lead-a").length).toBeGreaterThan(0);
+    expect(inboxRegels("lead-a").every((r) => r.van === "w")).toBe(true);
+    const a = await verwerk("UserPromptSubmit", sid("LA"), envLead(), opt);
+    expect(a.stdout).toContain("Meldingen van je sessies");
+    expect(gelezenOffset(staat, "lead-a")).toBeGreaterThan(0);
+    expect(gelezenOffset(staat, "lead-b")).toBe(0);
+    const b = await verwerk("Stop", sid("LB"), envLead(), opt);
+    expect(b.stdout).toContain("block");
+    expect(gelezenOffset(staat, "lead-b")).toBeGreaterThan(0);
+  });
+
+  test("de wekker wacht op de inbox van de recordnaam, niet op de env-naam", async () => {
+    await opzet();
+    inboxMelding(staat, "lead-a", "w", "klaar", T0);
+    const eigen = await verwerk("wekker", sid("LA"), envLead(), { ...opt, wekkerMax: 0, wacht: async () => {} });
+    expect(eigen.code).toBe(2);
+    inboxMelding(staat, "lead", "w", "klaar", T0); // de env-naam: mag LB niet wekken
+    const ander = await verwerk("wekker", sid("LB"), envLead(), { ...opt, wekkerMax: 0, wacht: async () => {} });
+    expect(ander.code).toBe(0);
+  });
+
+  test("SessionStart bij resume behoudt naam en lead uit het record", async () => {
+    await opzet();
+    await verwerk("SessionStart", sid("LA"), envLead(), { ...opt, panes: () => null });
+    await verwerk("SessionStart", sid("WA"), envAgent(), opt);
+    expect(leesRecord(staat, "LA")?.naam).toBe("lead-a");
+    expect(leesRecord(staat, "WA")?.lead).toBe("lead-a");
+  });
+
+  test("subagents melden aan de lead van hun ouder", async () => {
+    await opzet();
+    await verwerk("SubagentStart", { ...sid("WA"), agent_id: "x1" }, envAgent(), opt);
+    expect(leesRecord(staat, "x1")?.lead).toBe("lead-a");
+  });
+
+  test("dubbele leadnaam bij SessionStart geeft een waarschuwing in de context; levend en weg onderscheiden", async () => {
+    const o = { ...opt, panes: () => new Set(["%1", "%2"]) };
+    const a = await verwerk("SessionStart", sid("LA"), { ...envLead(), TMUX_PANE: "%1" }, o);
+    expect(a.stdout).toBe("");
+    const b = await verwerk("SessionStart", sid("LB"), { ...envLead(), TMUX_PANE: "%2" }, o);
+    expect(b.stdout).toContain("WAARSCHUWING");
+    expect(b.stdout).toContain("lead");
+    expect(JSON.parse(b.stdout).hookSpecificOutput.hookEventName).toBe("SessionStart");
+    // eerste lead weg: geen waarschuwing meer
+    await verwerk("SessionEnd", sid("LA"), envLead(), opt);
+    expect((await verwerk("SessionStart", sid("LB"), { ...envLead(), TMUX_PANE: "%2" }, o)).stdout).toBe("");
+    // dode pane telt ook niet
+    await verwerk("SessionStart", sid("LA"), { ...envLead(), TMUX_PANE: "%1" }, { ...opt, panes: () => new Set(["%2"]) });
+    expect((await verwerk("SessionStart", sid("LB"), { ...envLead(), TMUX_PANE: "%2" }, { ...opt, panes: () => new Set(["%2"]) })).stdout).toBe("");
   });
 });
