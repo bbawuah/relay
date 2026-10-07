@@ -534,7 +534,7 @@ describe("leadnamen: het register is de bron, env alleen de beginwaarde", () => 
 
   test("/clear (nieuw session_id, zelfde pane): naam en lead van het voorgaande record blijven, rol moet gelijk zijn", async () => {
     await opzet();
-    for (const [id, pane] of [["LA", "%5"], ["WA", "%6"]] as const) schrijfRecord(staat, { ...(leesRecord(staat, id) as Rec), pane });
+    for (const [id, pane] of [["LA", "%5"], ["WA", "%6"]] as const) schrijfRecord(staat, { ...(leesRecord(staat, id) as Rec), pane, hernoemd: true });
     const o = { ...opt, panes: () => null };
     await verwerk("SessionStart", sid("LA2"), { ...envLead(), TMUX_PANE: "%5" }, o);
     await verwerk("SessionStart", sid("WA2"), { ...envAgent(), TMUX_PANE: "%6" }, o);
@@ -543,5 +543,18 @@ describe("leadnamen: het register is de bron, env alleen de beginwaarde", () => 
     // andere rol in dezelfde pane: geen overname
     await verwerk("SessionStart", sid("X1"), { ...envAgent(), TMUX_PANE: "%5" }, o);
     expect(leesRecord(staat, "X1")?.lead).toBe("lead");
+  });
+
+  test("/clear zonder hernoemd record: de env-naam geldt; na twee keer /clear blijft de nieuwe naam", async () => {
+    await opzet();
+    const o = { ...opt, panes: () => null };
+    schrijfRecord(staat, { ...(leesRecord(staat, "LA") as Rec), pane: "%5" }); // niet hernoemd
+    await verwerk("SessionStart", sid("LA2"), { ...envLead(), TMUX_PANE: "%5" }, o);
+    expect(leesRecord(staat, "LA2")?.naam).toBe("lead");
+    schrijfRecord(staat, { ...(leesRecord(staat, "LB") as Rec), pane: "%7", hernoemd: true });
+    await verwerk("SessionStart", sid("LB2"), { ...envLead(), TMUX_PANE: "%7" }, o);
+    klok += 1000;
+    await verwerk("SessionStart", sid("LB3"), { ...envLead(), TMUX_PANE: "%7" }, o);
+    expect(leesRecord(staat, "LB3")?.naam).toBe("lead-b");
   });
 });

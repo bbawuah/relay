@@ -83,6 +83,7 @@ export async function verwerk(event: string, invoer: Invoer, env: Omgeving, opti
         if (vg) {
           r.naam = vg.naam || r.naam;
           r.lead = vg.lead || r.lead;
+          r.hernoemd = true;
         }
       }
       schrijfRecord(staat, r);

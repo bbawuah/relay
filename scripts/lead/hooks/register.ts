@@ -36,6 +36,8 @@ export type Rec = {
   blokkades: number;
   ouder: string | null;
   agent_type: string | null;
+  /** Gezet door hernoem.ts: naam/lead zijn bewust gewijzigd en gaan mee bij /clear. */
+  hernoemd?: boolean;
 };
 
 export type Omgeving = { [k: string]: string | undefined };
@@ -265,11 +267,11 @@ export function dubbeleLeads(staat: string, naam: string, eigenId: string, panes
   return levendeLeads(staat, panes, nu).filter((r) => r.naam === naam && r.id !== eigenId);
 }
 
-/** /clear geeft een nieuw session_id: het jongste record in dezelfde pane met dezelfde rolsoort (lead of niet), levend of net `weg`. */
+/** /clear geeft een nieuw session_id: het jongste hernoemde record in dezelfde pane met dezelfde rolsoort (lead of niet), levend of net `weg`. */
 export function voorgangerInPane(staat: string, pane: string, isLead: boolean, eigenId: string, nu: number): Rec | null {
   if (!pane) return null;
   const k = alleRecords(staat).filter(
-    (r) => r.soort === "sessie" && r.id !== eigenId && r.pane === pane && (r.rol === "lead") === isLead && (r.toestand !== "weg" || (r.einde !== null && nu - r.einde < 60_000)),
+    (r) => r.soort === "sessie" && r.id !== eigenId && r.pane === pane && (r.rol === "lead") === isLead && r.hernoemd === true && (r.toestand !== "weg" || (r.einde !== null && nu - r.einde < 60_000)),
   );
   return k.sort((a, b) => b.start - a.start)[0] ?? null;
 }

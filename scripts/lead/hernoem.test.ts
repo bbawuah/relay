@@ -38,6 +38,10 @@ describe("hernoem.ts", () => {
     expect(lead("w1")).toBe("lead-a");
     expect(lead("sub1")).toBe("lead-a");
     expect(lead("w2")).toBe("lead"); // niet genoemd: blijft
+    expect(leesRecord(staat, "L1")?.hernoemd).toBe(true);
+    expect(leesRecord(staat, "w1")?.hernoemd).toBe(true);
+    expect(leesRecord(staat, "sub1")?.hernoemd).toBe(true);
+    expect(leesRecord(staat, "w2")?.hernoemd).toBeUndefined();
   });
 
   test("zonder --volgers verandert geen enkele volger", () => {

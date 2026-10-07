@@ -37,7 +37,7 @@ export function hernoem(
   const dubbel = dubbeleLeads(staat, o.naam, lead.id, panes);
   if (dubbel.length > 0) return stop(`er draait al een lead met de naam '${o.naam}' (sessie ${dubbel[0]?.id.slice(0, 8)}); kies een unieke naam`);
 
-  const wijzigingen: Rec[] = [{ ...lead, naam: o.naam }];
+  const wijzigingen: Rec[] = [{ ...lead, naam: o.naam, hernoemd: true }];
   const uit = [`lead ${lead.id.slice(0, 8)}: naam ${oud || "(leeg)"} -> ${o.naam}`];
   const fout: string[] = [];
   const sessies = records.filter((r) => r.soort === "sessie" && r.rol !== "lead" && r.toestand !== "weg");
@@ -47,10 +47,10 @@ export function hernoem(
       return stop(treffers.length === 0 ? `volger '${v}' is geen levende sessie (niet weg, geen lead)` : `volger '${v}' past op ${treffers.length} levende sessies; noem het id`);
     }
     const s = treffers[0] as Rec;
-    wijzigingen.push({ ...s, lead: o.naam });
+    wijzigingen.push({ ...s, lead: o.naam, hernoemd: true });
     uit.push(`volger ${s.naam || s.id.slice(0, 8)}: lead ${s.lead || "(leeg)"} -> ${o.naam}`);
     for (const k of records.filter((r) => r.soort === "subagent" && r.ouder === s.id)) {
-      wijzigingen.push({ ...k, lead: o.naam });
+      wijzigingen.push({ ...k, lead: o.naam, hernoemd: true });
       uit.push(`  subagent ${k.id.slice(0, 8)}: lead ${k.lead || "(leeg)"} -> ${o.naam}`);
     }
   }
