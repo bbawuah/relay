@@ -60,7 +60,14 @@ fi
 opdracht=$(cd "$(dirname "$opdracht")" && pwd)/$(basename "$opdracht")
 map=$(cd "$map" && pwd)
 
-cmd="claude -n $naam"
+rol=agent
+[ "$sublead" = 0 ] || rol=sublead
+[ -z "$vervolg" ] || rol=vervolg
+# Identiteit voor de hooks (scripts/lead/hooks): de sessie erft deze omgeving.
+# Het opdrachtpad kan een spatie bevatten, dus tussen enkele quotes (een ' is al geweigerd).
+opdracht_q=$opdracht
+case $opdracht_q in *[!A-Za-z0-9_/.:+=@-]*) opdracht_q="'$opdracht_q'" ;; esac
+cmd="env LAB_AGENT_NAAM=$naam LAB_AGENT_ROL=$rol LAB_LEAD_NAAM=$lead LAB_OPDRACHT=$opdracht_q claude -n $naam"
 if [ -n "$model" ]; then cmd="$cmd --model $model"; fi
 pad=$opdracht
 case $pad in *[[:space:]]*) pad="'$pad'" ;; esac
@@ -79,6 +86,7 @@ fi
 
 if [ "$droog" = 1 ]; then
   echo "droog: $SPAWN window $map \"$cmd\""
+  echo "droog: tmux set -p -t <pane> @agent_rol $rol; tmux set -p -t <pane> @agent_naam $naam"
   echo "droog: wacht (max ${WACHT}s) tot de pane 'auto mode' of de promptregel toont"
   echo "droog: tmux send-keys -l \"$zin\" + Enter"
   echo "droog: controleer dat er een tool-aanroep (⏺) verschijnt (max ${BEWIJS}s)"
@@ -87,6 +95,9 @@ fi
 
 pane=$(bash "$SPAWN" window "$map" "$cmd" | tail -n 1)
 [[ $pane =~ ^%[0-9]+$ ]] || fout "kreeg geen pane-id terug van het spawn-script: '$pane'"
+
+tmux set -p -t "$pane" @agent_rol "$rol" 2>/dev/null || true
+tmux set -p -t "$pane" @agent_naam "$naam" 2>/dev/null || true
 
 klaar=0 verstreken=0
 while :; do

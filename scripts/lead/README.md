@@ -26,7 +26,7 @@ scripts/lead/spawn.sh --naam w2 --opdracht opdracht.md --lead labbawuah-1c --dro
 
 Wat het doet:
 
-1. Start `agent-spawn.sh window <map> "claude -n <naam> [--model m]"`. De opdracht staat dus niet in de quotes van het commando.
+1. Start `agent-spawn.sh window <map> "env LAB_AGENT_NAAM=<naam> LAB_AGENT_ROL=<agent|sublead|vervolg> LAB_LEAD_NAAM=<lead> LAB_OPDRACHT=<abs pad> claude -n <naam> [--model m]"`. Het voorvoegsel is de identiteit voor de hooks (zie "Hooks en `lead status`"); het opdrachtpad staat in het voorvoegsel (met spatie tussen enkele quotes), de startzin staat niet in de quotes van het commando. Direct na het starten zet het script `tmux set -p -t <pane> @agent_rol <rol>` en `@agent_naam <naam>`.
 2. Wacht (max 60 s) tot `tmux capture-pane` "auto mode" of een lege invoerbox (`│ ❯`) toont. Staat er "trust" of "Do you want" in de pane (trust-dialoog), dan stopt het met exit 1 ("trust-dialoog: Brian moet de map vertrouwen (pane <id>)") en typt niets.
 3. Typt met `tmux send-keys -l` de startzin: "Je lead is <lead>. Jij bent sessie <naam>. Lees <bestand> en voer die uit. Rapporteer aan de lead via SendMessage (to: <lead>)." en daarna Enter.
 4. Wacht (max 30 s) op een tool-aanroep (`⏺`) in de pane. Zo niet: exit 1 met melding.
@@ -88,6 +88,68 @@ Stappen:
 | `--ci-wacht <s>` | Seconden (standaard 30, of env `LAB_WACHTRIJ_CI_WACHT`) die na het openen van de integratie-PR gewacht wordt op de eerste CI-CheckRun (`__typename` CheckRun, `workflowName` CI; Vercel-entries tellen niet). Is er dan nog geen, dan staat in de uitvoer `WAARSCHUWING: geen CI-run voor <sha7>; sluit en heropen de PR of push opnieuw`. |
 | `--map <pad>` | Pad van de worktree. |
 | `--basis <ref>` | Basis van de wachtrij en van de poort (`--base`), standaard `origin/main`; de body noemt deze basis. De integratie-PR zelf gaat altijd naar `main`. |
+
+## Hooks en `lead status`
+
+`scripts/lead/hooks/` houdt per Claude-sessie en per subagent een register bij, zodat de lead de toestand van haar sessies ziet zonder ListAgents of `tmux capture-pane`. Dit is los van `status.sh` van tmux-pwa (per pane, voor de PWA).
+
+**Identiteit.** Alleen sessies met `LAB_AGENT_ROL` (`lead`, `agent`, `sublead`, `vervolg`) doen mee; zonder rol stopt `hook.sh` meteen met exit 0 (gw-sessies en losse sessies van Brian). `spawn.sh` zet de rol, `LAB_AGENT_NAAM`, `LAB_LEAD_NAAM` en `LAB_OPDRACHT`.
+
+**Startregel van de lead.** De lead krijgt `LAB_AGENT_ROL=lead` pas na een herstart met:
+
+```sh
+LAB_LEAD=1 LAB_AGENT_ROL=lead LAB_AGENT_NAAM=lead LAB_LEAD_NAAM=lead claude -n lead
+```
+
+De inbox van de lead heet naar haar `LAB_AGENT_NAAM`; agents schrijven naar `inbox/<LAB_LEAD_NAAM>`. Houd die twee gelijk aan de sessienaam en aan `--lead` van `spawn.sh`.
+
+### Het register
+
+`${LAB_LEAD_STAAT:-~/.local/state/lab-lead}/` (umask 077): `register/<id>.json` (atomair), `inbox/<lead>.jsonl` en `inbox/<lead>.gelezen`. Bewaard wordt naam, rol, lead, opdracht, cwd, pane, toestand, tijden, de naam van de laatste tool en bij een rapport alleen wie de ontvanger was en of "vrij" erin stond. Nooit: prompts, tool-invoer, antwoorden of transcripts.
+
+| Hook | Event | Doet |
+|---|---|---|
+| H1 | SessionStart (`startup\|resume`) | maakt het record, `bezig` |
+| H2 | UserPromptSubmit | `bezig`, beurtteller op nul; bij de lead: ongelezen meldingen als `additionalContext` |
+| H3 | PreToolUse (`*`) | `bezig`, laatste tool; in een subagent het record van de subagent |
+| H4 | PostToolUse (`SendMessage`) | `SendMessage` aan de eigen lead: rapport binnen, en `vrij` als het bericht dat woord bevat |
+| H5 | Notification (`permission_prompt`, `idle_prompt`) | `goedkeuring` of `idle`, met een melding aan de lead |
+| H6 | Stop (agent, sublead, vervolg) | de gate, zie onder; anders `klaar`, `vrij` of `idle`, met een melding |
+| H7 | Stop (lead) | ongelezen meldingen: eenmalig `decision: block` met de regels |
+| H8 | StopFailure | `vastgelopen`, met een melding |
+| H9 | SubagentStart, SubagentStop | record per subagent onder de ouder: `bezig`, daarna `klaar` |
+| H10 | SessionEnd | `weg` (één write, timeout 1 s) |
+| H11 | Stop met `hook.sh wekker`, alleen met `--met-wekker` | wekt de lead (`asyncRewake`, exit 2) als er een melding komt; geeft op na 30 min |
+
+### Toestanden
+
+`bezig`, `idle`, `goedkeuring` (wacht op een permissieprompt), `klaar` (rapport binnen), `vrij` (rapport met "vrij": nieuwe opdracht of sluiten), `vastgelopen` en `weg`. `klaar` zonder `vrij` betekent dat de afronding (opruimen, "vrij" melden) nog openstaat. `status.sh` voegt `bezig ?` toe (afgeleid, geen hook): geen tool-event in 20 min, of `goedkeuring` langer dan 10 min.
+
+```sh
+scripts/lead/status.sh [--lead <n>] [--alles] [--git] [--json]
+```
+
+`--alles` toont ook `weg` en afgeronde subagents (`weg` ouder dan 24 uur wordt opgeruimd); `--git` toont per cwd schoon/vuil, tak en of die in `origin/main` zit (laatste fetch, geen netwerk). Subagents van een sub-lead staan onder haar.
+
+### De gate (H6)
+
+Een agent die na minstens één tool stopt zonder `SendMessage` aan de lead krijgt `{"decision":"block","reason":"Je stopt zonder rapport aan <lead>. …"}`. Rem: hoogstens 3 blokkades per sessie, daarna altijd doorlaten met de melding "stopte 3× zonder rapport". Geen blokkade bij `stop_hook_active` (de tweede stop gaat door), zonder tools in de beurt, of zolang er een subagent van de sessie bezig is.
+
+### Meldingen
+
+Elke toestandswijziging die de lead moet weten (klaar, vrij, goedkeuring, vastgelopen, 3× zonder rapport) komt als regel in `inbox/<lead>.jsonl`. De lead krijgt ze bij haar volgende prompt (H2) en bij haar Stop (H7), of via de wekker (H11). Pollen is niet nodig.
+
+### Installeren (Brian draait dit zelf)
+
+```sh
+! bun scripts/lead/installeer-hooks.ts --droog      # toont de diff van .hooks en de te kopiëren bestanden
+! bun scripts/lead/installeer-hooks.ts              # installeert
+! bun scripts/lead/installeer-hooks.ts --verwijder  # haalt precies de eigen entries weg
+```
+
+Opties: `--met-wekker` (extra Stop-entry, `asyncRewake`, timeout 1900 s), `--settings <pad>` (standaard `~/.claude/settings.json`), `--doel <map>` (standaard `~/.claude/hooks/lab-lead-hooks/`; moet op `lab-lead-hooks` eindigen). De installer raakt alleen `.hooks` aan; eigen entries herkent hij aan `lab-lead-hooks/hook.sh` in het commando, dus herhaald installeren verandert niets en bestaande entries (tmux-pwa, grenzen, werknotities) blijven gelijk. Hij kopieert `hook.sh`, `hook.ts` en `register.ts` naar het doel (los van de checkout), zet het absolute bun-pad in het commando (`LAB_LEAD_BUN=<pad> <doel>/hook.sh`), maakt eerst een backup `settings.json.voor-lead-hooks-<stempel>`, schrijft atomair en valideert de JSON na het schrijven. Timeouts: 5 s per entry, SessionEnd 1 s. Nieuwe sessies pakken de hooks op; draaiende sessies pas na een herstart.
+
+`bash scripts/lead/hooks/demo.sh` toont alles in een wegwerpomgeving (tijdelijke `HOME`, `CLAUDE_CONFIG_DIR` en staatmap, nep-hook-JSON, installer alleen met `--droog`) en ruimt zichzelf op.
 
 ## CI-team
 

@@ -371,6 +371,42 @@ describe("spawn.sh", () => {
     expect(log("spawn.log")).not.toContain("Je lead is");
   });
 
+  test("het commando krijgt het env-voorvoegsel voor de hooks, per rol; --droog toont het", () => {
+    const o = opdracht();
+    const voor = (rol: string) => `env LAB_AGENT_NAAM=w1 LAB_AGENT_ROL=${rol} LAB_LEAD_NAAM=lead-x LAB_OPDRACHT=${o} claude -n w1`;
+    const a = draai(SPAWN, ["--naam", "w1", "--opdracht", o, "--lead", "lead-x", "--droog"], basis());
+    expect(a.uit).toContain(`"${voor("agent")}"`);
+    expect(a.uit).toContain("@agent_rol agent");
+    expect(a.uit).toContain("@agent_naam w1");
+    const s = draai(SPAWN, ["--naam", "w1", "--opdracht", o, "--lead", "lead-x", "--sublead", "--droog"], basis());
+    expect(s.uit).toContain(`"${voor("sublead")}"`);
+    const v = draai(SPAWN, ["--naam", "w1", "--opdracht", o, "--lead", "lead-x", "--vervolg", "lead/test-tak", "--map", repo, "--droog"], basis());
+    expect(v.uit).toContain(`"${voor("vervolg")}"`);
+    const m = draai(SPAWN, ["--naam", "w1", "--opdracht", o, "--lead", "lead-x", "--model", "opus", "--droog"], basis());
+    expect(m.uit).toContain(`${voor("agent")} --model opus"`);
+  });
+
+  test("een opdrachtpad met spatie staat in het voorvoegsel tussen enkele quotes", () => {
+    const spatie = join(dir, "met spatie.md");
+    writeFileSync(spatie, "x");
+    const r = draai(SPAWN, ["--naam", "w1", "--opdracht", spatie, "--lead", "l", "--droog"], basis());
+    expect(r.uit).toContain(`LAB_OPDRACHT='${spatie}' claude -n w1`);
+  });
+
+  test("zet na het starten @agent_rol en @agent_naam op de pane (nep-tmux)", () => {
+    writeFileSync(join(dir, "pane.txt"), "Claude Code\n  auto mode on (shift+tab)\n");
+    writeFileSync(join(dir, "reageert"), "");
+    const map = join(dir, "werkmap");
+    mkdirSync(map);
+    const r = draai(SPAWN, ["--naam", "s1", "--opdracht", opdracht(), "--lead", "lead-x", "--sublead", "--map", map], basis({ LAB_SPAWN_BEWIJS: "2", LAB_SPAWN_POLS: "1" }));
+    expect(r.code).toBe(0);
+    const t = log("tmux.log");
+    expect(t).toContain("tmux set -p -t %7 @agent_rol sublead");
+    expect(t).toContain("tmux set -p -t %7 @agent_naam s1");
+    expect(t.indexOf("@agent_rol")).toBeLessThan(t.indexOf("send-keys"));
+    expect(log("spawn.log")).toContain("LAB_AGENT_ROL=sublead");
+  });
+
   test("LAB_LEAD_NAAM geldt als --lead ontbreekt", () => {
     const r = draai(SPAWN, ["--naam", "w1", "--opdracht", opdracht(), "--droog"], basis({ LAB_LEAD_NAAM: "uit-env" }));
     expect(r.uit).toContain("Je lead is uit-env.");
