@@ -68,7 +68,10 @@ fi
 # Geen enkele CheckRun van de CI-workflow (lead.conf): GitHub startte soms geen CI bij een nieuwe PR (#85, #87, #88). Dat is
 # iets anders dan "poort niet groen" of "poort ontbreekt": wachten helpt niet, de PR moet opnieuw een run krijgen.
 # Vercel zet eigen entries in de rollup (StatusContext "Vercel", CheckRun "Vercel Preview Comments"); die tellen niet.
-if [ "$(printf '%s' "$json" | jq -r --arg w "$CI_WORKFLOW" '[.statusCheckRollup[]? | select(.__typename == "CheckRun" and .workflowName == $w)] | length')" -eq 0 ]; then
+# Fail-closed: faalt jq of is de uitvoer geen getal, dan weigert merge.sh (geen CI-run overslaan).
+ci_n=$(printf '%s' "$json" | jq -r --arg w "$CI_WORKFLOW" '[.statusCheckRollup[]? | select(.__typename == "CheckRun" and .workflowName == $w)] | length') || fout "kon de CI-runs niet uitlezen (jq faalde)"
+[[ $ci_n =~ ^[0-9]+$ ]] || fout "kon de CI-runs niet uitlezen (onverwachte jq-uitvoer)"
+if [ "$ci_n" -eq 0 ]; then
   fout "geen CI-run voor $sha; sluit en heropen de PR of push opnieuw"
 fi
 

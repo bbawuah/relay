@@ -152,6 +152,12 @@ describe("CI-workflownaam (één bron: lead.conf)", () => {
     expect(geenCiMelding(rollup, "abcdef1", "Poort")).toBeNull();
     expect(geenCiMelding(rollup, "abcdef1", "CI")).toContain("geen CI-run");
   });
+  test("de sh-lezer en de regex-lezer halen dezelfde waarde uit lead.conf", () => {
+    const conf = join(import.meta.dir, "lead.conf");
+    const sh = Bun.spawnSync(["sh", "-c", `. "${conf}" && printf %s "$CI_WORKFLOW"`], { env: schoneEnv() }).stdout.toString();
+    expect(sh).not.toBe("");
+    expect(ciWorkflow({}, conf)).toBe(sh);
+  });
   test("geen letterlijke workflownaam meer in merge.sh en wachtrij.ts", () => {
     expect(readFileSync(MERGE, "utf8")).not.toMatch(/workflowName == "CI"/);
     expect(readFileSync(WACHTRIJ, "utf8")).not.toMatch(/workflowName === "CI"/);
@@ -742,6 +748,34 @@ describe("merge.sh bezitscheck", () => {
     const r = Bun.spawnSync(["bash", MERGE, "1", "--droog"], { cwd: repo, env: omgeving({ LAB_MERGE_CI_WORKFLOW: "Andere" }) });
     expect(r.exitCode).toBe(1);
     expect(r.stderr.toString()).toContain("geen CI-run voor");
+  });
+
+  test("merge.sh vindt lead.conf ook vanaf een ander cwd", () => {
+    prJson(["scripts/lead/wachtrij.ts"]);
+    const r = Bun.spawnSync(["bash", MERGE, "1", "--droog"], { cwd: dir, env: omgeving() });
+    expect(r.stderr.toString()).not.toContain("lead.conf");
+    expect(r.exitCode).toBe(0);
+  });
+
+  test("fail-closed: faalt jq bij de CI-telling, dan weigert merge.sh", () => {
+    prJson(["scripts/lead/wachtrij.ts"]);
+    const echt = Bun.which("jq");
+    expect(echt).toBeTruthy();
+    writeFileSync(join(bin, "jq"), `#!/bin/sh\ncase "$*" in *"--arg w "*) exit 5 ;; esac\nexec "${echt}" "$@"\n`);
+    chmodSync(join(bin, "jq"), 0o755);
+    const r = merge(["1", "--droog"]);
+    expect(r.code).toBe(1);
+    expect(r.fout).toContain("CI-runs niet uitlezen");
+  });
+
+  test("fail-closed: lege jq-uitvoer bij de CI-telling weigert ook", () => {
+    prJson(["scripts/lead/wachtrij.ts"]);
+    const echt = Bun.which("jq");
+    writeFileSync(join(bin, "jq"), `#!/bin/sh\ncase "$*" in *"--arg w "*) exit 0 ;; esac\nexec "${echt}" "$@"\n`);
+    chmodSync(join(bin, "jq"), 0o755);
+    const r = merge(["1", "--droog"]);
+    expect(r.code).toBe(1);
+    expect(r.fout).toContain("CI-runs niet uitlezen");
   });
 
   test("zonder --contract verandert er niets", () => {

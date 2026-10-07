@@ -315,6 +315,13 @@ function ruimTakken(o: Opties, root: string): never {
 function hoofd(args: string[]): never {
   const o = leesOpties(args);
   if (typeof o === "string") return klaar(1, `wachtrij: ${o}`);
+  // Eén keer bij de start lezen: een kapotte lead.conf stopt de run voor er iets gebouwd of gepusht is.
+  let workflow: string;
+  try {
+    workflow = ciWorkflow();
+  } catch (e) {
+    return klaar(1, `wachtrij: ${(e as Error).message}`);
+  }
   const root = run(["git", "rev-parse", "--show-toplevel"]).uit;
   if (!root) return klaar(1, "wachtrij: draai dit in een git-clone van de repo");
   if (o.ruim) return ruimTakken(o, root);
@@ -407,7 +414,7 @@ function hoofd(args: string[]): never {
     try {
       info = JSON.parse(v.uit);
     } catch {}
-    ciMelding = v.code === 0 ? geenCiMelding(info.statusCheckRollup, info.headRefOid ?? head) : null;
+    ciMelding = v.code === 0 ? geenCiMelding(info.statusCheckRollup, info.headRefOid ?? head, workflow) : null;
     if (!ciMelding || t >= o.ciWacht) break;
     Bun.sleepSync(5000);
   }
