@@ -3,9 +3,17 @@
 // Verzamelt open PR's met "Lead-review: akkoord <sha7>" (gelijk aan de head), bouwt
 // wachtrij/<jjjjmmdd-hhmm> vanaf origin/main, draait één volledige poort en opent één
 // integratie-PR. Zie scripts/lead/README.md.
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import path from "node:path";
 import { schoneEnv } from "../test-integriteit.ts";
+
+/** Workflownaam van de CI: één bron in lead.conf (ook door merge.sh gelezen); override met env LAB_MERGE_CI_WORKFLOW. */
+export function ciWorkflow(env: Record<string, string | undefined> = process.env, conf = path.join(import.meta.dir, "lead.conf")): string {
+  if (env.LAB_MERGE_CI_WORKFLOW) return env.LAB_MERGE_CI_WORKFLOW;
+  const m = readFileSync(conf, "utf8").match(/^CI_WORKFLOW=(\S+)\s*$/m);
+  if (!m) throw new Error(`CI_WORKFLOW ontbreekt in ${conf}`);
+  return m[1];
+}
 
 export type Pr = {
   number: number;
@@ -307,6 +315,13 @@ function ruimTakken(o: Opties, root: string): never {
 function hoofd(args: string[]): never {
   const o = leesOpties(args);
   if (typeof o === "string") return klaar(1, `wachtrij: ${o}`);
+  // Eén keer bij de start lezen: een kapotte lead.conf stopt de run voor er iets gebouwd of gepusht is.
+  let workflow: string;
+  try {
+    workflow = ciWorkflow();
+  } catch (e) {
+    return klaar(1, `wachtrij: ${(e as Error).message}`);
+  }
   const root = run(["git", "rev-parse", "--show-toplevel"]).uit;
   if (!root) return klaar(1, "wachtrij: draai dit in een git-clone van de repo");
   if (o.ruim) return ruimTakken(o, root);
@@ -399,7 +414,7 @@ function hoofd(args: string[]): never {
     try {
       info = JSON.parse(v.uit);
     } catch {}
-    ciMelding = v.code === 0 ? geenCiMelding(info.statusCheckRollup, info.headRefOid ?? head) : null;
+    ciMelding = v.code === 0 ? geenCiMelding(info.statusCheckRollup, info.headRefOid ?? head, workflow) : null;
     if (!ciMelding || t >= o.ciWacht) break;
     Bun.sleepSync(5000);
   }
@@ -410,13 +425,13 @@ function hoofd(args: string[]): never {
 }
 
 /**
- * Geen enkele CheckRun van workflow "CI" op de head: GitHub startte soms geen CI (#85, #87, #88). Geeft de melding of null.
+ * Geen enkele CheckRun van de CI-workflow (zie ciWorkflow) op de head: GitHub startte soms geen CI (#85, #87, #88). Geeft de melding of null.
  * Vercel-entries (StatusContext "Vercel", CheckRun "Vercel Preview Comments") tellen niet mee; zelfde criterium als merge.sh.
  */
-export function geenCiMelding(rollup: unknown[] | null | undefined, sha: string): string | null {
+export function geenCiMelding(rollup: unknown[] | null | undefined, sha: string, workflow: string = ciWorkflow()): string | null {
   const ci = (rollup ?? []).filter((e) => {
     const r = e as { __typename?: string; workflowName?: string } | null;
-    return r?.__typename === "CheckRun" && r.workflowName === "CI";
+    return r?.__typename === "CheckRun" && r.workflowName === workflow;
   });
   return ci.length > 0 ? null : `geen CI-run voor ${sha.slice(0, 7)}; sluit en heropen de PR of push opnieuw`;
 }

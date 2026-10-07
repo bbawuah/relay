@@ -19,7 +19,7 @@
 
 import { chmodSync, copyFileSync, existsSync, mkdirSync, readFileSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { basename, dirname, join, resolve } from "node:path";
+import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 
 export const MERK = "lab-lead-hooks/hook.sh";
 export const BESTANDEN = ["hook.sh", "hook.ts", "register.ts"];
@@ -231,13 +231,22 @@ export function leesArgs(argv: string[], home = homedir()): Omit<Opties, "bun" |
   return o;
 }
 
+/**
+ * Stabiel bun-pad voor de hooks: `bun` uit PATH (bv. /opt/homebrew/bin/bun, een symlink die een `brew upgrade` overleeft).
+ * Het versiepad van het draaiende proces (process.execPath, bv. .../Cellar/bun/1.4.2/bin/bun) is de laatste terugval.
+ */
+export function kiesBun(which: (n: string) => string | null = (n) => Bun.which(n), execPath: string = process.execPath): string {
+  const gevonden = which("bun");
+  return gevonden && isAbsolute(gevonden) ? gevonden : execPath;
+}
+
 if (import.meta.main) {
   const a = leesArgs(process.argv.slice(2));
   if (typeof a === "string") {
     console.error(`installeer-hooks: ${a}`);
     process.exit(1);
   }
-  const bun = process.execPath;
+  const bun = kiesBun();
   const u = installeer({ ...a, bun, nu: new Date(), bron: join(import.meta.dir, "hooks") });
   process.stdout.write(u.stdout);
   process.stderr.write(u.stderr);

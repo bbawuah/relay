@@ -67,9 +67,27 @@ describe("hook.sh", () => {
     expect(existsSync(join(dir, "markeer"))).toBe(true);
   });
 
-  test("LAB_LEAD_BUN wint van PATH; een ontbrekende bun geeft exit 0", () => {
+  test("LAB_LEAD_BUN wint van PATH als hij uitvoerbaar is", () => {
     const bin = nepBun();
-    expect(draai({ PATH: `${bin}:/usr/bin:/bin`, LAB_AGENT_ROL: "agent", LAB_LEAD_BUN: join(dir, "bestaat-niet") }).code).toBe(0);
+    const eigen = join(dir, "eigen");
+    writeFileSync(eigen, `#!/bin/sh\ntouch "${join(dir, "eigen-markeer")}"\n`);
+    chmodSync(eigen, 0o755);
+    expect(draai({ PATH: `${bin}:/usr/bin:/bin`, LAB_AGENT_ROL: "agent", LAB_LEAD_BUN: eigen }).code).toBe(0);
+    expect(existsSync(join(dir, "eigen-markeer"))).toBe(true);
+    expect(existsSync(join(dir, "markeer"))).toBe(false);
+  });
+
+  test("LAB_LEAD_BUN wijst naar een verdwenen pad (brew upgrade): terugval op bun uit PATH", () => {
+    const bin = nepBun();
+    const weg = join(dir, "Cellar/bun/1.4.2/bin/bun");
+    expect(draai({ PATH: `${bin}:/usr/bin:/bin`, LAB_AGENT_ROL: "agent", LAB_LEAD_BUN: weg }).code).toBe(0);
+    expect(existsSync(join(dir, "markeer"))).toBe(true);
+  });
+
+  test("LAB_LEAD_BUN verdwenen en geen bun in PATH: exit 0 zonder uitvoer", () => {
+    const r = draai({ PATH: "/nergens", LAB_AGENT_ROL: "agent", LAB_LEAD_BUN: join(dir, "bestaat-niet") });
+    expect(r.code).toBe(0);
+    expect(r.out + r.err).toBe("");
     expect(existsSync(join(dir, "markeer"))).toBe(false);
     expect(draai({ PATH: "/nergens", LAB_AGENT_ROL: "agent" }).code).toBe(0);
   });

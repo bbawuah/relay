@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, readlinkSync, renameSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { EVENTS, MERK, type Opties, installeer, leesArgs } from "./installeer-hooks";
+import { EVENTS, MERK, type Opties, installeer, kiesBun, leesArgs } from "./installeer-hooks";
 
 // Alles in een wegwerpmap; de echte ~/.claude wordt nooit gelezen of geschreven.
 
@@ -259,5 +259,20 @@ describe("installeer-hooks", () => {
     expect(leesArgs(["--settings"], "/h")).toMatch(/waarde/);
     expect(leesArgs(["--nee"], "/h")).toMatch(/onbekend/);
     expect(leesArgs(["--verwijder", "--met-wekker"], "/h")).toMatch(/sluiten elkaar uit/);
+  });
+});
+
+describe("kiesBun", () => {
+  test("bun uit PATH wint van het versiepad van het proces", () => {
+    expect(kiesBun(() => "/opt/homebrew/bin/bun", "/opt/homebrew/Cellar/bun/1.4.2/bin/bun")).toBe("/opt/homebrew/bin/bun");
+  });
+  test("niets in PATH: terugval op process.execPath", () => {
+    expect(kiesBun(() => null, "/opt/homebrew/Cellar/bun/1.4.2/bin/bun")).toBe("/opt/homebrew/Cellar/bun/1.4.2/bin/bun");
+  });
+  test("een relatief pad uit PATH telt niet", () => {
+    expect(kiesBun(() => "bun", "/x/bun")).toBe("/x/bun");
+  });
+  test("standaard gebruikt hij Bun.which en geeft een absoluut pad", () => {
+    expect(kiesBun().startsWith("/")).toBe(true);
   });
 });
