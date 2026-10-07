@@ -60,6 +60,7 @@ echo "nep-gh: onverwacht commando $*" >&2; exit 2
   schrijfBin(
     "tmux",
     `#!/usr/bin/env bash
+if [ "$1" = list-panes ]; then cat "$FAKE_DIR/panes.txt" 2>/dev/null; exit 0; fi
 echo "tmux $*" >> "$FAKE_DIR/tmux.log"
 case $1 in
   capture-pane) cat "$FAKE_DIR/pane.txt" 2>/dev/null; exit 0 ;;
@@ -90,6 +91,7 @@ const omgeving = (extra: Record<string, string> = {}) => ({
   ...schoon(),
   PATH: `${bin}:${process.env.PATH}`,
   FAKE_DIR: dir,
+  LAB_LEAD_STAAT: join(dir, "staat"),
   TMUX: "",
   TMUX_PANE: "",
   ...extra,
@@ -350,6 +352,55 @@ describe("spawn.sh", () => {
     expect(r.uit).toContain("Je lead is lead-x. Jij bent sessie w1.");
     expect(log("spawn.log")).toBe("");
     expect(log("tmux.log")).toBe("");
+  });
+
+  const leadRecord = (id: string, naam: string, pane: string, toestand = "bezig") => {
+    mkdirSync(join(dir, "staat", "register"), { recursive: true });
+    const r = { id, soort: "sessie", naam, rol: "lead", lead: "", pane, toestand, sinds: 1, start: 1 };
+    writeFileSync(join(dir, "staat", "register", `${id}.json`), JSON.stringify(r));
+  };
+
+  test("weigert een dubbele leadnaam (twee levende leads, aanroeper onbekend)", () => {
+    writeFileSync(join(dir, "panes.txt"), "%1\n%2\n");
+    leadRecord("aaaa1111", "lead", "%1");
+    leadRecord("bbbb2222", "lead", "%2");
+    const r = draai(SPAWN, ["--naam", "w1", "--opdracht", opdracht(), "--lead", "lead", "--droog"], basis());
+    expect(r.code).toBe(1);
+    expect(r.fout).toMatch(/geef --lead <unieke naam>|Geef --lead <unieke naam>/);
+    expect(log("spawn.log")).toBe("");
+  });
+
+  test("dubbele naam met herkende aanroeper (TMUX_PANE) weigert; een weg-record of dode pane telt niet", () => {
+    writeFileSync(join(dir, "panes.txt"), "%1\n%2\n");
+    leadRecord("aaaa1111", "lead", "%1");
+    leadRecord("bbbb2222", "lead", "%2");
+    const args = ["--naam", "w1", "--opdracht", opdracht(), "--droog"];
+    // zonder --lead: de naam komt uit het register van pane %1 (en is dubbel)
+    const r = draai(SPAWN, args, basis({ TMUX_PANE: "%1" }));
+    expect(r.code).toBe(1);
+    expect(r.fout).toMatch(/unieke naam/);
+    leadRecord("bbbb2222", "lead", "%2", "weg");
+    const ok = draai(SPAWN, args, basis({ TMUX_PANE: "%1" }));
+    expect(ok.fout).toBe("");
+    expect(ok.uit).toContain("LAB_LEAD_NAAM=lead ");
+    leadRecord("bbbb2222", "lead", "%2");
+    writeFileSync(join(dir, "panes.txt"), "%1\n"); // pane %2 bestaat niet meer
+    expect(draai(SPAWN, args, basis({ TMUX_PANE: "%1" })).code).toBe(0);
+  });
+
+  test("een mislukte dubbel-controle (andere exit dan 3) geeft een waarschuwing en spawnt toch", () => {
+    schrijfBin("stuk-bun", "#!/bin/sh\nexit 7\n");
+    const r = draai(SPAWN, ["--naam", "w1", "--opdracht", opdracht(), "--lead", "lead", "--droog"], basis({ LAB_LEAD_BUN: join(bin, "stuk-bun") }));
+    expect(r.code).toBe(0);
+    expect(r.fout).toMatch(/waarschuwing.*exit 7/);
+  });
+
+  test("zonder --lead geldt de leadnaam uit het register boven LAB_LEAD_NAAM", () => {
+    writeFileSync(join(dir, "panes.txt"), "%1\n");
+    leadRecord("aaaa1111", "lead-ruimte", "%1");
+    const r = draai(SPAWN, ["--naam", "w1", "--opdracht", opdracht(), "--droog"], basis({ TMUX_PANE: "%1", LAB_LEAD_NAAM: "lead" }));
+    expect(r.fout).toBe("");
+    expect(r.uit).toContain("LAB_LEAD_NAAM=lead-ruimte ");
   });
 
   test("start, wacht op de prompt, typt de startzin letterlijk en geeft het pane-id", () => {

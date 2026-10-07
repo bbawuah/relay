@@ -18,7 +18,7 @@ scripts/lead/spawn.sh --naam w2 --opdracht opdracht.md --lead labbawuah-1c --dro
 | `--opdracht <bestand>` | Moet bestaan, anders weigert het script. De sessie krijgt het absolute pad (met spatie: tussen enkele quotes). Een pad met regeleinde of `'` wordt geweigerd. |
 | `--model sonnet\|opus` | Optioneel; zonder de standaard van Claude Code. |
 | `--map <pad>` | Werkmap van de sessie; standaard de huidige map. |
-| `--lead <naam>` | Naam van de lead voor de startzin; anders env `LAB_LEAD_NAAM`. |
+| `--lead <naam>` | Naam van de lead voor de startzin. Zonder: de naam van de aanroepende lead uit het register (via `TMUX_PANE`), anders env `LAB_LEAD_NAAM`. Draaien er twee levende leads met die naam, dan weigert het script ("geef --lead <unieke naam>"). |
 | `--sublead` | Start een sub-lead: de startzin verwijst naar `scripts/lead/sublead.md` (bouwer, reviewer die niet plant, één herstelronde met de Agent-tool) en vraagt een korte melding (PR, sha, oordeel, open punten). |
 | `--workflow <JJJJ-MM-DD>` | Alleen bij `--sublead`, en alleen als Brian workflows toestond op die datum (de lead noteert dat in `~/vault-b-status/lead.md`): de startzin zegt dat en wijst naar `scripts/lead/vaste-cyclus.js`. Zonder deze vlag staat er "Geen Workflow-tool." in de startzin. |
 | `--vervolg <tak>` | Verse sessie op een bestaande tak (lokaal of `origin/<tak>` in `--map`, anders exit 1): de startzin laat haar alleen de opdracht en `git log`/diff van de tak lezen, geen oude context. Sluit `--sublead` uit. |
@@ -98,10 +98,23 @@ Stappen:
 **Startregel van de lead.** De lead krijgt `LAB_AGENT_ROL=lead` pas na een herstart met:
 
 ```sh
-LAB_LEAD=1 LAB_AGENT_ROL=lead LAB_AGENT_NAAM=lead LAB_LEAD_NAAM=lead claude -n lead
+LAB_LEAD=1 LAB_AGENT_ROL=lead LAB_AGENT_NAAM=lead-<onderwerp> LAB_LEAD_NAAM=lead-<onderwerp> claude -n lead-<onderwerp>
 ```
 
-De inbox van de lead heet naar haar `LAB_AGENT_NAAM`; agents schrijven naar `inbox/<LAB_LEAD_NAAM>`. Houd die twee gelijk aan de sessienaam en aan `--lead` van `spawn.sh`.
+Geef elke lead een unieke naam (`lead-<onderwerp>`): de inbox van de lead heet naar haar naam (`inbox/<naam>.jsonl`), agents schrijven naar `inbox/<hun lead>`. Twee leads met dezelfde naam krijgen elkaars meldingen.
+
+**Het register is de bron.** De env geeft alleen de beginwaarde: bij het eerste record nemen de hooks `LAB_AGENT_NAAM` (lead) en `LAB_LEAD_NAAM` (anderen) over. Daarna lezen ze de leadnaam (lead: `naam`) en het meldadres (anderen: `lead`) bij elk event uit het record, ook de wekker en de inbox-lezer. Een `resume` behoudt die waarden. Een subagent meldt aan de lead van zijn ouder.
+
+**Hernoemen in een lopende sessie** (zonder herstart):
+
+```sh
+bun scripts/lead/hernoem.ts --sessie <id> --naam lead-<onderwerp> --volgers w1,w2 --droog
+bun scripts/lead/hernoem.ts --sessie <id> --naam lead-<onderwerp> --volgers w1,w2
+```
+
+Hernoemt het lead-record (id of uniek begin; zie `bun scripts/lead/status.sh --json`) en zet de genoemde levende sessies (op naam of id, niet `weg`) om naar de nieuwe lead, met hun subagent-records. Zonder `--volgers` wordt geen enkele volger omgezet: er wordt nooit geraden welke sessies van wie zijn. Een onbekende of dode volger, of een naam die al bij een levende lead hoort, geeft exit 1 en schrijft niets. Oude meldingen blijven in de inbox van de oude naam: lees die eerst leeg en noem alle volgers in `--volgers` (wie ontbreekt, blijft naar de oude naam melden). De wekker pakt de nieuwe naam pas bij zijn volgende start. Na `/clear` (nieuw session_id) neemt een sessie naam en lead over van het jongste record in dezelfde pane. Doe daarna in de lead zelf `/rename <nieuw>`, anders komt `SendMessage (to: <nieuw>)` niet aan. Agents die nog de oude naam in hun startzin hebben, sturen hun `SendMessage` naar die oude naam: geef de volgers de nieuwe naam door.
+
+**Dubbele naam.** Bij SessionStart van een lead met een naam die een ander levend lead-record (niet `weg`, pane bestaat nog) al draagt, krijgt de lead een waarschuwing in haar context. `spawn.sh` weigert dan.
 
 ### Het register
 

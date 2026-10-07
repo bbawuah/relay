@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Start een Claude-sessie in een eigen tmux-venster en geef die een opdracht.
 # Gebruik: scripts/lead/spawn.sh --naam <n> --opdracht <bestand> [--model sonnet|opus]
-#          [--map <pad>] [--lead <naam>] [--sublead [--workflow <JJJJ-MM-DD>]] [--vervolg <tak>] [--droog]
+#          [--map <pad>] [--lead <unieke naam>] [--sublead [--workflow <JJJJ-MM-DD>]] [--vervolg <tak>] [--droog]
 # Zie scripts/lead/README.md.
 set -euo pipefail
 
@@ -16,7 +16,7 @@ for v in WACHT POLS BEWIJS; do
   [[ ${!v} =~ ^[0-9]+$ ]] || fout "LAB_SPAWN_$v moet een geheel getal zijn, niet '${!v}'"
 done
 
-naam="" opdracht="" model="" map="$PWD" lead="${LAB_LEAD_NAAM:-}" droog=0 sublead=0 vervolg="" workflow=""
+naam="" opdracht="" model="" map="$PWD" lead="" droog=0 sublead=0 vervolg="" workflow=""
 waarde() { [ "$#" -ge 2 ] || fout "optie $1 heeft een waarde nodig"; }
 while [ $# -gt 0 ]; do
   case $1 in
@@ -34,6 +34,14 @@ while [ $# -gt 0 ]; do
   esac
 done
 
+# Zonder --lead: de naam van de aanroepende lead uit het register (via TMUX_PANE), anders LAB_LEAD_NAAM.
+HIER=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+BUN="${LAB_LEAD_BUN:-bun}"
+if [ -z "$lead" ] && command -v "$BUN" >/dev/null 2>&1; then
+  lead=$("$BUN" "$HIER/leadnaam.ts" eigen 2>/dev/null || true)
+fi
+[ -n "$lead" ] || lead="${LAB_LEAD_NAAM:-}"
+
 [ -n "$naam" ] || fout "--naam ontbreekt"
 [[ $naam =~ ^[A-Za-z0-9._-]+$ ]] || fout "naam '$naam' mag alleen letters, cijfers, punt, streepje en underscore bevatten"
 [ -n "$opdracht" ] || fout "--opdracht ontbreekt"
@@ -43,6 +51,13 @@ case $model in ""|sonnet|opus) ;; *) fout "--model moet sonnet of opus zijn, nie
 [ -d "$map" ] || fout "map bestaat niet: $map"
 [ -n "$lead" ] || fout "naam van de lead ontbreekt: geef --lead of zet LAB_LEAD_NAAM"
 [[ $lead =~ ^[A-Za-z0-9._-]+$ ]] || fout "lead-naam '$lead' mag alleen letters, cijfers, punt, streepje en underscore bevatten"
+if command -v "$BUN" >/dev/null 2>&1; then
+  # exit 3 = dubbele naam (blokkeert); elke andere fout: waarschuwing en doorgaan (fail-open)
+  rc=0
+  dubbel=$("$BUN" "$HIER/leadnaam.ts" dubbel "$lead" 2>&1 >/dev/null) || rc=$?
+  if [ "$rc" = 3 ]; then echo "$dubbel" >&2; exit 1; fi
+  [ "$rc" = 0 ] || echo "spawn: waarschuwing: controle op dubbele leadnaam mislukt (exit $rc); ga door. $dubbel" >&2
+fi
 [ -z "$workflow" ] || [ "$sublead" = 1 ] || fout "--workflow hoort bij --sublead"
 [ -z "$workflow" ] || [[ $workflow =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}$ ]] || fout "--workflow wil de datum van Brians toestemming (JJJJ-MM-DD), niet '$workflow'"
 [ "$sublead" = 0 ] || [ -z "$vervolg" ] || fout "--sublead en --vervolg sluiten elkaar uit"

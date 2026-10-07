@@ -17,7 +17,7 @@
 // Nooit opgeslagen: prompt, tool_input (behalve SendMessage.to en een boolean "vrij"),
 // last_assistant_message, transcripts. Geen netwerk, geen git, geen gh.
 
-import { type Omgeving, type Rec, inboxGrootte, inboxMelding, leesOfMaak, leesOngelezen, lopendeSubagents, nieuwRecord, regelsTekst, schrijfRecord, staatMap, zetGelezen, zetToestand } from "./register";
+import { type Omgeving, type Rec, dubbeleLeads, eigenLeadNaam, inboxGrootte, inboxMelding, leesOfMaak, leesOngelezen, leesRecord, lopendeSubagents, meldAdres, nieuwRecord, regelsTekst, schrijfRecord, staatMap, tmuxPanes, voorgangerInPane, zetGelezen, zetToestand } from "./register";
 
 export type Uitslag = { code: number; stdout: string; stderr: string };
 export type Opties = {
@@ -26,6 +26,8 @@ export type Opties = {
   wacht?: (ms: number) => Promise<void>;
   wekkerInterval?: number;
   wekkerMax?: number;
+  /** Pane-ids die tmux kent (null = onbekend); injecteerbaar voor tests. */
+  panes?: () => Set<string> | null;
 };
 
 export const MAX_BLOKKADES = 3;
@@ -35,8 +37,9 @@ const LEEG: Uitslag = { code: 0, stdout: "", stderr: "" };
 type Invoer = { [k: string]: unknown };
 const tekst = (v: unknown): string => (typeof v === "string" ? v : "");
 
-function leadNaamVan(env: Omgeving): string {
-  return env.LAB_AGENT_ROL === "lead" ? env.LAB_AGENT_NAAM || env.LAB_LEAD_NAAM || "lead" : env.LAB_LEAD_NAAM || "";
+// Het register is de bron: env geeft alleen de beginwaarde (bij het eerste record).
+function leadNaamVan(env: Omgeving, rec: Rec | null): string {
+  return env.LAB_AGENT_ROL === "lead" ? eigenLeadNaam(rec, env) : meldAdres(rec, env);
 }
 
 export function gateReden(lead: string): string {
@@ -53,11 +56,12 @@ export async function verwerk(event: string, invoer: Invoer, env: Omgeving, opti
   const nu = opties.nu ?? Date.now;
   const staat = staatMap(env);
   const sessieId = tekst(invoer.session_id);
-  if (event === "wekker") return rol === "lead" ? wekker(staat, leadNaamVan(env), nu, opties) : LEEG;
+  const rec0 = sessieId ? leesRecord(staat, sessieId) : null;
+  if (event === "wekker") return rol === "lead" ? wekker(staat, leadNaamVan(env, rec0), nu, opties) : LEEG;
   if (!sessieId) return LEEG;
   const cwd = tekst(invoer.cwd) || process.cwd();
   const isLead = rol === "lead";
-  const lead = leadNaamVan(env);
+  const lead = leadNaamVan(env, rec0);
   const agentId = tekst(invoer.agent_id);
   const t = nu();
 
@@ -71,8 +75,28 @@ export async function verwerk(event: string, invoer: Invoer, env: Omgeving, opti
     case "SessionStart": {
       // H1
       const oud = laad();
-      const r: Rec = { ...nieuwRecord(sessieId, env, cwd, t), start: oud.start, blokkades: oud.blokkades };
+      const vers = nieuwRecord(sessieId, env, cwd, t);
+      // naam en lead uit het bestaande record (resume na hernoem.ts); env alleen de eerste keer
+      const r: Rec = { ...vers, start: oud.start, blokkades: oud.blokkades, naam: rec0 ? oud.naam : vers.naam, lead: rec0 ? oud.lead : vers.lead };
+      if (!rec0) {
+        const vg = voorgangerInPane(staat, vers.pane, isLead, sessieId, t);
+        if (vg) {
+          r.naam = vg.naam || r.naam;
+          r.lead = vg.lead || r.lead;
+          r.hernoemd = true;
+        }
+      }
       schrijfRecord(staat, r);
+      if (isLead) {
+        const dubbel = dubbeleLeads(staat, r.naam, r.id, (opties.panes ?? tmuxPanes)());
+        if (dubbel.length > 0) {
+          const waar = dubbel.map((d) => `sessie ${d.id.slice(0, 8)}${d.pane ? ` (pane ${d.pane})` : ""}`).join(", ");
+          const txt =
+            `WAARSCHUWING: er draait al een lead met de naam ${r.naam}: ${waar}. Jullie krijgen elkaars meldingen niet apart. ` +
+            `Geef een van beiden een unieke naam: bun scripts/lead/hernoem.ts --sessie <id> --naam lead-<onderwerp> [--volgers a,b], en /rename voor SendMessage.`;
+          return { code: 0, stdout: JSON.stringify({ hookSpecificOutput: { hookEventName: "SessionStart", additionalContext: txt } }), stderr: "" };
+        }
+      }
       return LEEG;
     }
     case "UserPromptSubmit": {
@@ -98,7 +122,7 @@ export async function verwerk(event: string, invoer: Invoer, env: Omgeving, opti
       // H3
       const tool = tekst(invoer.tool_name) || null;
       if (agentId) {
-        const a = leesSub(staat, agentId, sessieId, env, invoer, t);
+        const a = leesSub(staat, agentId, sessieId, env, invoer, t, rec0);
         a.laatste_tool = tool;
         a.laatste_tool_om = t;
         zetToestand(a, "bezig", t);
@@ -157,7 +181,7 @@ export async function verwerk(event: string, invoer: Invoer, env: Omgeving, opti
     case "SubagentStart": {
       // H9
       if (!agentId) return LEEG;
-      const a = leesSub(staat, agentId, sessieId, env, invoer, t);
+      const a = leesSub(staat, agentId, sessieId, env, invoer, t, rec0);
       a.start = t;
       a.einde = null;
       zetToestand(a, "bezig", t);
@@ -166,7 +190,7 @@ export async function verwerk(event: string, invoer: Invoer, env: Omgeving, opti
     }
     case "SubagentStop": {
       if (!agentId) return LEEG;
-      const a = leesSub(staat, agentId, sessieId, env, invoer, t);
+      const a = leesSub(staat, agentId, sessieId, env, invoer, t, rec0);
       zetToestand(a, "klaar", t);
       a.einde = t;
       schrijfRecord(staat, a);
@@ -185,10 +209,10 @@ export async function verwerk(event: string, invoer: Invoer, env: Omgeving, opti
   }
 }
 
-function leesSub(staat: string, agentId: string, ouder: string, env: Omgeving, invoer: Invoer, t: number): Rec {
+function leesSub(staat: string, agentId: string, ouder: string, env: Omgeving, invoer: Invoer, t: number, ouderRec: Rec | null): Rec {
   const basis = nieuwRecord(agentId, env, tekst(invoer.cwd) || process.cwd(), t);
   const oud = leesOfMaak(staat, agentId, env, basis.cwd, t);
-  return { ...oud, soort: "subagent", rol: "subagent", ouder, agent_type: tekst(invoer.agent_type) || oud.agent_type, naam: env.LAB_AGENT_NAAM || oud.naam };
+  return { ...oud, soort: "subagent", rol: "subagent", ouder, agent_type: tekst(invoer.agent_type) || oud.agent_type, naam: env.LAB_AGENT_NAAM || oud.naam, lead: ouderRec?.lead || oud.lead };
 }
 
 function stop(staat: string, r: Rec, invoer: Invoer, isLead: boolean, lead: string, naamVan: (r: Rec) => string, t: number): Uitslag {
