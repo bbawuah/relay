@@ -253,7 +253,11 @@ export function tmuxPanes(): Set<string> | null {
 
 /** Levende lead-records: niet `weg`, en de pane bestaat nog (of is onbekend). */
 export function levendeLeads(staat: string, panes: Set<string> | null): Rec[] {
-  return alleRecords(staat).filter((r) => r.soort === "sessie" && r.rol === "lead" && r.toestand !== "weg" && (!r.pane || !panes || panes.has(r.pane)));
+  const kand = alleRecords(staat).filter((r) => r.soort === "sessie" && r.rol === "lead" && r.toestand !== "weg" && (!r.pane || !panes || panes.has(r.pane)));
+  // Panes worden hergebruikt: per pane telt alleen het record met de jongste start.
+  const jongste = new Map<string, number>();
+  for (const r of kand) if (r.pane) jongste.set(r.pane, Math.max(jongste.get(r.pane) ?? 0, r.start));
+  return kand.filter((r) => !r.pane || jongste.get(r.pane) === r.start);
 }
 
 /** Andere levende leads met dezelfde naam als `naam` (het eigen record, `eigenId`, telt niet mee). */

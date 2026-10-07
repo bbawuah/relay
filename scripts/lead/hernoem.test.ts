@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { hernoem } from "./hernoem";
-import { type Rec, leesRecord, nieuwRecord, schrijfRecord } from "./hooks/register";
+import { type Rec, dubbeleLeads, leesRecord, nieuwRecord, schrijfRecord } from "./hooks/register";
 
 let dir: string;
 let staat: string;
@@ -61,5 +61,19 @@ describe("hernoem.ts", () => {
     expect(hernoem(staat, o({ naam: "lead" }), null).fout.join()).toMatch(/al een lead/);
     expect(hernoem(staat, o({ naam: "a b" }), null).code).toBe(1);
     expect(hernoem(staat, o({ sessie: "zzz" }), null).code).toBe(1);
+  });
+});
+
+describe("levende leads: hergebruikte panes", () => {
+  test("per pane telt alleen het jongste record; oud record in dezelfde pane is niet dubbel", () => {
+    maak("oud", "lead", "lead", "", { pane: "%0", start: 1 });
+    maak("nieuw", "lead", "lead", "", { pane: "%0", start: 5 });
+    maak("andere", "lead", "lead", "", { pane: "%12", start: 3 });
+    const panes = new Set(["%0", "%12"]);
+    // de jongste in %0 hernoemen: alleen "andere" is een echte dubbel, "oud" niet
+    expect(dubbeleLeads(staat, "lead", "nieuw", panes).map((r) => r.id)).toEqual(["andere"]);
+    // na hernoem van "nieuw" is "lead" niet meer dubbel voor "andere"
+    maak("nieuw", "lead-eagle", "lead", "", { pane: "%0", start: 5 });
+    expect(dubbeleLeads(staat, "lead", "andere", panes)).toEqual([]);
   });
 });
