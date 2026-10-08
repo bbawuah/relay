@@ -37,7 +37,7 @@ beforeEach(() => {
   // De pane: vertrouwenstekst, na $TRUST_SECONDEN de prompt, daarna leest hij de startzin en toont een tool-aanroep.
   maak(
     "pane.sh",
-    `#!/usr/bin/env bash\nprintf '${TEKST}'\nsleep "$(cat "${dir}/trust-sec")"\nclear\nprintf 'auto mode\\n'\nprintf '│ ❯ \\n'\nIFS= read -r zin\nprintf '%s\\n' "$zin" > "${dir}/getypt.txt"\nprintf '⏺ Read(opdracht.md)\\n'\nsleep 30\n`,
+    `#!/usr/bin/env bash\nprintf '${TEKST}'\nsleep "$(cat "${dir}/trust-sec")"\n[ -f "${dir}/geen-clear" ] || clear\nprintf 'auto mode\\n'\nprintf '│ ❯ \\n'\nIFS= read -r zin\nprintf '%s\\n' "$zin" > "${dir}/getypt.txt"\nprintf '⏺ Read(opdracht.md)\\n'\nsleep 30\n`,
   );
   maak("nep-agent-spawn.sh", `#!/usr/bin/env bash\ntmux new-window -d -P -F '#{pane_id}' "${join(bin, "pane.sh")}"\n`);
   tmux("new-session", "-d", "-x", "100", "-y", "30", "sleep 120");
@@ -81,6 +81,14 @@ describe("spawn.sh wacht op de vertrouwensvraag", () => {
     expect(r.code).toBe(0);
     expect(r.uit.trim()).toMatch(/^%\d+$/);
     expect(existsSync(join(dir, "getypt.txt"))).toBe(true);
+    expect(readFileSync(join(dir, "getypt.txt"), "utf8")).toContain("Je lead is lead-x. Jij bent sessie w1.");
+  });
+
+  test("trust-tekst en prompt tegelijk zichtbaar (scrollback): direct typen, geen melding", () => {
+    writeFileSync(join(dir, "geen-clear"), "");
+    const r = draai({ TRUST_SECONDEN: "0", WACHT_VERTROUWEN: "3" });
+    expect(r.code).toBe(0);
+    expect(r.fout).not.toContain("wacht op vertrouwen");
     expect(readFileSync(join(dir, "getypt.txt"), "utf8")).toContain("Je lead is lead-x. Jij bent sessie w1.");
   });
 

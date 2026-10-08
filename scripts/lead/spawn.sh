@@ -139,6 +139,8 @@ VERTROUWEN='Quick safety check|Yes, I trust this folder'
 klaar=0 verstreken=0 gemeld=0 start_v=0
 while :; do
   scherm=$(tmux capture-pane -p -t "$pane" 2>/dev/null || true)
+  # eerst de prompt: de vertrouwenstekst kan na het bevestigen als scrollback boven de prompt blijven staan
+  if printf '%s\n' "$scherm" | grep -Eq 'auto mode|^[│ ]*❯ *$'; then klaar=1; break; fi
   if printf '%s\n' "$scherm" | grep -Eq "$VERTROUWEN"; then
     if [ "$gemeld" = 0 ]; then
       gemeld=1 start_v=$SECONDS
@@ -155,7 +157,6 @@ while :; do
     sleep "$POLS"
     continue
   fi
-  if printf '%s\n' "$scherm" | grep -Eq 'auto mode|^[│ ]*❯ *$'; then klaar=1; break; fi
   [ "$verstreken" -lt "$WACHT" ] || break
   sleep "$POLS"; verstreken=$((verstreken + POLS))
 done
