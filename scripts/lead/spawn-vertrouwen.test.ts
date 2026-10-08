@@ -10,7 +10,10 @@ import { join } from "node:path";
 
 const SPAWN = join(import.meta.dir, "spawn.sh");
 const ECHTE_TMUX = Bun.which("tmux") ?? "tmux";
-const sock = `spawntest-${process.pid}`;
+// Eigen socket per test: kill-server van de vorige test werkt asynchroon, en een volgende new-session op
+// dezelfde socket kan dan een stervende server raken (zichtbaar als "geen pane-id" op een trage CI-runner).
+let teller = 0;
+let sock = "";
 
 let dir: string;
 let bin: string;
@@ -26,6 +29,7 @@ const tmux = (...a: string[]) => Bun.spawnSync([ECHTE_TMUX, "-L", sock, "-f", "/
 const TEKST = "Quick safety check: Is this a project you created or one you trust?\\n\\n ❯ No, exit\\n   Yes, I trust this folder\\n";
 
 beforeEach(() => {
+  sock = `spawntest-${process.pid}-${++teller}`;
   dir = mkdtempSync(join(tmpdir(), "spawn-vertrouwen-"));
   bin = join(dir, "bin");
   mkdirSync(bin);
@@ -40,7 +44,7 @@ beforeEach(() => {
     `#!/usr/bin/env bash\nprintf '${TEKST}'\nsleep "$(cat "${dir}/trust-sec")"\n[ -f "${dir}/geen-clear" ] || clear\nprintf 'auto mode\\n'\nprintf '│ ❯ \\n'\nIFS= read -r zin\nprintf '%s\\n' "$zin" > "${dir}/getypt.txt"\nprintf '⏺ Read(opdracht.md)\\n'\nsleep 30\n`,
   );
   maak("nep-agent-spawn.sh", `#!/usr/bin/env bash\ntmux new-window -d -P -F '#{pane_id}' "${join(bin, "pane.sh")}"\n`);
-  tmux("new-session", "-d", "-x", "100", "-y", "30", "sleep 120");
+  expect(tmux("new-session", "-d", "-x", "100", "-y", "30", "sleep 120").exitCode).toBe(0);
 });
 
 afterEach(() => {
@@ -87,7 +91,7 @@ describe("spawn.sh wacht op de vertrouwensvraag", () => {
   test("trust-tekst en prompt tegelijk zichtbaar (scrollback): direct typen, geen melding", () => {
     writeFileSync(join(dir, "geen-clear"), "");
     const r = draai({ TRUST_SECONDEN: "0", WACHT_VERTROUWEN: "3" });
-    expect(r.code).toBe(0);
+    expect([r.code, r.fout]).toEqual([0, ""]); // bij falen staat de stderr van spawn.sh in de uitvoer
     expect(r.fout).not.toContain("wacht op vertrouwen");
     expect(readFileSync(join(dir, "getypt.txt"), "utf8")).toContain("Je lead is lead-x. Jij bent sessie w1.");
   });
