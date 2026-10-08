@@ -237,7 +237,8 @@ function stop(staat: string, r: Rec, invoer: Invoer, isLead: boolean, lead: stri
 
   // H6: gate voor agent, sublead en vervolg.
   const naam = naamVan(r);
-  const wilBlokkeren = lead !== "" && !actief && r.tools_in_beurt >= 1 && !r.rapport_in_beurt && lopendeSubagents(staat, r.id, t).length === 0;
+  const wachtOpSubagents = lopendeSubagents(staat, r.id, t).length > 0;
+  const wilBlokkeren = lead !== "" && !actief && r.tools_in_beurt >= 1 && !r.rapport_in_beurt && !wachtOpSubagents;
   if (wilBlokkeren) {
     if (r.blokkades < MAX_BLOKKADES) {
       r.blokkades += 1;
@@ -251,7 +252,8 @@ function stop(staat: string, r: Rec, invoer: Invoer, isLead: boolean, lead: stri
   r.tools_in_beurt = 0;
   r.rapport_in_beurt = false;
   schrijfRecord(staat, r);
-  if (lead) inboxMelding(staat, lead, naam, toestand === "vrij" ? `${naam} klaar en vrij` : toestand === "klaar" ? `${naam} klaar (rapport binnen)` : `${naam} is idle`, t);
+  // Idle omdat de sessie op eigen lopende subagents wacht is ruis voor de lead; het register toont het wel.
+  if (lead && !(toestand === "idle" && wachtOpSubagents)) inboxMelding(staat, lead, naam, toestand === "vrij" ? `${naam} klaar en vrij` : toestand === "klaar" ? `${naam} klaar (rapport binnen)` : `${naam} is idle`, t);
   return LEEG;
 }
 
