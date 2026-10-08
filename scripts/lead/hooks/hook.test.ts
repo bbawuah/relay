@@ -288,6 +288,26 @@ describe("H6 gate (agent, sublead, vervolg)", () => {
     expect(JSON.parse((await verwerk("Stop", inv(), env, opt)).stdout).decision).toBe("block");
   });
 
+  test("b2) geen idle-melding zolang eigen subagents lopen; klaar-meldingen blijven", async () => {
+    const env = omgeving({ LAB_AGENT_ROL: "sublead" });
+    await stuurTool(env);
+    await verwerk("SubagentStart", inv({ agent_id: "a1", agent_type: "general-purpose" }), env, opt);
+    await verwerk("Stop", inv(), env, opt);
+    expect(leesRecord(staat, "s1")?.toestand).toBe("idle");
+    expect(inboxRegels().map((x) => x.tekst)).not.toContain("w2 is idle");
+
+    // rapport binnen: melding blijft, ook met een lopende subagent
+    await stuurTool(env);
+    await verwerk("PostToolUse", inv({ tool_name: "SendMessage", tool_input: { to: "lead", message: "klaar" } }), env, opt);
+    await verwerk("Stop", inv(), env, opt);
+    expect(inboxRegels().map((x) => x.tekst)).toContain("w2 klaar (rapport binnen)");
+
+    // subagent klaar: gewone idle-melding komt weer
+    await verwerk("SubagentStop", inv({ agent_id: "a1" }), env, opt);
+    await verwerk("Stop", inv(), env, opt);
+    expect(inboxRegels().map((x) => x.tekst)).toContain("w2 is idle");
+  });
+
   test("c) de beurtteller reset na een doorgelaten Stop, ook zonder UserPromptSubmit", async () => {
     const env = omgeving();
     await stuurTool(env);
