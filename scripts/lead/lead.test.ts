@@ -284,6 +284,7 @@ describe("spawn.sh", () => {
     LAB_SPAWN_WACHT: "0",
     LAB_SPAWN_BEWIJS: "0",
     LAB_LEAD_NAAM: "",
+    LAB_CLAUDE_JSON: join(dir, "bestaat-niet.json"), // nooit de echte ~/.claude.json lezen
     ...extra,
   });
 
@@ -324,12 +325,21 @@ describe("spawn.sh", () => {
     expect(r.fout).toMatch(/LAB_SPAWN_WACHT/);
   });
 
-  test("stopt bij een trust-dialoog en typt niets", () => {
-    writeFileSync(join(dir, "pane.txt"), "Do you trust the files in this folder?\n❯ 1. Yes, proceed\n  2. No\n");
-    const r = draai(SPAWN, ["--naam", "w1", "--opdracht", opdracht(), "--lead", "l", "--map", dir], basis({ LAB_SPAWN_WACHT: "5" }));
+  test("de vertrouwensvraag die niet weggaat geeft na WACHT_VERTROUWEN een fout met pane en startzin, zonder toets", () => {
+    writeFileSync(join(dir, "pane.txt"), "Quick safety check: Is this a project you created or one you trust?\n❯ No, exit\n  Yes, I trust this folder\n");
+    const r = draai(SPAWN, ["--naam", "w1", "--opdracht", opdracht(), "--lead", "l", "--map", dir], basis({ LAB_SPAWN_POLS: "1", WACHT_VERTROUWEN: "1" }));
     expect(r.code).toBe(1);
-    expect(r.fout).toContain("trust-dialoog: Brian moet de map vertrouwen (pane %7)");
+    expect(r.fout).toContain("w1 wacht op vertrouwen in pane %7");
+    expect(r.fout).toContain("vertrouwensvraag in pane %7 niet beantwoord binnen 1s");
+    expect(r.fout).toContain("Je lead is l. Jij bent sessie w1.");
     expect(log("tmux.log")).not.toContain("send-keys");
+  });
+
+  test("een andere vraag ('Do you want') is geen vertrouwensvraag", () => {
+    writeFileSync(join(dir, "pane.txt"), "Do you want to proceed?\n❯ 1. Yes\n");
+    const r = draai(SPAWN, ["--naam", "w1", "--opdracht", opdracht(), "--lead", "l", "--map", dir], basis());
+    expect(r.fout).not.toMatch(/vertrouw/);
+    expect(r.fout).toMatch(/niet klaar voor invoer/);
   });
 
   test("een gevulde invoerregel telt niet als klaar; alleen een lege invoerbox", () => {

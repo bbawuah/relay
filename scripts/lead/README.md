@@ -27,12 +27,12 @@ scripts/lead/spawn.sh --naam w2 --opdracht opdracht.md --lead labbawuah-1c --dro
 Wat het doet:
 
 1. Start `agent-spawn.sh window <map> "env LAB_AGENT_NAAM=<naam> LAB_AGENT_ROL=<agent|sublead|vervolg> LAB_LEAD_NAAM=<lead> LAB_OPDRACHT=<abs pad> claude -n <naam> [--model m]"`. Het voorvoegsel is de identiteit voor de hooks (zie "Hooks en `lead status`"); het opdrachtpad staat in het voorvoegsel (met spatie tussen enkele quotes), de startzin staat niet in de quotes van het commando. Direct na het starten zet het script `tmux set -p -t <pane> @agent_rol <rol>` en `@agent_naam <naam>`.
-2. Wacht (max 60 s) tot `tmux capture-pane` "auto mode" of een lege invoerbox (`│ ❯`) toont. Staat er "trust" of "Do you want" in de pane (trust-dialoog), dan stopt het met exit 1 ("trust-dialoog: Brian moet de map vertrouwen (pane <id>)") en typt niets.
+2. Wacht (max 60 s) tot `tmux capture-pane` "auto mode" of een lege invoerbox (`│ ❯`) toont. Toont de pane de vertrouwensvraag van Claude Code (de tekst "Quick safety check" / "Yes, I trust this folder"; andere vragen tellen niet), dan wacht het script: één melding aan Brian (`tmux display-message` op alle clients plus op stderr: "<naam> wacht op vertrouwen in pane %N (map <map>)"), daarna pollen tot de vraag weg is, max `WACHT_VERTROUWEN` seconden (standaard 600, env). Daarna gaat het door met de prompt-controle en de startzin. Het script beantwoordt de vraag nooit zelf (geen toets). Loopt de tijd af, dan exit 1 met pane, map en de startzin om met de hand te typen. Vooraf leest het (alleen lezen, jq) `.projects[<map of bovenliggende map>].hasTrustDialogAccepted` in `~/.claude.json` (env `LAB_CLAUDE_JSON` voor tests) en waarschuwt op stderr als de map niet vertrouwd is; er wordt nooit in dat bestand geschreven.
 3. Typt met `tmux send-keys -l` de startzin: "Je lead is <lead>. Jij bent sessie <naam>. Lees <bestand> en voer die uit. Rapporteer aan de lead via SendMessage (to: <lead>)." en daarna Enter.
 4. Wacht (max 30 s) op een tool-aanroep (`⏺`) in de pane. Zo niet: exit 1 met melding.
 5. Print het pane-id (bijvoorbeeld `%12`) op stdout.
 
-Het script moet binnen tmux draaien (dat eist `agent-spawn.sh`). Voor tests kunnen de wachttijden en het spawn-script worden overschreven: `LAB_SPAWN_SCRIPT`, `LAB_SPAWN_WACHT`, `LAB_SPAWN_POLS`, `LAB_SPAWN_BEWIJS` (hele getallen).
+Het script moet binnen tmux draaien (dat eist `agent-spawn.sh`). Voor tests kunnen de wachttijden en het spawn-script worden overschreven: `LAB_SPAWN_SCRIPT`, `LAB_SPAWN_WACHT`, `LAB_SPAWN_POLS`, `LAB_SPAWN_BEWIJS` (hele getallen). `bun test scripts/lead/spawn-vertrouwen.test.ts` toetst het wachten met een echte tmux op een wegwerp-socket (`spawntest-<pid>`) en een nep-spawnscript.
 
 ## merge.sh
 
