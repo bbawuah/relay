@@ -9,12 +9,15 @@ SPAWN="${LAB_SPAWN_SCRIPT:-$HOME/.claude/tmux/agent-spawn.sh}"
 WACHT="${LAB_SPAWN_WACHT:-60}"     # seconden wachten tot de sessie invoer aanneemt
 POLS="${LAB_SPAWN_POLS:-1}"        # seconden tussen twee controles
 BEWIJS="${LAB_SPAWN_BEWIJS:-30}"   # seconden wachten op de eerste tool-aanroep
+WACHT_VERTROUWEN="${WACHT_VERTROUWEN:-600}"  # seconden wachten tot Brian de map vertrouwt
+CLAUDE_JSON="${LAB_CLAUDE_JSON:-$HOME/.claude.json}"  # alleen gelezen
 
 fout() { echo "spawn: $*" >&2; exit 1; }
 
 for v in WACHT POLS BEWIJS; do
   [[ ${!v} =~ ^[0-9]+$ ]] || fout "LAB_SPAWN_$v moet een geheel getal zijn, niet '${!v}'"
 done
+[[ $WACHT_VERTROUWEN =~ ^[0-9]+$ ]] || fout "WACHT_VERTROUWEN moet een geheel getal zijn, niet '$WACHT_VERTROUWEN'"
 
 naam="" opdracht="" model="" map="$PWD" lead="" droog=0 sublead=0 vervolg="" workflow=""
 waarde() { [ "$#" -ge 2 ] || fout "optie $1 heeft een waarde nodig"; }
@@ -103,10 +106,25 @@ if [ "$droog" = 1 ]; then
   echo "droog: $SPAWN window $map \"$cmd\""
   echo "droog: tmux set -p -t <pane> @agent_rol $rol; tmux set -p -t <pane> @agent_naam $naam"
   echo "droog: wacht (max ${WACHT}s) tot de pane 'auto mode' of de promptregel toont"
+  echo "droog: toont de pane de vertrouwensvraag ('Quick safety check'), dan melding aan Brian (tmux display-message + stderr) en wachten (max ${WACHT_VERTROUWEN}s, WACHT_VERTROUWEN) tot de vraag weg is; nooit zelf antwoorden; bij time-out fout met pane en startzin"
   echo "droog: tmux send-keys -l \"$zin\" + Enter"
   echo "droog: controleer dat er een tool-aanroep (⏺) verschijnt (max ${BEWIJS}s)"
   exit 0
 fi
+
+# Waarschuwing vooraf (alleen lezen, nooit schrijven): is de map of een bovenliggende map vertrouwd?
+vertrouwd=0 d=$map
+if [ -f "$CLAUDE_JSON" ] && command -v jq >/dev/null 2>&1; then
+  while :; do
+    t=$(jq -r --arg p "$d" '.projects[$p].hasTrustDialogAccepted // false' "$CLAUDE_JSON" 2>/dev/null || echo false)
+    if [ "$t" = true ]; then vertrouwd=1; break; fi
+    [ "$d" != / ] || break
+    d=$(dirname "$d")
+  done
+else
+  vertrouwd=1   # niet te weten: geen waarschuwing
+fi
+[ "$vertrouwd" = 1 ] || echo "spawn: let op: $map is nog niet vertrouwd in Claude Code; de sessie $naam wacht straks op Brians antwoord op de vertrouwensvraag" >&2
 
 pane=$(bash "$SPAWN" window "$map" "$cmd" | tail -n 1)
 [[ $pane =~ ^%[0-9]+$ ]] || fout "kreeg geen pane-id terug van het spawn-script: '$pane'"
@@ -114,11 +132,28 @@ pane=$(bash "$SPAWN" window "$map" "$cmd" | tail -n 1)
 tmux set -p -t "$pane" @agent_rol "$rol" 2>/dev/null || true
 tmux set -p -t "$pane" @agent_naam "$naam" 2>/dev/null || true
 
-klaar=0 verstreken=0
+# De echte vertrouwensvraag van Claude Code ("Quick safety check: Is this a project you created or one you trust?"
+# met de keuze "Yes, I trust this folder"). Andere vragen tellen niet mee.
+VERTROUWEN='Quick safety check|Yes, I trust this folder'
+
+klaar=0 verstreken=0 gemeld=0 start_v=0
 while :; do
   scherm=$(tmux capture-pane -p -t "$pane" 2>/dev/null || true)
-  if printf '%s\n' "$scherm" | grep -Eiq 'trust|do you want'; then
-    fout "trust-dialoog: Brian moet de map vertrouwen (pane $pane)"
+  if printf '%s\n' "$scherm" | grep -Eq "$VERTROUWEN"; then
+    if [ "$gemeld" = 0 ]; then
+      gemeld=1 start_v=$SECONDS
+      msg="$naam wacht op vertrouwen in pane $pane (map $map)"
+      echo "spawn: $msg" >&2
+      for c in $(tmux list-clients -F '#{client_name}' 2>/dev/null || true); do
+        tmux display-message -c "$c" "$msg" 2>/dev/null || true
+      done
+    fi
+    # Brian beantwoordt de vraag zelf; hier wordt nooit een toets gestuurd.
+    if [ $((SECONDS - start_v)) -ge "$WACHT_VERTROUWEN" ]; then
+      fout "vertrouwensvraag in pane $pane niet beantwoord binnen ${WACHT_VERTROUWEN}s (map $map); niets getypt. Typ na het vertrouwen met de hand: $zin"
+    fi
+    sleep "$POLS"
+    continue
   fi
   if printf '%s\n' "$scherm" | grep -Eq 'auto mode|^[│ ]*❯ *$'; then klaar=1; break; fi
   [ "$verstreken" -lt "$WACHT" ] || break
