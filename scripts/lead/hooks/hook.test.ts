@@ -227,6 +227,14 @@ describe("H6 gate (agent, sublead, vervolg)", () => {
     });
   }
 
+  test("een sessie zonder lead (Regie: geen lead gekozen) wordt niet geblokkeerd en meldt niemand", async () => {
+    const env = omgeving({ LAB_LEAD_NAAM: "" });
+    await stuurTool(env);
+    expect((await verwerk("Stop", inv({ stop_hook_active: false }), env, opt)).stdout).toBe("");
+    expect(leesRecord(staat, "s1")?.blokkades).toBe(0);
+    expect(inboxRegels("")).toHaveLength(0);
+  });
+
   test("laat door zonder tools in de beurt", async () => {
     const env = omgeving();
     await verwerk("SessionStart", inv(), env, opt);
@@ -493,6 +501,13 @@ describe("leadnamen: het register is de bron, env alleen de beginwaarde", () => 
     for (const [id, lead] of [["WA", "lead-a"], ["WB", "lead-b"]] as const) schrijfRecord(staat, { ...(leesRecord(staat, id) as Rec), lead });
   }
 
+  test("een verse lead krijgt bij de start haar naam voor SendMessage en de /rename-aanwijzing", async () => {
+    const u = await verwerk("SessionStart", sid("LN"), omgeving({ LAB_AGENT_NAAM: "lead-carriere", LAB_AGENT_ROL: "lead", LAB_LEAD_NAAM: "lead-carriere" }), { ...opt, panes: () => null });
+    const txt = JSON.parse(u.stdout).hookSpecificOutput.additionalContext;
+    expect(txt).toContain("lead-carriere");
+    expect(txt).toContain("/rename lead-carriere");
+  });
+
   test("elke lead krijgt alleen de meldingen van haar eigen sessies (prompt en Stop)", async () => {
     await opzet();
     for (const id of ["WA", "WB"]) {
@@ -539,17 +554,17 @@ describe("leadnamen: het register is de bron, env alleen de beginwaarde", () => 
   test("dubbele leadnaam bij SessionStart geeft een waarschuwing in de context; levend en weg onderscheiden", async () => {
     const o = { ...opt, panes: () => new Set(["%1", "%2"]) };
     const a = await verwerk("SessionStart", sid("LA"), { ...envLead(), TMUX_PANE: "%1" }, o);
-    expect(a.stdout).toBe("");
+    expect(a.stdout).not.toContain("WAARSCHUWING");
     const b = await verwerk("SessionStart", sid("LB"), { ...envLead(), TMUX_PANE: "%2" }, o);
     expect(b.stdout).toContain("WAARSCHUWING");
     expect(b.stdout).toContain("lead");
     expect(JSON.parse(b.stdout).hookSpecificOutput.hookEventName).toBe("SessionStart");
     // eerste lead weg: geen waarschuwing meer
     await verwerk("SessionEnd", sid("LA"), envLead(), opt);
-    expect((await verwerk("SessionStart", sid("LB"), { ...envLead(), TMUX_PANE: "%2" }, o)).stdout).toBe("");
+    expect((await verwerk("SessionStart", sid("LB"), { ...envLead(), TMUX_PANE: "%2" }, o)).stdout).not.toContain("WAARSCHUWING");
     // dode pane telt ook niet
     await verwerk("SessionStart", sid("LA"), { ...envLead(), TMUX_PANE: "%1" }, { ...opt, panes: () => new Set(["%2"]) });
-    expect((await verwerk("SessionStart", sid("LB"), { ...envLead(), TMUX_PANE: "%2" }, { ...opt, panes: () => new Set(["%2"]) })).stdout).toBe("");
+    expect((await verwerk("SessionStart", sid("LB"), { ...envLead(), TMUX_PANE: "%2" }, { ...opt, panes: () => new Set(["%2"]) })).stdout).not.toContain("WAARSCHUWING");
   });
 
   test("/clear (nieuw session_id, zelfde pane): naam en lead van het voorgaande record blijven, rol moet gelijk zijn", async () => {

@@ -101,6 +101,8 @@ Stappen:
 LAB_LEAD=1 LAB_AGENT_ROL=lead LAB_AGENT_NAAM=lead-<onderwerp> LAB_LEAD_NAAM=lead-<onderwerp> claude -n lead-<onderwerp>
 ```
 
+Bij elke start van een lead (hook H1) krijgt de lead haar naam voor `SendMessage` terug in de context, met de aanwijzing `/rename <naam>` als `ListAgents` haar onder een andere naam toont (bijvoorbeeld `lab-bawuah-33`). Een lead die zonder `-n` is gestart (gewone `claude`, niet via de `lead`-functie) is anders niet op naam bereikbaar: het register kent de naam, Claude Code pas na `-n` of `/rename`.
+
 Geef elke lead een unieke naam (`lead-<onderwerp>`): de inbox van de lead heet naar haar naam (`inbox/<naam>.jsonl`), agents schrijven naar `inbox/<hun lead>`. Twee leads met dezelfde naam krijgen elkaars meldingen.
 
 **Het register is de bron.** De env geeft alleen de beginwaarde: bij het eerste record nemen de hooks `LAB_AGENT_NAAM` (lead) en `LAB_LEAD_NAAM` (anderen) over. Daarna lezen ze de leadnaam (lead: `naam`) en het meldadres (anderen: `lead`) bij elk event uit het record, ook de wekker en de inbox-lezer. Een `resume` behoudt die waarden. Een subagent meldt aan de lead van zijn ouder.
