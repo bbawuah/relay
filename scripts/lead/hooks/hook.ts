@@ -89,13 +89,19 @@ export async function verwerk(event: string, invoer: Invoer, env: Omgeving, opti
       schrijfRecord(staat, r);
       if (isLead) {
         const dubbel = dubbeleLeads(staat, r.naam, r.id, (opties.panes ?? tmuxPanes)());
+        // Het register kent de naam, Claude Code pas na `-n` of `/rename`. Een model kan geen /rename uitvoeren: de lead
+        // moet Brian vragen het te typen. Alleen bij een verse start (niet resume, clear of compact) en met een naam.
+        let txt = "";
+        if (r.naam && tekst(invoer.source) === "startup") {
+          txt = `Je naam voor SendMessage is ${r.naam}. Staat je sessie in ListAgents onder een andere naam (bijvoorbeeld lab-bawuah-33), dan komen berichten aan ${r.naam} niet aan ("not reachable"). Een model kan /rename niet uitvoeren: vraag Brian om \`/rename ${r.naam}\` te typen. De echte oplossing is de lead-functie met -n.`;
+        }
         if (dubbel.length > 0) {
           const waar = dubbel.map((d) => `sessie ${d.id.slice(0, 8)}${d.pane ? ` (pane ${d.pane})` : ""}`).join(", ");
-          const txt =
+          txt =
             `WAARSCHUWING: er draait al een lead met de naam ${r.naam}: ${waar}. Jullie krijgen elkaars meldingen niet apart. ` +
             `Geef een van beiden een unieke naam: bun scripts/lead/hernoem.ts --sessie <id> --naam lead-<onderwerp> [--volgers a,b], en /rename voor SendMessage.`;
-          return { code: 0, stdout: JSON.stringify({ hookSpecificOutput: { hookEventName: "SessionStart", additionalContext: txt } }), stderr: "" };
         }
+        if (txt) return { code: 0, stdout: JSON.stringify({ hookSpecificOutput: { hookEventName: "SessionStart", additionalContext: txt } }), stderr: "" };
       }
       return LEEG;
     }
