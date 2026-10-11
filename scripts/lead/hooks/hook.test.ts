@@ -501,11 +501,20 @@ describe("leadnamen: het register is de bron, env alleen de beginwaarde", () => 
     for (const [id, lead] of [["WA", "lead-a"], ["WB", "lead-b"]] as const) schrijfRecord(staat, { ...(leesRecord(staat, id) as Rec), lead });
   }
 
-  test("een verse lead krijgt bij de start haar naam voor SendMessage en de /rename-aanwijzing", async () => {
-    const u = await verwerk("SessionStart", sid("LN"), omgeving({ LAB_AGENT_NAAM: "lead-carriere", LAB_AGENT_ROL: "lead", LAB_LEAD_NAAM: "lead-carriere" }), { ...opt, panes: () => null });
+  test("een lead krijgt bij een verse start haar naam voor SendMessage en vraagt Brian om /rename; niet bij resume, clear of compact", async () => {
+    const env = omgeving({ LAB_AGENT_NAAM: "lead-carriere", LAB_AGENT_ROL: "lead", LAB_LEAD_NAAM: "lead-carriere" });
+    const u = await verwerk("SessionStart", { ...sid("LN"), source: "startup" }, env, { ...opt, panes: () => null });
     const txt = JSON.parse(u.stdout).hookSpecificOutput.additionalContext;
     expect(txt).toContain("lead-carriere");
+    expect(txt).toContain("vraag Brian");
     expect(txt).toContain("/rename lead-carriere");
+    for (const source of ["resume", "clear", "compact", undefined]) {
+      const w = await verwerk("SessionStart", { ...sid("LN"), source }, env, { ...opt, panes: () => null });
+      expect(w.stdout).toBe("");
+    }
+    // Zonder naam geen melding.
+    const leeg = await verwerk("SessionStart", { ...sid("LX"), source: "startup" }, { ...env, LAB_AGENT_NAAM: "", LAB_LEAD_NAAM: "" }, { ...opt, panes: () => null });
+    expect(leeg.stdout).not.toContain("SendMessage");
   });
 
   test("elke lead krijgt alleen de meldingen van haar eigen sessies (prompt en Stop)", async () => {
