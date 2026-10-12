@@ -72,6 +72,8 @@ if tool == "Bash":
         return False
     def leegmaken(cmd):
         try:
+            if "<<" in cmd:
+                return cmd  # here-doc/here-string: de quotes kunnen anders gelezen worden, dus streng
             if "$'" in cmd or '$"' in cmd:
                 return cmd  # ANSI-C-quotes kennen \' als escape: niet na te gaan, dus streng
             toks, seg, i, n = [], 0, 0, len(cmd)
