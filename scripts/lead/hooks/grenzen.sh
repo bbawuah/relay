@@ -102,16 +102,48 @@ if tool == "Bash":
         except Exception:
             return segmenten_streng(cmd)
     # Alleen als een uitrolscript echt gestart wordt: het pad staat op de commandopositie van een
-    # segment (eventueel na VAR=x, exec/sudo/env/nohup/time of sh/bash/zsh), of `bun run … uitrollen`.
+    # segment (eventueel na VAR=x, exec/sudo/env/nohup/time/xargs of sh/bash/zsh), of `bun run … uitrollen`.
     # Een pad als argument (grep, cat, sed, git diff, ls) is geen start (vals alarm 6 okt).
-    def start_uitrol(cmd):
+    # Een shell met -c, `eval` of een here-string (<<<) voert een string uit: die string gaat recursief
+    # door dezelfde controles (quotes eraf), anders is `bash -c 'cd x && ./uitrollen.sh'` een omzeiling.
+    VOORVOEGSEL = ("exec", "sudo", "env", "nohup", "time", "command", "xargs", "{", "!", "if", "then", "else", "do", "while", "until")
+    SHELL = re.compile(r"(/\S*/)?(ba|z|da|k)?sh")
+    def kern(seg):
+        """Woorden van een segment zonder VAR=x en voorvoegsels."""
+        w = seg.split()
+        while w and (re.match(r"^[A-Za-z_][A-Za-z0-9_]*=", w[0]) or w[0] in VOORVOEGSEL):
+            w = w[1:]
+        return w
+    def binnenstring(w):
+        """De string die dit commando als code uitvoert (shell -c, eval, <<<), anders None."""
+        if not w:
+            return None
+        if w[0] == "eval":
+            rest = w[1:]
+        elif SHELL.fullmatch(w[0]):
+            rest = None
+            for k, x in enumerate(w[1:], 1):
+                if re.fullmatch(r"-[A-Za-z]*c[A-Za-z]*", x) or x == "<<<":
+                    rest = w[k + 1:]
+                    break
+            if rest is None:
+                return None
+        else:
+            return None
+        return " ".join(rest).strip().strip("'\"")
+    def start_uitrol(cmd, diepte=0):
+        if diepte > 5:
+            return True  # bij twijfel streng
         for seg in segmenten(cmd):
-            w = seg.split()
-            while w and (re.match(r"^[A-Za-z_][A-Za-z0-9_]*=", w[0]) or w[0] in ("exec", "sudo", "env", "nohup", "time", "command")):
-                w = w[1:]
+            w = kern(seg)
             if not w or w[0] in ("-", "#", "echo", "printf"):
                 continue
-            if re.fullmatch(r"(/\S*/)?(ba|z)?sh", w[0]):
+            inner = binnenstring(w)
+            if inner is not None:
+                if start_uitrol(inner, diepte + 1):
+                    return True
+                continue
+            if SHELL.fullmatch(w[0]):
                 w = [x for x in w[1:] if not x.startswith("-")]
                 if not w:
                     continue
@@ -124,12 +156,20 @@ if tool == "Bash":
         weiger("uitrollen gaat via Brian (`! <commando>`) of straks via het akkoord in Terminal B.")
     # Brede kill op naam of patroon stopt andermans mocks, diensten en sessies (twee keer gezien,
     # 9 okt 2026: gw-sleutelflow `pkill -f dev-mock`, gw-teksten `pkill -f "x"`). Alleen eigen PID.
-    for seg in segmenten(c):
-        w = seg.split()
-        while w and (re.match(r"^[A-Za-z_][A-Za-z0-9_]*=", w[0]) or w[0] in ("exec", "sudo", "env", "nohup", "time", "command", "xargs")):
-            w = w[1:]
-        if w and re.fullmatch(r"(/\S*/)?(pkill|killall)", w[0]):
-            weiger("pkill/killall stopt ook processen van anderen. Stop alleen je eigen proces: `kill <pid>` (pid uit je eigen start, of `lsof -ti tcp:<eigen poort>`).")
+    def brede_kill(cmd, diepte=0):
+        if diepte > 5:
+            return True
+        for seg in segmenten(cmd):
+            w = kern(seg)
+            inner = binnenstring(w)
+            if inner is not None:
+                if brede_kill(inner, diepte + 1):
+                    return True
+            elif w and re.fullmatch(r"(/\S*/)?(pkill|killall)", w[0]):
+                return True
+        return False
+    if brede_kill(c):
+        weiger("pkill/killall stopt ook processen van anderen. Stop alleen je eigen proces: `kill <pid>` (pid uit je eigen start, of `lsof -ti tcp:<eigen poort>`).")
     nu = datetime.datetime.now().time()
     if datetime.time(5, 0) <= nu < datetime.time(7, 15):
         if re.search(r"bun run (poort|bekijk|test:tmux|test:e2e)|playwright", c):
