@@ -168,3 +168,9 @@ pkill -f x
 cat <<B >/dev/null
 '
 B
+====
+git commit -m "${x:-'}" -m '}"; ./uitrollen.sh
+'
+====
+git commit -m "${x:-'}" -m '}"; pkill -f x
+'

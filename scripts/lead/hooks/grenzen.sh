@@ -56,26 +56,17 @@ if tool == "Bash":
         (("glab", "mr", "note"), ("--message",)),
     ]
     def een_quote(t):
-        if len(t) < 2 or "$(" in t or "`" in t:
+        # één quote-token zonder het andere quoteteken erin ('…' zonder " of "…" zonder ')
+        if len(t) < 2 or t[0] not in "'\"" or t[-1] != t[0]:
             return False
-        if t[0] == "'":
-            return t.count("'") == 2 and t[-1] == "'"
-        if t[0] == '"':
-            k = 1
-            while k < len(t):
-                if t[k] == "\\":
-                    k += 2
-                    continue
-                if t[k] == '"':
-                    return k == len(t) - 1
-                k += 1
-        return False
+        andere = '"' if t[0] == "'" else "'"
+        return t.count(t[0]) == 2 and andere not in t
     def leegmaken(cmd):
         try:
-            if "<<" in cmd:
-                return cmd  # here-doc/here-string: de quotes kunnen anders gelezen worden, dus streng
-            if "$'" in cmd or '$"' in cmd:
-                return cmd  # ANSI-C-quotes kennen \' als escape: niet na te gaan, dus streng
+            # Zonder deze tekens hebben bash, zsh en sh dezelfde, eenduidige quote-regels (geen expansie,
+            # escape, commentaar, here-doc, ANSI-C-quote, ${..}, redirect of glob): anders streng.
+            if re.search(r"[$`\\#<>{}!*?\[]", cmd):
+                return cmd
             toks, seg, i, n = [], 0, 0, len(cmd)
             while i < n:
                 ch = cmd[i]
@@ -113,8 +104,6 @@ if tool == "Bash":
                         else:
                             i += 1
                     toks.append((seg, start, i))
-            if any(cmd[a] == "#" for _, a, _b in toks):
-                return cmd  # een woord met # kan commentaar zijn: streng
             uit = []
             for s_id in sorted({t[0] for t in toks}):
                 tk = [t for t in toks if t[0] == s_id]

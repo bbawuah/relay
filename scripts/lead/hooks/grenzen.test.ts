@@ -53,6 +53,11 @@ const WEIGER = [
   `git commit -m $'a\\' -m ' ; pkill -f x #'`,
   "git commit -m x # -m '\n./uitrollen.sh\n# '",
   "gh pr create --title x # --body '\npkill -f x\n# '",
+  // ${x:-'} paart de quote binnen de expansie (bash 5.3); een speciaal teken geeft het strenge gedrag
+  `git commit -m "\${x:-'}" -m '}"; ./uitrollen.sh\n`,
+  `git commit -m "\${x:-'}" -m '}"; pkill -f x\n`,
+  'git commit -m "a\\" ; ./uitrollen.sh ; \\""',
+  `git commit -m "it's" ; ./uitrollen.sh`,
   // here-doc die de quotes anders laat lezen
   "cat <<A >/dev/null\ngit commit -m '\nA\n./uitrollen.sh\ncat <<B >/dev/null\n'\nB",
   "cat <<A >/dev/null\ngh pr comment 1 --body '\nA\n./uitrollen.sh\ncat <<B >/dev/null\n'\nB",
@@ -92,8 +97,6 @@ const DOOR = [
   "git diff apps/x/scripts/uitrollen.sh",
   "cat apps/x/scripts/uitrollen.sh",
   "kill 123",
-  // geldige dubbele quote met \" erin: inerte tekst, geen commando
-  'git commit -m "a\\" ; ./uitrollen.sh ; \\""',
 ];
 
 // Witte lijst: alleen bij deze commando's mag de nieuwe hook iets doorlaten wat de oude weigerde.
