@@ -106,3 +106,41 @@ echo "`true`" ; ./uitrollen.sh
 echo "a `true` b"; ./uitrollen.sh
 ====
 git commit -m "fix: ./uitrollen.sh; pkill -f x"
+====
+git commit -m $'a\' -m ' ; ./uitrollen.sh #'
+====
+git commit -m $'a\' -m ' ; pkill -f x #'
+====
+git commit -m x # -m '
+./uitrollen.sh
+# '
+====
+gh pr create --title x # --body '
+pkill -f x
+# '
+====
+git commit -m 'x' ; ./uitrollen.sh
+====
+git commit -m 'a'"b" ; ./uitrollen.sh
+====
+git commit -m "a\" ; ./uitrollen.sh ; \""
+====
+git commit -m '; ./uitrollen.sh;'
+====
+git -C x commit -m '; ./uitrollen.sh'
+====
+git -c a=b commit -m '; ./uitrollen.sh'
+====
+git commit --message='; ./uitrollen.sh'
+====
+gh api x -f body='; ./uitrollen.sh'
+====
+gh pr create --body-file '; ./uitrollen.sh'
+====
+gh pr create --body "$(./uitrollen.sh)"
+====
+gh pr create --body "`./uitrollen.sh`"
+====
+git commit -m -m '; ./uitrollen.sh'
+====
+X=1 git commit -m 'x' -m '; pkill -f x'

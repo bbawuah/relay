@@ -72,6 +72,8 @@ if tool == "Bash":
         return False
     def leegmaken(cmd):
         try:
+            if "$'" in cmd or '$"' in cmd:
+                return cmd  # ANSI-C-quotes kennen \' als escape: niet na te gaan, dus streng
             toks, seg, i, n = [], 0, 0, len(cmd)
             while i < n:
                 ch = cmd[i]
@@ -109,6 +111,8 @@ if tool == "Bash":
                         else:
                             i += 1
                     toks.append((seg, start, i))
+            if any(cmd[a] == "#" for _, a, _b in toks):
+                return cmd  # een woord met # kan commentaar zijn: streng
             uit = []
             for s_id in sorted({t[0] for t in toks}):
                 tk = [t for t in toks if t[0] == s_id]

@@ -48,6 +48,17 @@ const WEIGER = [
   "find . -exec sh -c 'a && pkill -f x' \\;",
   "ssh host 'a && killall node'",
   "bash -c -- 'a; pkill -f x'",
+  // omzeilingen uit de herreview: $'..' (\' is een escape) en # als commentaar
+  `git commit -m $'a\\' -m ' ; ./uitrollen.sh #'`,
+  `git commit -m $'a\\' -m ' ; pkill -f x #'`,
+  "git commit -m x # -m '\n./uitrollen.sh\n# '",
+  "gh pr create --title x # --body '\npkill -f x\n# '",
+  "git commit -m 'x' ; ./uitrollen.sh",
+  `git commit -m 'a'"b" ; ./uitrollen.sh`,
+  "git -C x commit -m '; ./uitrollen.sh'",
+  "git commit --message='; ./uitrollen.sh'",
+  "gh api x -f body='; ./uitrollen.sh'",
+  'gh pr create --body "`./uitrollen.sh`"',
   // een bericht dat zelf een echte start bevat blijft geweigerd
   'git commit -m "$(./uitrollen.sh)"',
   'git commit -m "a" -m "b" && ./uitrollen.sh',
@@ -76,6 +87,8 @@ const DOOR = [
   "git diff apps/x/scripts/uitrollen.sh",
   "cat apps/x/scripts/uitrollen.sh",
   "kill 123",
+  // geldige dubbele quote met \" erin: inerte tekst, geen commando
+  'git commit -m "a\\" ; ./uitrollen.sh ; \\""',
 ];
 
 // Witte lijst: alleen bij deze commando's mag de nieuwe hook iets doorlaten wat de oude weigerde.
