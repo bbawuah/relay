@@ -1,0 +1,176 @@
+./uitrollen.sh
+====
+$'./uitrollen.sh'
+====
+bash -c $'./uitrollen.sh'
+====
+./uitrol\
+len.sh
+====
+case x in x) ./uitrollen.sh;; esac
+====
+true |& ./uitrollen.sh
+====
+true &>/dev/null; ./uitrollen.sh
+====
+>/dev/null ./uitrollen.sh
+====
+cat <(./uitrollen.sh)
+====
+tee >(./uitrollen.sh)
+====
+exec ./uitrollen.sh
+====
+exec -a x ./uitrollen.sh
+====
+command -p ./uitrollen.sh
+====
+builtin exec ./uitrollen.sh
+====
+source ./uitrollen.sh
+====
+. ./uitrollen.sh
+====
+time -p ./uitrollen.sh
+====
+nice ./uitrollen.sh
+====
+timeout 5 ./uitrollen.sh
+====
+sudo -u brian ./uitrollen.sh
+====
+f(){ ./uitrollen.sh; }; f
+====
+alias u=./uitrollen.sh; u
+====
+x=./uitrollen.sh; $x
+====
+find . -name uitrollen.sh -exec {} \;
+====
+echo | xargs ./uitrollen.sh
+====
+echo x | xargs -I{} ./uitrollen.sh {}
+====
+bash <<EOF
+./uitrollen.sh
+EOF
+====
+bash${IFS}./uitrollen.sh
+====
+bash -c 'cd apps/tmux && ./uitrollen.sh'
+====
+bash -c -- './uitrollen.sh'
+====
+bash -c '"true"; ./uitrollen.sh; "true"'
+====
+bash -c "'true'; ./uitrollen.sh; 'true'"
+====
+eval '"true"; ./uitrollen.sh; "true"'
+====
+sudo -u brian bash -c 'cd x && ./uitrollen.sh'
+====
+nice bash -c 'cd x && ./uitrollen.sh'
+====
+timeout 60 sh -c 'cd x; ./uitrollen.sh'
+====
+find . -maxdepth 0 -exec sh -c 'cd apps/tmux && ./scripts/uitrollen.sh' \;
+====
+python3 -c "import os; os.system('./uitrollen.sh')"
+====
+ssh localhost 'cd x && ./uitrollen.sh'
+====
+bash -c "bun run uitrollen"
+====
+nice sh -c 'true; bun run uitrollen'
+====
+pkill -f x
+====
+sudo -u b pkill x
+====
+nice sh -c 'true; pkill -f dev-mock'
+====
+timeout 5 bash -c 'true && killall node'
+====
+bash -c '"true"; pkill -f x; "true"'
+====
+f(){ pkill x; }; f
+====
+echo | xargs pkill
+====
+x="$(true)" ./uitrollen.sh
+====
+echo "$(true)" ; ./uitrollen.sh
+====
+echo "`true`" ; ./uitrollen.sh
+====
+echo "a `true` b"; ./uitrollen.sh
+====
+git commit -m "fix: ./uitrollen.sh; pkill -f x"
+====
+git commit -m $'a\' -m ' ; ./uitrollen.sh #'
+====
+git commit -m $'a\' -m ' ; pkill -f x #'
+====
+git commit -m x # -m '
+./uitrollen.sh
+# '
+====
+gh pr create --title x # --body '
+pkill -f x
+# '
+====
+git commit -m 'x' ; ./uitrollen.sh
+====
+git commit -m 'a'"b" ; ./uitrollen.sh
+====
+git commit -m "a\" ; ./uitrollen.sh ; \""
+====
+git commit -m '; ./uitrollen.sh;'
+====
+git -C x commit -m '; ./uitrollen.sh'
+====
+git -c a=b commit -m '; ./uitrollen.sh'
+====
+git commit --message='; ./uitrollen.sh'
+====
+gh api x -f body='; ./uitrollen.sh'
+====
+gh pr create --body-file '; ./uitrollen.sh'
+====
+gh pr create --body "$(./uitrollen.sh)"
+====
+gh pr create --body "`./uitrollen.sh`"
+====
+git commit -m -m '; ./uitrollen.sh'
+====
+X=1 git commit -m 'x' -m '; pkill -f x'
+====
+cat <<A >/dev/null
+git commit -m '
+A
+./uitrollen.sh
+cat <<B >/dev/null
+'
+B
+====
+cat <<A >/dev/null
+gh pr comment 1 --body '
+A
+./uitrollen.sh
+cat <<B >/dev/null
+'
+B
+====
+cat <<A >/dev/null
+git commit -m '
+A
+pkill -f x
+cat <<B >/dev/null
+'
+B
+====
+git commit -m "${x:-'}" -m '}"; ./uitrollen.sh
+'
+====
+git commit -m "${x:-'}" -m '}"; pkill -f x
+'
