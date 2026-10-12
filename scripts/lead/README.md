@@ -177,3 +177,7 @@ bun test scripts/lead
 ```
 
 De tests zetten een nep-`gh` en nep-`tmux` vooraan op `PATH` en gebruiken een wegwerp-git-repo met een lokale bare `origin`. Ze raken nooit de echte tmux-server, GitHub of een echte PR.
+
+## hooks/grenzen.sh
+
+De bron van de PreToolUse-hook `grenzen.sh` (sleutels, uitrolscripts, pkill/killall, stiltevenster, rauwe merge via gh) staat nu in de repo, met tests in `hooks/grenzen.test.ts`. De uitrol- en pkill-check splitsen een Bash-commando quote-bewust: tekst binnen quotes (een meerregelig commitbericht of MR-body) is nooit een commandopositie, een `$(...)`- of backtick-subcommando wordt wel gecontroleerd, en bij een ongebalanceerde quote geldt de strenge oude splitsing. Brian installeert de hook met `cp scripts/lead/hooks/grenzen.sh ~/.claude/hooks/grenzen.sh`; agents raken `~/.claude` niet aan.
