@@ -38,112 +38,108 @@ if tool == "Bash":
     for deel in re.split(r"&&|\|\||;|\n", c):
         if LEES.search(deel) and SLEUTEL.search(deel) and ".example" not in deel:
             weiger("dit commando leest een sleutelbestand. Sleutels lezen mag niet; vraag het Brian.")
-    # Quote-bewuste splitsing in commandosegmenten: operatoren (&& || ; & | ( ) newline, backtick, $( )
-    # tellen alleen buiten quotes. Tekst binnen quotes (commitbericht, MR-body) is nooit een nieuwe
-    # commandopositie (vals alarm 6 en 12 okt). Een $(...) of backtick-subcommando, ook binnen
-    # dubbele quotes, wordt wel een eigen segment en dus gecontroleerd. Tekst in dubbele quotes die
-    # na zo'n subcommando verdergaat, wordt overgeslagen. Faalt het (ongebalanceerde quote of
-    # haakje): terug op de strenge oude splitsing.
-    def segmenten_streng(cmd):
-        return re.split(r"&&|\|\||[;&|()\n`]|\$\(", cmd)
-    def segmenten(cmd):
+    # Berichtargumenten leegmaken (enige versoepeling t.o.v. de strenge check hieronder): de waarde van
+    # `-m`/`--message` bij git commit|tag, `--title`/`--body` bij gh pr create|edit|comment en gh issue,
+    # `--title`/`--description`/`--message` bij glab mr create|update|note, wordt `''`, maar alleen als het
+    # commando op de commandopositie van een segment staat en de waarde één goed afgesloten quote-token
+    # is zonder `$(` of backtick. Tekst daarin is nooit een commando (vals alarm 6 en 12 okt). Bij elke
+    # twijfel of parseerfout blijft het commando ongewijzigd, dus streng.
+    BERICHT = [
+        (("git", "commit"), ("-m", "--message")),
+        (("git", "tag"), ("-m", "--message")),
+        (("gh", "pr", "create"), ("--title", "--body")),
+        (("gh", "pr", "edit"), ("--title", "--body")),
+        (("gh", "pr", "comment"), ("--body",)),
+        (("gh", "issue", "*"), ("--title", "--body")),
+        (("glab", "mr", "create"), ("--title", "--description", "--message")),
+        (("glab", "mr", "update"), ("--title", "--description", "--message")),
+        (("glab", "mr", "note"), ("--message",)),
+    ]
+    def een_quote(t):
+        if len(t) < 2 or "$(" in t or "`" in t:
+            return False
+        if t[0] == "'":
+            return t.count("'") == 2 and t[-1] == "'"
+        if t[0] == '"':
+            k = 1
+            while k < len(t):
+                if t[k] == "\\":
+                    k += 2
+                    continue
+                if t[k] == '"':
+                    return k == len(t) - 1
+                k += 1
+        return False
+    def leegmaken(cmd):
         try:
-            segs, huidig, negeer, stack, i, n = [], [], False, ["top"], 0, len(cmd)
-            def sluit(nieuw_negeer=False):
-                nonlocal huidig, negeer
-                if not negeer:
-                    segs.append("".join(huidig))
-                huidig, negeer = [], nieuw_negeer
+            toks, seg, i, n = [], 0, 0, len(cmd)
             while i < n:
-                ch, mode = cmd[i], stack[-1]
-                if ch == "\\":
-                    huidig.append(cmd[i:i + 2]); i += 2; continue
-                if mode == "dq":
-                    if ch == '"':
-                        stack.pop(); huidig.append(ch)
-                    elif cmd.startswith("$(", i):
-                        sluit(); stack.append("sub"); i += 1
-                    elif ch == "`":
-                        sluit(); stack.append("bt")
-                    else:
-                        huidig.append(ch)
-                    i += 1; continue
-                if ch == "'":
-                    j = cmd.find("'", i + 1)
-                    if j < 0:
-                        raise ValueError("quote")
-                    huidig.append(cmd[i:j + 1]); i = j + 1; continue
-                if ch == '"':
-                    stack.append("dq"); huidig.append(ch)
+                ch = cmd[i]
+                if ch in " \t":
+                    i += 1
+                elif ch in "\n;&|()`":
+                    seg += 1; i += 1
                 elif cmd.startswith("$(", i):
-                    sluit(); stack.append("sub"); i += 1
-                elif ch == "`":
-                    stack_in_dq = mode == "bt"
-                    sluit()
-                    if stack_in_dq:
-                        stack.pop()
-                        if stack[-1] == "dq":
-                            negeer = True
-                    else:
-                        stack.append("bt")
-                elif ch == ")" and mode == "sub":
-                    stack.pop(); sluit(stack[-1] == "dq")
-                elif ch in "&|;()\n":
-                    sluit()
-                    if cmd.startswith(ch, i + 1) and ch in "&|":
-                        i += 1
+                    seg += 1; i += 2
                 else:
-                    huidig.append(ch)
-                i += 1
-            if stack != ["top"]:
-                raise ValueError("onbalans")
-            sluit()
-            return segs
+                    start = i
+                    while i < n:
+                        ch = cmd[i]
+                        if ch == "\\":
+                            i += 2
+                        elif ch == "'":
+                            j = cmd.find("'", i + 1)
+                            if j < 0:
+                                raise ValueError("quote")
+                            i = j + 1
+                        elif ch == '"':
+                            i += 1
+                            while True:
+                                if i >= n:
+                                    raise ValueError("quote")
+                                if cmd[i] == "\\":
+                                    i += 2
+                                elif cmd[i] == '"':
+                                    i += 1
+                                    break
+                                else:
+                                    i += 1
+                        elif ch in " \t\n;&|()`" or cmd.startswith("$(", i):
+                            break
+                        else:
+                            i += 1
+                    toks.append((seg, start, i))
+            uit = []
+            for s_id in sorted({t[0] for t in toks}):
+                tk = [t for t in toks if t[0] == s_id]
+                tx = [cmd[a:b] for _, a, b in tk]
+                k0 = 0
+                while k0 < len(tx) and re.match(r"^[A-Za-z_][A-Za-z0-9_]*=", tx[k0]):
+                    k0 += 1
+                for naam, vlaggen in BERICHT:
+                    m = len(naam)
+                    if len(tx) >= k0 + m and all(a == "*" or a == b for a, b in zip(naam, tx[k0:k0 + m])):
+                        for q in range(k0 + m, len(tx) - 1):
+                            if tx[q] in vlaggen and een_quote(tx[q + 1]):
+                                uit.append((tk[q + 1][1], tk[q + 1][2]))
+                        break
+            for a, b in sorted(uit, reverse=True):
+                cmd = cmd[:a] + "''" + cmd[b:]
+            return cmd
         except Exception:
-            return segmenten_streng(cmd)
+            return cmd
+    cz = leegmaken(c)
     # Alleen als een uitrolscript echt gestart wordt: het pad staat op de commandopositie van een
-    # segment (eventueel na VAR=x, exec/sudo/env/nohup/time/xargs of sh/bash/zsh), of `bun run … uitrollen`.
+    # segment (eventueel na VAR=x, exec/sudo/env/nohup/time of sh/bash/zsh), of `bun run … uitrollen`.
     # Een pad als argument (grep, cat, sed, git diff, ls) is geen start (vals alarm 6 okt).
-    # Een shell met -c, `eval` of een here-string (<<<) voert een string uit: die string gaat recursief
-    # door dezelfde controles (quotes eraf), anders is `bash -c 'cd x && ./uitrollen.sh'` een omzeiling.
-    VOORVOEGSEL = ("exec", "sudo", "env", "nohup", "time", "command", "xargs", "{", "!", "if", "then", "else", "do", "while", "until")
-    SHELL = re.compile(r"(/\S*/)?(ba|z|da|k)?sh")
-    def kern(seg):
-        """Woorden van een segment zonder VAR=x en voorvoegsels."""
-        w = seg.split()
-        while w and (re.match(r"^[A-Za-z_][A-Za-z0-9_]*=", w[0]) or w[0] in VOORVOEGSEL):
-            w = w[1:]
-        return w
-    def binnenstring(w):
-        """De string die dit commando als code uitvoert (shell -c, eval, <<<), anders None."""
-        if not w:
-            return None
-        if w[0] == "eval":
-            rest = w[1:]
-        elif SHELL.fullmatch(w[0]):
-            rest = None
-            for k, x in enumerate(w[1:], 1):
-                if re.fullmatch(r"-[A-Za-z]*c[A-Za-z]*", x) or x == "<<<":
-                    rest = w[k + 1:]
-                    break
-            if rest is None:
-                return None
-        else:
-            return None
-        return " ".join(rest).strip().strip("'\"")
-    def start_uitrol(cmd, diepte=0):
-        if diepte > 5:
-            return True  # bij twijfel streng
-        for seg in segmenten(cmd):
-            w = kern(seg)
+    def start_uitrol(cmd):
+        for seg in re.split(r"&&|\|\||[;&|()\n`]|\$\(", cmd):
+            w = seg.split()
+            while w and (re.match(r"^[A-Za-z_][A-Za-z0-9_]*=", w[0]) or w[0] in ("exec", "sudo", "env", "nohup", "time", "command")):
+                w = w[1:]
             if not w or w[0] in ("-", "#", "echo", "printf"):
                 continue
-            inner = binnenstring(w)
-            if inner is not None:
-                if start_uitrol(inner, diepte + 1):
-                    return True
-                continue
-            if SHELL.fullmatch(w[0]):
+            if re.fullmatch(r"(/\S*/)?(ba|z)?sh", w[0]):
                 w = [x for x in w[1:] if not x.startswith("-")]
                 if not w:
                     continue
@@ -152,24 +148,16 @@ if tool == "Bash":
             if w[0] == "bun" and "run" in w and any(x.strip("'\"") == "uitrollen" for x in w):
                 return True
         return False
-    if start_uitrol(c):
+    if start_uitrol(cz):
         weiger("uitrollen gaat via Brian (`! <commando>`) of straks via het akkoord in Terminal B.")
     # Brede kill op naam of patroon stopt andermans mocks, diensten en sessies (twee keer gezien,
     # 9 okt 2026: gw-sleutelflow `pkill -f dev-mock`, gw-teksten `pkill -f "x"`). Alleen eigen PID.
-    def brede_kill(cmd, diepte=0):
-        if diepte > 5:
-            return True
-        for seg in segmenten(cmd):
-            w = kern(seg)
-            inner = binnenstring(w)
-            if inner is not None:
-                if brede_kill(inner, diepte + 1):
-                    return True
-            elif w and re.fullmatch(r"(/\S*/)?(pkill|killall)", w[0]):
-                return True
-        return False
-    if brede_kill(c):
-        weiger("pkill/killall stopt ook processen van anderen. Stop alleen je eigen proces: `kill <pid>` (pid uit je eigen start, of `lsof -ti tcp:<eigen poort>`).")
+    for seg in re.split(r"&&|\|\||[;&|()\n`]|\$\(", cz):
+        w = seg.split()
+        while w and (re.match(r"^[A-Za-z_][A-Za-z0-9_]*=", w[0]) or w[0] in ("exec", "sudo", "env", "nohup", "time", "command", "xargs")):
+            w = w[1:]
+        if w and re.fullmatch(r"(/\S*/)?(pkill|killall)", w[0]):
+            weiger("pkill/killall stopt ook processen van anderen. Stop alleen je eigen proces: `kill <pid>` (pid uit je eigen start, of `lsof -ti tcp:<eigen poort>`).")
     nu = datetime.datetime.now().time()
     if datetime.time(5, 0) <= nu < datetime.time(7, 15):
         if re.search(r"bun run (poort|bekijk|test:tmux|test:e2e)|playwright", c):
