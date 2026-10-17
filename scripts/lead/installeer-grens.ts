@@ -3,7 +3,7 @@
 //   bun scripts/lead/installeer-grens.ts                 print de sudo-commando's voor Brian (voert niets uit)
 //   bun scripts/lead/installeer-grens.ts --controleer    vergelijk de geïnstalleerde kopieën met origin/main
 // Opties: --doel <map> (standaard /usr/local/lib/lab-lead); alleen voor tests: --eigenaar <uid>,
-// --repo <map> (standaard deze checkout) en --zonder-fetch.
+// --repo <map> (standaard deze checkout), --zonder-fetch en --testwortel <map> (voorouder-check stopt daar).
 // Dit script draait zelf nooit sudo. De verwachte inhoud komt uit origin/main (vers opgehaald), niet uit
 // de werkkopie: een agent kan de werkkopie aanpassen, origin/main alleen via een gemergede PR.
 // Alleen merge.sh krijgt een allow-regel; push.sh en lab-lees.sh blijven voorlopig in de repo (vangnet).
@@ -44,19 +44,34 @@ export function commandos(bron: string, doel = DOEL): string[] {
   return uit;
 }
 
-/** Heeft het pad een ACL? `ls -led` toont dan een + achter de modus of ACL-regels eronder. */
-export function heeftAcl(pad: string): boolean {
-  const p = spawnSync("/bin/ls", ["-led", pad], { env: { PATH: "/usr/bin:/bin" } });
-  if (p.status !== 0) return true; // kan het niet zien: faalt dicht
-  const regels = p.stdout.toString().split("\n").filter((r) => r.trim() !== "");
-  return /^\S{10}\+/.test(regels[0] ?? "") || regels.length > 1;
+/**
+ * Heeft het pad een ACL? Op macOS: `ls -led` toont dan een + achter de modus of ACL-regels eronder.
+ * Elders: `getfacl --skip-base` (lege uitvoer = geen ACL) als dat er is, anders null (niet te controleren).
+ */
+export function heeftAcl(pad: string, platform: string = process.platform): boolean | null {
+  const env = { PATH: "/usr/bin:/bin" };
+  if (platform === "darwin") {
+    const p = spawnSync("/bin/ls", ["-led", pad], { env });
+    if (p.status !== 0) return true; // kan het niet zien: faalt dicht
+    const regels = p.stdout.toString().split("\n").filter((r) => r.trim() !== "");
+    return /^\S{10}\+/.test(regels[0] ?? "") || regels.length > 1;
+  }
+  const p = spawnSync("getfacl", ["--skip-base", "--absolute-names", pad], { env });
+  if (p.error) return null; // geen getfacl
+  if (p.status !== 0) return true;
+  return p.stdout.toString().trim() !== "";
 }
 
 export type Uitslag = { ok: boolean; regels: string[] };
 
-export function controleer(verwacht: Record<string, string>, doel = DOEL, eigenaar = 0): Uitslag {
+/**
+ * testwortel (alleen voor tests): de voorouder-check stopt bij deze map (die zelf nog wel getoetst wordt),
+ * omdat de tijdelijke map op Linux onder /tmp (1777) ligt. De echte installatie toetst tot /.
+ */
+export function controleer(verwacht: Record<string, string>, doel = DOEL, eigenaar = 0, testwortel?: string): Uitslag {
   const regels: string[] = [];
   let ok = true;
+  let aclGemeld = false;
   const fout = (r: string) => {
     ok = false;
     regels.push(`FOUT ${r}`);
@@ -67,7 +82,12 @@ export function controleer(verwacht: Record<string, string>, doel = DOEL, eigena
     if (!uids.includes(s.uid)) return fout(`${wat}: eigenaar uid ${s.uid}, verwacht ${uids.join(" of ")} (root)`), false;
     if (s.mode & 0o022) return fout(`${wat}: schrijfbaar voor groep of anderen (modus ${(s.mode & 0o7777).toString(8)})`), false;
     if (modus !== undefined && (s.mode & 0o777) !== modus) return fout(`${wat}: modus ${(s.mode & 0o777).toString(8)}, verwacht ${modus.toString(8)}`), false;
-    if (heeftAcl(pad)) return fout(`${wat}: heeft een ACL (ls -led); haal die weg`), false;
+    const acl = heeftAcl(pad);
+    if (acl === null && !aclGemeld) {
+      aclGemeld = true;
+      regels.push(`LET OP ACL's niet gecontroleerd: geen ls -le of getfacl op ${process.platform}`);
+    }
+    if (acl) return fout(`${wat}: heeft een ACL (ls -led of getfacl); haal die weg`), false;
     return true;
   };
   if (!existsSync(doel)) {
@@ -81,7 +101,7 @@ export function controleer(verwacht: Record<string, string>, doel = DOEL, eigena
   }
   for (let p = path.dirname(doel); ; p = path.dirname(p)) {
     if (!veilig(p, `voorouder ${p}`, undefined, [...new Set([0, eigenaar])])) return { ok, regels };
-    if (p === "/") break;
+    if (p === "/" || p === testwortel) break;
   }
   if (!veilig(doel, doel)) return { ok, regels };
   for (const [naam, modus] of Object.entries(BESTANDEN)) {
@@ -113,7 +133,7 @@ if (import.meta.main) {
     return v;
   };
   for (const a of args)
-    if (a.startsWith("-") && !["--controleer", "--doel", "--eigenaar", "--repo", "--zonder-fetch", "--help", "-h"].includes(a)) stop(`onbekende optie ${a}`);
+    if (a.startsWith("-") && !["--controleer", "--doel", "--eigenaar", "--repo", "--zonder-fetch", "--testwortel", "--help", "-h"].includes(a)) stop(`onbekende optie ${a}`);
   if (args.includes("-h") || args.includes("--help")) {
     console.log(readFileSync(import.meta.path, "utf8").split("\n").slice(1, 10).join("\n"));
     process.exit(0);
@@ -130,7 +150,8 @@ if (import.meta.main) {
     stop(`kan origin/main niet lezen: ${(e as Error).message}`);
   }
   if (args.includes("--controleer")) {
-    const u = controleer(verwacht, doel, eigenaar);
+    const tw = waarde("--testwortel");
+    const u = controleer(verwacht, doel, eigenaar, tw === undefined ? undefined : path.resolve(tw));
     for (const r of u.regels) console.log(r);
     console.log(u.ok ? `installeer-grens: ${doel} klopt met origin/main` : "installeer-grens: niet in orde");
     process.exit(u.ok ? 0 : 1);

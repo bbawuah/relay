@@ -83,16 +83,16 @@ describe("installeer-grens.ts", () => {
     expect(commandos("/a b/it's", "/d")[1]).toBe(`sudo install -o root -g wheel -m 755 '/a b/it'\\''s/merge.sh' '/d/merge.sh'`);
   });
   test("--controleer: OK bij gelijke sha's, eigenaar en modus", () => {
-    const u = controleer(verwachteShas(repo, false), doel, uid);
+    const u = controleer(verwachteShas(repo, false), doel, uid, dir);
     expect(u.regels.filter((r) => r.startsWith("FOUT"))).toEqual([]);
     expect(u.ok).toBe(true);
-    expect(draai("--controleer", "--doel", doel, "--eigenaar", String(uid)).code).toBe(0);
+    expect(draai("--controleer", "--doel", doel, "--eigenaar", String(uid), "--testwortel", dir).code).toBe(0);
   });
   test("--controleer vergelijkt met origin/main, niet met de werkkopie", () => {
     // werkkopie en geïnstalleerde kopie gelijk aangepast: toch FOUT
     for (const p of [join(bron, "merge.sh"), join(doel, "merge.sh")]) writeFileSync(p, "#!/bin/sh\nexit 0\n");
     chmodSync(join(doel, "merge.sh"), 0o755);
-    const r = draai("--controleer", "--doel", doel, "--eigenaar", String(uid));
+    const r = draai("--controleer", "--doel", doel, "--eigenaar", String(uid), "--testwortel", dir);
     expect(r.code).toBe(1);
     expect(r.uit).toMatch(/merge\.sh: sha256 .* wijkt af van origin\/main/);
   });
@@ -101,40 +101,44 @@ describe("installeer-grens.ts", () => {
     writeFileSync(join(doel, "merge.sh"), "#!/bin/sh\nexit 0\n");
     rmSync(join(doel, "lead.conf"));
     symlinkSync(join(bron, "lead.conf"), join(doel, "lead.conf"));
-    let tekst = controleer(v, doel, uid).regels.join("\n");
+    let tekst = controleer(v, doel, uid, dir).regels.join("\n");
     expect(tekst).toMatch(/merge\.sh: sha256 .* wijkt af/);
     expect(tekst).toMatch(/lead\.conf: is een symlink/);
     chmodSync(join(doel, "merge.sh"), 0o775);
     rmSync(join(doel, "lead.conf"));
-    tekst = controleer(v, doel, uid).regels.join("\n");
+    tekst = controleer(v, doel, uid, dir).regels.join("\n");
     expect(tekst).toMatch(/merge\.sh: schrijfbaar voor groep of anderen/);
     expect(tekst).toMatch(/lead\.conf: ontbreekt/);
-    expect(controleer(v, doel, uid + 1).regels.join("\n")).toMatch(/eigenaar uid/);
+    expect(controleer(v, doel, uid + 1, dir).regels.join("\n")).toMatch(/eigenaar uid/);
   });
   test("--controleer: FOUT bij een schrijfbare doelmap of een ontbrekend doel", () => {
     const v = verwachteShas(repo, false);
     chmodSync(doel, 0o777);
-    expect(controleer(v, doel, uid).regels.join("\n")).toMatch(/schrijfbaar voor groep of anderen/);
-    expect(controleer(v, join(dir, "nergens"), uid).regels.join("\n")).toMatch(/bestaat niet/);
+    expect(controleer(v, doel, uid, dir).regels.join("\n")).toMatch(/schrijfbaar voor groep of anderen/);
+    expect(controleer(v, join(dir, "nergens"), uid, dir).regels.join("\n")).toMatch(/bestaat niet/);
   });
   test("--controleer: FOUT bij een symlink in het pad of een schrijfbare voorouder", () => {
     const v = verwachteShas(repo, false);
     const link = join(dir, "link");
     symlinkSync(dir, link);
-    expect(controleer(v, join(link, "lab-lead"), uid).regels.join("\n")).toMatch(/echte pad is/);
+    expect(controleer(v, join(link, "lab-lead"), uid, dir).regels.join("\n")).toMatch(/echte pad is/);
     chmodSync(dir, 0o777);
     try {
-      expect(controleer(v, doel, uid).regels.join("\n")).toMatch(/voorouder .*schrijfbaar voor groep of anderen/);
+      expect(controleer(v, doel, uid, dir).regels.join("\n")).toMatch(/voorouder .*schrijfbaar voor groep of anderen/);
     } finally {
       chmodSync(dir, 0o700);
     }
   });
-  test("--controleer: FOUT bij een ACL op de map of een bestand", () => {
+  test("buiten macOS: getfacl als die er is, anders een LET OP-melding in plaats van een FOUT", () => {
+    expect([null, false]).toContain(heeftAcl(doel, "linux"));
+  });
+  // test-weg: ACL bestaat alleen op macOS (CI is ubuntu)
+  test.skipIf(process.platform !== "darwin")("--controleer: FOUT bij een ACL op de map of een bestand", () => {
     const v = verwachteShas(repo, false);
     expect(heeftAcl(doel)).toBe(false);
     const p = Bun.spawnSync(["/bin/chmod", "+a", "everyone allow write", join(doel, "merge.sh")]);
     expect(p.exitCode).toBe(0);
     expect(heeftAcl(join(doel, "merge.sh"))).toBe(true);
-    expect(controleer(v, doel, uid).regels.join("\n")).toMatch(/merge\.sh: heeft een ACL/);
+    expect(controleer(v, doel, uid, dir).regels.join("\n")).toMatch(/merge\.sh: heeft een ACL/);
   });
 });
