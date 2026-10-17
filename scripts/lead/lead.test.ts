@@ -268,6 +268,28 @@ describe("merge.sh", () => {
     expect(remoteTakken()).toContain("lead/test-tak");
   });
 
+  test("lead.conf wordt niet ge-sourcet: alleen CI_WORKFLOW= en GH_REPO= worden gelezen", () => {
+    pr();
+    const kopie = join(dir, "kopie");
+    mkdirSync(kopie);
+    writeFileSync(join(kopie, "merge.sh"), readFileSync(MERGE, "utf8"));
+    writeFileSync(join(kopie, "lead.conf"), `touch "${dir}/uitgevoerd"\nCI_WORKFLOW=CI\nGH_REPO=bbawuah/LAB-BAWUAH\nCHECK=nep\n`);
+    const r = draai(join(kopie, "merge.sh"), ["71", "--droog"]);
+    expect(r.code).toBe(0);
+    expect(existsSync(join(dir, "uitgevoerd"))).toBe(false);
+    writeFileSync(join(kopie, "lead.conf"), "CI_WORKFLOW=CI\nGH_REPO=$(id)\n");
+    expect(draai(join(kopie, "merge.sh"), ["71", "--droog"]).fout).toMatch(/GH_REPO ontbreekt of is ongeldig/);
+  });
+
+  test("elke gh-aanroep gebruikt de vaste repo uit lead.conf", () => {
+    pr();
+    writeFileSync(join(dir, "merge-werkt"), "");
+    expect(draai(MERGE, ["71"]).code).toBe(0);
+    const regels = log("gh.log").trim().split("\n");
+    expect(regels.length).toBeGreaterThan(1);
+    for (const r of regels) expect(r).toEndWith("--repo bbawuah/LAB-BAWUAH");
+  });
+
   test("merget met --merge en verwijdert pas daarna de remote tak", () => {
     pr();
     writeFileSync(join(dir, "merge-werkt"), "");

@@ -723,7 +723,7 @@ describe("merge.sh bezitscheck", () => {
     expect(droog.uit).toContain("--match-head-commit abc1234def5678abc1234def5678abc1234def56");
     const r = merge(["50"]);
     expect(r.code).toBe(0);
-    expect(log("merge.txt")).toBe("pr\nmerge\n50\n--merge\n--match-head-commit\nabc1234def5678abc1234def5678abc1234def56\n");
+    expect(log("merge.txt")).toBe("pr\nmerge\n50\n--merge\n--match-head-commit\nabc1234def5678abc1234def5678abc1234def56\n--repo\nbbawuah/LAB-BAWUAH\n");
     expect(remoteTakken()).not.toContain("lead/test-tak");
   });
 
