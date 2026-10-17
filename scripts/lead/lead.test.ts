@@ -51,6 +51,10 @@ if [ "$1 $2" = "pr merge" ]; then
   [ -f "$FAKE_DIR/merge-werkt" ] && sed -i.bak 's/"state":"OPEN"/"state":"MERGED"/' "$FAKE_DIR/pr.json"
   exit 0
 fi
+# api -X DELETE repos/<o>/<r>/git/refs/heads/<tak>: verwijder de tak uit de lokale bare origin
+if [ "$1 $2 $3" = "api -X DELETE" ]; then
+  git --git-dir "$FAKE_DIR/origin.git" update-ref -d "refs/heads/\${4#repos/*/*/git/refs/heads/}"; exit $?
+fi
 echo "nep-gh: onverwacht commando $*" >&2; exit 2
 `,
   );
@@ -99,7 +103,7 @@ const omgeving = (extra: Record<string, string> = {}) => ({
 
 const draai = (script: string, args: string[], extra: Record<string, string> = {}, cwd = repo) => {
   // merge.sh merget alleen als lead; de rol-tests zetten LAB_AGENT_ROL zelf via extra.
-  const r = Bun.spawnSync(["bash", script, ...args], { cwd, env: omgeving(script === MERGE ? { LAB_AGENT_ROL: "lead", ...extra } : extra) });
+  const r = Bun.spawnSync([...(script.endsWith("merge.sh") ? ["/bin/bash", "-p"] : ["bash"]), script, ...args], { cwd, env: omgeving(script === MERGE ? { LAB_AGENT_ROL: "lead", ...extra } : extra) });
   return { code: r.exitCode, uit: r.stdout.toString(), fout: r.stderr.toString() };
 };
 
@@ -287,7 +291,22 @@ describe("merge.sh", () => {
     expect(draai(MERGE, ["71"]).code).toBe(0);
     const regels = log("gh.log").trim().split("\n");
     expect(regels.length).toBeGreaterThan(1);
-    for (const r of regels) expect(r).toEndWith("--repo bbawuah/LAB-BAWUAH");
+    for (const r of regels) {
+      if (r.startsWith("gh api")) expect(r).toBe("gh api -X DELETE repos/bbawuah/LAB-BAWUAH/git/refs/heads/lead/test-tak --silent");
+      else expect(r).toEndWith("--repo bbawuah/LAB-BAWUAH");
+    }
+    // de remote tak gaat weg via de API, niet via een lokale git push
+    expect(regels.some((r) => r.startsWith("gh api -X DELETE"))).toBe(true);
+  });
+
+  test("als root-kopie: geen LAB_MERGE_CHECK/LAB_MERGE_CI_WORKFLOW uit de env (vanuit de repo wel)", () => {
+    const bron = readFileSync(MERGE, "utf8");
+    expect(bron.split("\n")[0]).toBe("#!/bin/bash -p");
+    expect(bron).toContain('[ "$(cd "$(dirname "$0")" && pwd -P)" = /usr/local/lib/lab-lead ] && geinstalleerd=1');
+    expect(bron).toMatch(/PATH=\/usr\/bin:\/bin:\/opt\/homebrew\/bin\n\s+export PATH\n\s+unset LAB_MERGE_CHECK LAB_MERGE_CI_WORKFLOW/);
+    // vanuit de repo telt de override nog: een check die niet bestaat, weigert
+    pr();
+    expect(draai(MERGE, ["71", "--droog"], { LAB_MERGE_CHECK: "bestaat-niet" }).fout).toMatch(/'bestaat-niet' staat niet/);
   });
 
   test("merget met --merge en verwijdert pas daarna de remote tak", () => {

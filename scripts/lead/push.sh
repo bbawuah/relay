@@ -1,12 +1,19 @@
-#!/usr/bin/env bash
+#!/bin/bash -p
 # Push de huidige tak naar origin, of verwijder een gemergede remote tak. Gebruik:
 #   scripts/lead/push.sh [--droog]                    huidige tak naar origin, met upstream
 #   scripts/lead/push.sh --verwijder <tak> [--droog]  remote tak weg, alleen als hij in origin/main zit
 # Weigert (exit 1, met reden) main/master, detached HEAD, elke force-vorm, een andere remote dan
 # origin en een tak die (ook) in een andere worktree is uitgecheckt. Zie scripts/lead/README.md.
+# Vangnet tegen vergissingen, geen grens (geen allow-regel): zie scripts/lead/README.md.
 set -euo pipefail
+unset BASH_ENV ENV
 
 fout() { echo "push: geweigerd: $*" >&2; exit 1; }
+# Als root-kopie in /usr/local/lib/lab-lead: vaste PATH.
+if [ "$(cd "$(dirname "$0")" && pwd -P)" = /usr/local/lib/lab-lead ]; then
+  PATH=/usr/bin:/bin:/opt/homebrew/bin
+  export PATH
+fi
 
 # Een taknaam: alleen deze tekens, niet met - of / beginnen, geen .., geen glob (* ? [), geen + of :.
 geldige_tak() {

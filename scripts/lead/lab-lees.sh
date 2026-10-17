@@ -1,13 +1,20 @@
-#!/usr/bin/env bash
+#!/bin/bash -p
 # Alleen-lezen op het lab via `ssh jump`. Gebruik:
 #   scripts/lead/lab-lees.sh <get|describe|logs|events|top> [args] [--droog]
 #   scripts/lead/lab-lees.sh auth can-i <werkwoord> <resource> [args] [--droog]
 # Weigert (exit 1, met reden) elk ander subcommando, secrets, schrijf- en shell-acties, en elk
 # argument met een teken buiten [A-Za-z0-9._:/=,@-]. Uitvoer gaat door het eag_-masker.
 # Zie scripts/lead/README.md.
+# Vangnet tegen vergissingen, geen grens (geen allow-regel tot er een read-only lab-account is).
 set -euo pipefail
+unset BASH_ENV ENV
 
 fout() { echo "lab-lees: geweigerd: $*" >&2; exit 1; }
+# Als root-kopie in /usr/local/lib/lab-lead: vaste PATH.
+if [ "$(cd "$(dirname "$0")" && pwd -P)" = /usr/local/lib/lab-lead ]; then
+  PATH=/usr/bin:/bin:/opt/homebrew/bin
+  export PATH
+fi
 
 droog=0 args=()
 for a in "$@"; do

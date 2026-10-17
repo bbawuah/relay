@@ -265,6 +265,7 @@ case "$1 $2" in
   "pr list") cat "$FAKE_DIR/prlist.json"; exit 0 ;;
   "pr view") if [ "$3" = "https://github.com/nep/nep/pull/99" ] && [ -f "$FAKE_DIR/ci.json" ]; then cat "$FAKE_DIR/ci.json"; exit 0; elif [ -f "$FAKE_DIR/prview-$3.json" ]; then cat "$FAKE_DIR/prview-$3.json"; else cat "$FAKE_DIR/prview.json"; fi; exit 0 ;;
   "pr merge") printf "%s\\n" "$@" > "$FAKE_DIR/merge.txt"; sed -i.bak 's/"state":"OPEN"/"state":"MERGED"/' "$FAKE_DIR/prview.json"; exit 0 ;;
+  "api -X") [ "$3" = DELETE ] && { git --git-dir "$FAKE_DIR/origin.git" update-ref -d "refs/heads/\${4#repos/*/*/git/refs/heads/}"; exit $?; } ;;
   "pr create") [ -f "$FAKE_DIR/create-faalt" ] && { echo "nep: create mislukt" >&2; exit 1; }; printf "%s\n" "$@" > "$FAKE_DIR/create.txt"; echo "https://github.com/nep/nep/pull/99"; exit 0 ;;
 esac
 echo "nep-gh: onverwacht commando $*" >&2; exit 2
@@ -668,7 +669,7 @@ describe("merge.sh bezitscheck", () => {
     );
   const merge = (args: string[]) => {
     // merge.sh merget alleen als lead (LAB_AGENT_ROL=lead)
-    const r = Bun.spawnSync(["bash", MERGE, ...args], { cwd: repo, env: { ...omgeving(), LAB_AGENT_ROL: "lead" } });
+    const r = Bun.spawnSync(["/bin/bash", "-p", MERGE, ...args], { cwd: repo, env: { ...omgeving(), LAB_AGENT_ROL: "lead" } });
     return { code: r.exitCode, uit: r.stdout.toString(), fout: r.stderr.toString() };
   };
 
@@ -746,14 +747,14 @@ describe("merge.sh bezitscheck", () => {
   test("CI-workflownaam komt uit lead.conf; LAB_MERGE_CI_WORKFLOW past hem aan", () => {
     prJson(["scripts/lead/wachtrij.ts"]);
     expect(merge(["1", "--droog"]).code).toBe(0);
-    const r = Bun.spawnSync(["bash", MERGE, "1", "--droog"], { cwd: repo, env: omgeving({ LAB_MERGE_CI_WORKFLOW: "Andere" }) });
+    const r = Bun.spawnSync(["/bin/bash", "-p", MERGE, "1", "--droog"], { cwd: repo, env: omgeving({ LAB_MERGE_CI_WORKFLOW: "Andere" }) });
     expect(r.exitCode).toBe(1);
     expect(r.stderr.toString()).toContain("geen CI-run voor");
   });
 
   test("merge.sh vindt lead.conf ook vanaf een ander cwd", () => {
     prJson(["scripts/lead/wachtrij.ts"]);
-    const r = Bun.spawnSync(["bash", MERGE, "1", "--droog"], { cwd: dir, env: omgeving() });
+    const r = Bun.spawnSync(["/bin/bash", "-p", MERGE, "1", "--droog"], { cwd: dir, env: omgeving() });
     expect(r.stderr.toString()).not.toContain("lead.conf");
     expect(r.exitCode).toBe(0);
   });

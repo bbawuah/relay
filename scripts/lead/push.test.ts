@@ -28,7 +28,7 @@ const git = (cwd: string, ...args: string[]) => {
   return { code: p.exitCode, uit: p.stdout.toString().trim(), fout: p.stderr.toString() };
 };
 const draai = (args: string[], extra: Record<string, string> = {}, cwd = repo) => {
-  const p = Bun.spawnSync(["bash", PUSH, ...args], { cwd, env: env(extra), stdout: "pipe", stderr: "pipe" });
+  const p = Bun.spawnSync(["/bin/bash", "-p", PUSH, ...args], { cwd, env: env(extra), stdout: "pipe", stderr: "pipe" });
   return { code: p.exitCode, uit: p.stdout.toString(), fout: p.stderr.toString() };
 };
 const opOrigin = (tak: string) => git(origin, "rev-parse", "--verify", "-q", `refs/heads/${tak}`).uit;

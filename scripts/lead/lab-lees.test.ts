@@ -28,7 +28,7 @@ afterEach(() => rmSync(dir, { recursive: true, force: true }));
 
 const draai = (args: string[], extra: Record<string, string> = {}) => {
   const env = { ...schoneEnv(), PATH: `${join(dir, "bin")}:${process.env.PATH}`, NEP_DIR: dir, ...extra };
-  const p = Bun.spawnSync(["bash", LAB, ...args], { env, stdout: "pipe", stderr: "pipe" });
+  const p = Bun.spawnSync(["/bin/bash", "-p", LAB, ...args], { env, stdout: "pipe", stderr: "pipe" });
   return { code: p.exitCode, uit: p.stdout.toString(), fout: p.stderr.toString() };
 };
 const argv = () => (existsSync(join(dir, "ssh.log")) ? readFileSync(join(dir, "ssh.log"), "utf8").trimEnd().split("\n") : null);

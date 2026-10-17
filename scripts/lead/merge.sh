@@ -1,12 +1,24 @@
-#!/usr/bin/env bash
+#!/bin/bash -p
 # Merge een PR als de lead-voorwaarden kloppen. Gebruik: scripts/lead/merge.sh <pr> [--droog]
 # Weigert (exit 1, met reden) zonder "Lead-review: akkoord"-comment, zonder groene check
 # 'poort', als de PR niet mergeable is of de tak achterloopt. Zie scripts/lead/README.md.
+# Vangnet, geen grens: zie "Vangnet, geen grens" in scripts/lead/README.md.
 set -euo pipefail
+unset BASH_ENV ENV
+
+fout() { echo "merge: geweigerd: $*" >&2; exit 1; }
+# Als root-kopie (/usr/local/lib/lab-lead, waar de allow-regel naar wijst): vaste PATH en geen
+# overrides uit de omgeving. Vanuit de repo (tests) blijven PATH en de overrides staan.
+geinstalleerd=0
+[ "$(cd "$(dirname "$0")" && pwd -P)" = /usr/local/lib/lab-lead ] && geinstalleerd=1
+if [ "$geinstalleerd" = 1 ]; then
+  PATH=/usr/bin:/bin:/opt/homebrew/bin
+  export PATH
+  unset LAB_MERGE_CHECK LAB_MERGE_CI_WORKFLOW
+fi
 
 CHECK="${LAB_MERGE_CHECK:-poort}"
 # Workflownaam van de CI: één bron in lead.conf (ook voor wachtrij.ts), override met LAB_MERGE_CI_WORKFLOW.
-fout() { echo "merge: geweigerd: $*" >&2; exit 1; }
 # lead.conf wordt niet ge-sourcet (geen code uitvoeren uit een bestand naast het script): alleen de
 # regels KEY=waarde lezen die merge.sh nodig heeft, met een vaste vorm.
 CONF="$(dirname "$0")/lead.conf"
@@ -62,6 +74,7 @@ tak=$(j '.headRefName')
 [ "$state" = OPEN ] || fout "PR $pr staat op $state, niet OPEN"
 [ "$(j '.isCrossRepository')" = false ] || fout "PR $pr komt uit een fork (isCrossRepository)"
 case $tak in main|master) fout "PR $pr heeft als tak '$tak'" ;; esac
+[[ $tak =~ ^[A-Za-z0-9._/-]+$ && $tak != -* && $tak != *..* ]] || fout "PR $pr heeft een ongeldige taknaam '$tak'"
 sha=$(j '.headRefOid[0:7]')
 [[ $sha =~ ^[0-9a-f]{7}$ ]] || fout "kan het head-SHA van PR $pr niet lezen"
 headvol=$(j '.headRefOid')
@@ -133,7 +146,7 @@ if [ -n "$contract" ]; then
 fi
 
 if [ "$droog" = 1 ]; then
-  echo "droog: PR $pr voldoet; zou draaien: gh pr merge $pr --merge --match-head-commit $headvol --repo $REPO, controleren op MERGED, dan git push origin --delete $tak"
+  echo "droog: PR $pr voldoet; zou draaien: gh pr merge $pr --merge --match-head-commit $headvol --repo $REPO, controleren op MERGED, dan gh api -X DELETE repos/$REPO/git/refs/heads/$tak"
   exit 0
 fi
 
@@ -145,5 +158,7 @@ if [ "$na" != MERGED ]; then
   echo "merge: PR $pr staat na het mergen op '$na', niet MERGED; remote tak $tak blijft staan" >&2
   exit 1
 fi
-git push origin --delete "$tak"
+# Via de API, niet via een lokale push: geen worktree-config, remote of pre-push-hook onder de allow-regel.
+gh api -X DELETE "repos/$REPO/git/refs/heads/$tak" --silent \
+  || { echo "merge: PR $pr is gemerged, maar remote tak $tak kon niet weg (gh api)" >&2; exit 1; }
 echo "PR $pr gemerged; remote tak $tak verwijderd"
