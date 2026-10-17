@@ -1,4 +1,4 @@
-import { describe, expect, test } from "bun:test";
+import { afterAll, describe, expect, test } from "bun:test";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -9,9 +9,21 @@ const HOOK = process.env.GRENZEN_HOOK ?? join(import.meta.dir, "grenzen.sh");
 // De oude hook (zoals die in ~/.claude stond) als orakel voor de eigenschapstest.
 const OUD = join(import.meta.dir, "fixtures", "grenzen-oud.sh");
 
+// Een kaal `git push` gaat naar de huidige tak, en de hook weigert dat op main. Zonder
+// eigen cwd zou de uitkomst van deze tests afhangen van de tak waarop ze draaien (rood
+// op main en in de zelftest-kopie van de poort, die op main staat): daarom krijgt elke
+// aanroep zonder cwd een lege repo op een eigen tak mee.
+const EIGEN_TAK = (() => {
+  const map = mkdtempSync(join(tmpdir(), "grenzen-eigen-tak-"));
+  Bun.spawnSync(["git", "init", "-q", "-b", "test/eigen-tak", map], { env: schoneEnv() });
+  return map;
+})();
+afterAll(() => rmSync(EIGEN_TAK, { recursive: true, force: true }));
+
 function draai(invoer: unknown, hook = HOOK) {
   const env = { ...schoneEnv(), HOME: "/nonexistent-grenzen-test", LAB_GRENS_MERGE: "" };
-  const p = Bun.spawnSync(["bash", hook], { stdin: new TextEncoder().encode(JSON.stringify(invoer)), env, stdout: "pipe", stderr: "pipe" });
+  const metCwd = typeof invoer === "object" && invoer !== null && !("cwd" in invoer) ? { cwd: EIGEN_TAK, ...invoer } : invoer;
+  const p = Bun.spawnSync(["bash", hook], { stdin: new TextEncoder().encode(JSON.stringify(metCwd)), env, stdout: "pipe", stderr: "pipe" });
   return { code: p.exitCode, stderr: p.stderr.toString() };
 }
 const bash = (command: string, hook = HOOK) => draai({ tool_name: "Bash", tool_input: { command } }, hook);
