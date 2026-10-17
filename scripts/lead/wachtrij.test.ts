@@ -667,7 +667,8 @@ describe("merge.sh bezitscheck", () => {
       }),
     );
   const merge = (args: string[]) => {
-    const r = Bun.spawnSync(["bash", MERGE, ...args], { cwd: repo, env: omgeving() });
+    // merge.sh merget alleen als lead (LAB_AGENT_ROL=lead)
+    const r = Bun.spawnSync(["bash", MERGE, ...args], { cwd: repo, env: { ...omgeving(), LAB_AGENT_ROL: "lead" } });
     return { code: r.exitCode, uit: r.stdout.toString(), fout: r.stderr.toString() };
   };
 

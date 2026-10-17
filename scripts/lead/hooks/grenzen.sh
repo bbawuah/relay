@@ -6,14 +6,19 @@
 #   - zware runs (poort, e2e, bekijk) in het stiltevenster 05:00–07:15
 #   - een rauwe `gh pr merge` (alleen via scripts/lead/merge.sh), zodra LAB_GRENS_MERGE=1 of
 #     ~/.claude/hooks/grenzen.merge bestaat (aan na de merge van scripts/lead/merge.sh)
-# Faalt open: bij een fout in dit script zelf exit 0, zodat het werk niet stilvalt.
-invoer="$(cat)" || exit 0
+#   - een rauwe `git push` met force, verwijderen, naar main, --no-verify of POORT_OVERSLAAN
+#     (alleen via scripts/lead/push.sh), en een rauwe `ssh jump … oc` (alleen via scripts/lead/lab-lees.sh)
+# Faalt dicht (17 okt 2026): bij een fout in dit script zelf (stdin, JSON, een python-status anders
+# dan 0 of 2) exit 1 met een melding op stderr. 2 = weigeren, 0 = toestaan.
+faal() { echo "grenzen.sh: eigen fout ($1); faalt dicht. Meld het de lead of Brian." >&2; exit 1; }
+invoer="$(cat)" || faal "stdin niet te lezen"
 /usr/bin/python3 - "$invoer" <<'PY'
 import json, os, re, sys, datetime
 try:
     d = json.loads(sys.argv[1])
 except Exception:
-    sys.exit(0)
+    print("grenzen.sh: invoer is geen geldige JSON", file=sys.stderr)
+    sys.exit(1)
 tool = d.get("tool_name", "")
 ti = d.get("tool_input") or {}
 
@@ -153,6 +158,86 @@ if tool == "Bash":
             w = w[1:]
         if w and re.fullmatch(r"(/\S*/)?(pkill|killall)", w[0]):
             weiger("pkill/killall stopt ook processen van anderen. Stop alleen je eigen proces: `kill <pid>` (pid uit je eigen start, of `lsof -ti tcp:<eigen poort>`).")
+    # Rauwe `git push` met force, verwijderen of naar main, en een rauwe `ssh jump … oc`: alleen via de
+    # smalle scripts (17 okt 2026). Streng: segmenten en woorden worden gesplitst zonder op quotes te
+    # letten en quotes vallen van de woorden af, dus `bash -c '…'`, `ssh host '…'` en `nice …` tellen
+    # ook. Alleen een segment dat met echo/printf/grep/rg begint, telt niet (tekst, geen start).
+    PUSH_SH = "scripts/lead/push.sh"
+    LAB_SH = "scripts/lead/lab-lees.sh"
+    BUITEN = " Buiten lab-bawuah: met het volledige pad ~/Desktop/LAB-BAWUAH/lab-bawuah/scripts/lead/."
+    TEKST = ("echo", "printf", "grep", "rg", "egrep", "fgrep")
+    GIT_OPT_WAARDE = ("-C", "-c", "--git-dir", "--work-tree", "--namespace", "--exec-path", "--config-env")
+    PUSH_OPT_WAARDE = ("-o", "--push-option", "--repo", "--receive-pack", "--exec")
+    SSH_OPT_WAARDE = set("BbcDEeFIiJLlmOoPpQRSWw")
+    def woorden(seg):
+        return [x.strip("'\"") for x in seg.split()]
+    def eerste(w):
+        while w and (re.match(r"^[A-Za-z_][A-Za-z0-9_]*=", w[0]) or w[0] in ("exec", "sudo", "env", "nohup", "time", "command", "xargs", "nice")):
+            w = w[1:]
+        return w[0] if w else ""
+    def git_push_args(w):
+        for i, x in enumerate(w):
+            if not re.fullmatch(r"(\S*/)?git", x):
+                continue
+            j = i + 1
+            while j < len(w) and w[j].startswith("-"):
+                j += 2 if w[j] in GIT_OPT_WAARDE else 1
+            if j < len(w) and w[j] == "push":
+                return w[j + 1:]
+        return None
+    def push_bezwaar(a):
+        k = 0
+        while k < len(a):
+            x = a[k]
+            if x in PUSH_OPT_WAARDE:
+                k += 2
+                continue
+            if x == "--no-verify":
+                return "--no-verify slaat de poort over; dat mag alleen Brian."
+            if x in ("-f", "--mirror") or x.startswith("--force") or re.fullmatch(r"-[A-Za-z]*f[A-Za-z]*", x) or (x.startswith("+") and len(x) > 1):
+                return f"force-push mag niet. Push je eigen tak met {PUSH_SH}.{BUITEN}"
+            if x in ("--delete", "-d", "--prune") or re.fullmatch(r"-[A-Za-z]*d[A-Za-z]*", x) or re.fullmatch(r":\S+", x):
+                return f"een remote tak verwijderen gaat alleen via {PUSH_SH} --verwijder <tak> (alleen als hij in origin/main zit).{BUITEN}"
+            if x in ("--all", "--branches") or (not x.startswith("-") and re.fullmatch(r"(\S*:)?(refs/heads/)?(main|master)", x)):
+                return f"naar main gaat alles via een PR. Push je eigen tak met {PUSH_SH}.{BUITEN}"
+            k += 1
+        return None
+    def ssh_naar_jump(w):
+        for i, x in enumerate(w):
+            if not re.fullmatch(r"(\S*/)?ssh", x):
+                continue
+            j = i + 1
+            via_jump = False
+            while j < len(w) and w[j].startswith("-"):
+                o = w[j]
+                if o == "--":
+                    j += 1
+                    break
+                if len(o) == 2 and o[1] in SSH_OPT_WAARDE:
+                    if j + 1 < len(w) and re.search(r"(^|[@,=])jump($|[,:])", w[j + 1]):
+                        via_jump = True
+                    j += 2
+                else:
+                    j += 1
+            if via_jump or (j < len(w) and re.fullmatch(r"([^@\s]+@)?jump", w[j])):
+                return True
+        return False
+    jump = False
+    for seg in re.split(r"&&|\|\||[;&|()\n`]|\$\(", cz):
+        w = woorden(seg)
+        if eerste(w) in TEKST:
+            continue
+        pa = git_push_args(w)
+        if pa is not None:
+            if "POORT_OVERSLAAN" in cz:
+                weiger("POORT_OVERSLAAN bij een push mag alleen Brian. Draai bun run check en push zonder.")
+            b = push_bezwaar(pa)
+            if b:
+                weiger(b)
+        if ssh_naar_jump(w):
+            jump = True
+    if jump and re.search(r"(^|[\s'\"/;&|(`])oc($|[\s'\";&|)])", cz):
+        weiger(f"het lab lees je alleen via {LAB_SH} <get|describe|logs|events|top|auth can-i> … (alleen-lezen, geen secrets).{BUITEN}")
     nu = datetime.datetime.now().time()
     if datetime.time(5, 0) <= nu < datetime.time(7, 15):
         if re.search(r"bun run (poort|bekijk|test:tmux|test:e2e)|playwright", c):
@@ -163,6 +248,9 @@ if tool == "Bash":
 sys.exit(0)
 PY
 status=$?
-# Alleen een bewuste weigering (2) doorgeven; elke andere fout = open.
-[ "$status" -eq 2 ] && exit 2
-exit 0
+# 0 = toestaan, 2 = bewuste weigering; elke andere status is een eigen fout: dicht.
+case $status in
+  0) exit 0 ;;
+  2) exit 2 ;;
+  *) faal "python-status $status" ;;
+esac

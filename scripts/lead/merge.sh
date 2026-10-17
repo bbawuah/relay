@@ -24,6 +24,9 @@ while [ $# -gt 0 ]; do
   esac
   shift
 done
+# Alleen de lead merget: een gespawnde agent kan zelf "Lead-review: akkoord" posten, maar niet mergen.
+# --droog (alleen controleren) mag zonder die rol.
+[ "$droog" = 1 ] || [ "${LAB_AGENT_ROL:-}" = lead ] || fout "alleen de lead merget (LAB_AGENT_ROL=lead)"
 [[ $pr =~ ^[0-9]+$ ]] || fout "geef een PR-nummer, bijvoorbeeld: merge.sh 71"
 { [ -z "$contract" ] && [ -z "$spoor" ]; } || { [ -n "$contract" ] && [ -n "$spoor" ]; } || fout "--contract en --spoor horen bij elkaar"
 if [ -n "$contract" ]; then

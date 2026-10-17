@@ -1,6 +1,6 @@
 # Lead-scripts
 
-Drie scripts voor de lead: een sessie starten met een opdrachtbestand, een PR mergen zonder de voorwaarden te vergeten, en een merge-wachtrij die meerdere goedgekeurde PR's als één integratie-PR door de poort haalt. Alle kennen `--droog` (laat zien wat er zou gebeuren, doet niets).
+Scripts voor de lead: een sessie starten met een opdrachtbestand, een PR mergen zonder de voorwaarden te vergeten, een merge-wachtrij die meerdere goedgekeurde PR's als één integratie-PR door de poort haalt, een tak pushen of een gemergede remote tak verwijderen (`push.sh`), en het lab alleen lezen (`lab-lees.sh`). Alle kennen `--droog` (laat zien wat er zou gebeuren, doet niets). `push.sh` en `lab-lees.sh` zijn smal genoeg voor één allow-regel per script: het beleid staat in het script, niet in de veiligheidscheck.
 
 ## spawn.sh
 
@@ -43,6 +43,7 @@ scripts/lead/merge.sh 71           # mergen
 
 Weigert met exit 1 en een duidelijke reden als:
 
+- `LAB_AGENT_ROL` niet `lead` is ("merge: geweigerd: alleen de lead merget (LAB_AGENT_ROL=lead)"): een gespawnde agent kan zelf een akkoord-comment posten, maar niet mergen. `--droog` mag zonder die rol. De lead krijgt de rol door te starten met `lead <onderwerp>` (zie "Startregel van de lead"); een prefix `LAB_AGENT_ROL=lead scripts/lead/merge.sh …` valt buiten de allow-regel en gaat dus langs de veiligheidscheck;
 - de PR niet OPEN is;
 - de PR uit een fork komt (`isCrossRepository`) of de tak `main`/`master` is;
 - er geen PR-comment is die begint met "Lead-review: akkoord <sha7>", met de eerste 7 tekens van de huidige head. Een akkoord van vóór een nieuwe push telt dus niet ("push na akkoord"). Voorbeeld: `Lead-review: akkoord b80ed00`;
@@ -88,6 +89,50 @@ Stappen:
 | `--ci-wacht <s>` | Seconden (standaard 30, of env `LAB_WACHTRIJ_CI_WACHT`) die na het openen van de integratie-PR gewacht wordt op de eerste CI-CheckRun (`__typename` CheckRun, `workflowName` CI; Vercel-entries tellen niet). Is er dan nog geen, dan staat in de uitvoer `WAARSCHUWING: geen CI-run voor <sha7>; sluit en heropen de PR of push opnieuw`. |
 | `--map <pad>` | Pad van de worktree. |
 | `--basis <ref>` | Basis van de wachtrij en van de poort (`--base`), standaard `origin/main`; de body noemt deze basis. De integratie-PR zelf gaat altijd naar `main`. |
+
+## push.sh
+
+```sh
+scripts/lead/push.sh                         # huidige tak naar origin/<tak>, met upstream
+scripts/lead/push.sh --droog                 # alleen tonen
+scripts/lead/push.sh --verwijder lead/x      # remote tak weg, alleen als hij in origin/main zit
+```
+
+Pusht met een expliciete refspec (`git push -u origin refs/heads/<tak>:refs/heads/<tak>`), dus `push.default`, `remote.origin.push` of een upstream die naar `origin/main` wijst (zoals bij een verse agenttak vanaf `origin/main`) spelen geen rol. Gewone `git`, geen `gh`: werkt ook in de GitLab-repo's (daar met het volledige pad `~/Desktop/LAB-BAWUAH/lab-bawuah/scripts/lead/push.sh`).
+
+Weigert met exit 1 en een reden:
+
+- tak `main` of `master`, of detached HEAD;
+- elke force-vorm: `-f`, `--force`, `--force-with-lease`, `--force-if-includes`, `--mirror`, samengestelde korte opties met `f` (`-uf`) en een refspec met `+`;
+- `--no-verify`, `--delete`/`-d`, een refspec of elke andere optie;
+- een andere remote dan `origin` (alleen `origin` mag als argument);
+- een tak die (ook) in een andere worktree is uitgecheckt dan de huidige (`git worktree list`).
+
+`POORT_OVERSLAAN` wordt nooit doorgegeven (`env -u`): de pre-push-hook draait gewoon.
+
+`--verwijder <tak>`: alleen een exacte taknaam (`git check-ref-format`, geen `*`, `?`, `[`, niet met `-`), nooit `main`/`master`. Het script haalt `origin/main` en `origin/<tak>` vers op, eist `git merge-base --is-ancestor origin/<tak> origin/main` en verwijdert met `--force-with-lease=refs/heads/<tak>:<sha>` als slot: is de tak na de controle nog verschoven, dan weigert git. Ook bij verwijderen draait de pre-push-hook.
+
+## lab-lees.sh
+
+```sh
+scripts/lead/lab-lees.sh get pods -n <namespace> -o wide
+scripts/lead/lab-lees.sh logs deploy/web --since=1h
+scripts/lead/lab-lees.sh auth can-i list pods -n <namespace>
+scripts/lead/lab-lees.sh describe pod/web-1 --droog
+```
+
+Alleen-lezen op het lab via `ssh jump`: draait `ssh -T jump oc <args>` met een vaste argv. Toegestaan zijn `get`, `describe`, `logs`, `events`, `top` en `auth can-i`; elk ander subcommando weigert. Altijd geweigerd:
+
+- elk argument met `secret` erin (hoofdletterongevoelig: `secrets`, `secret/x`, `pods,Secrets`, ook bij `auth can-i`), dus ook `-o yaml|json` op secrets;
+- de woorden `exec`, `rsh`, `port-forward`, `cp`, `debug`, `edit`, `apply`, `delete`, `patch`, `scale`, `rollout` (en `attach`, `run`, `create`, `replace`, `label`, `annotate`, `set`, `expose`, `proxy`) als argument;
+- `--raw`; opties die identiteit of doel wijzigen (`--token`, `--as*`, `--kubeconfig`, `--server`/`-s`, `--context`, `--cluster`, `--user`, client-certificaten, `--insecure-skip-tls-verify`); `-f`/`--filename` en `-k`/`--kustomize` (behalve `logs -f`, volgen);
+- elk argument met een teken buiten `[A-Za-z0-9._:/=,@-]`. ssh plakt de argv aan de jump-kant aan elkaar voor de shell daar; zonder spatie, quote, `; | & $ \` \ * ? [ ] { } ~ ! < >` of regeleinde blijft elk argument één woord zonder expansie. Daardoor kan `-o jsonpath={…}` niet; gebruik `-o wide` of `-o custom-columns=…`.
+
+Stdout en stderr gaan elk door het masker `sed -E "s/eag_[A-Za-z0-9]+/eag_<…>/g"`; de exitcode van ssh blijft. De tests (`lab-lees.test.ts`) gebruiken een nep-`ssh` vooraan op `PATH`; het lab wordt nooit aangeroepen.
+
+## .githooks/pre-push
+
+Draait `bun run check` vóór elke push. `POORT_OVERSLAAN=1` slaat de poort over, maar alleen voor Brian: is `LAB_AGENT_ROL` gezet (spawn.sh zet die voor elke sessie), dan weigert de hook met "Alleen Brian mag de poort overslaan". `--no-verify` slaat de hook helemaal over; dat vangt `hooks/grenzen.sh` (een rauwe `git push --no-verify` wordt geweigerd). Getest in `push.test.ts` met een nep-`bun`.
 
 ## Hooks en `lead status`
 
@@ -180,4 +225,8 @@ De tests zetten een nep-`gh` en nep-`tmux` vooraan op `PATH` en gebruiken een we
 
 ## hooks/grenzen.sh
 
-De bron van de PreToolUse-hook `grenzen.sh` (sleutels, uitrolscripts, pkill/killall, stiltevenster, rauwe merge via gh) staat nu in de repo, met tests in `hooks/grenzen.test.ts`. De strenge oude check blijft op het hele commando draaien. Eén bewerking gaat eraan vooraf: de waarde van `-m`/`--message` bij `git commit`/`git tag`, `--title`/`--body` bij `gh pr create|edit|comment` en `gh issue`, en `--title`/`--description`/`--message` bij `glab mr create|update|note` wordt leeggemaakt, maar alleen als het hele commando geen van de tekens ``$ ` \ # < > { } ! * ? [`` bevat (dan zijn de quote-regels van bash, zsh en sh gelijk) en de waarde één quote-token is zonder het andere quoteteken erin. Daardoor kan de hook niets doorlaten wat de oude weigerde, behalve tekst in die berichtargumenten (de eigenschapstest bewaakt dat tegen `hooks/fixtures/grenzen-oud.sh`). Brian installeert de hook met `cp scripts/lead/hooks/grenzen.sh ~/.claude/hooks/grenzen.sh`; agents raken `~/.claude` niet aan.
+De bron van de PreToolUse-hook `grenzen.sh` (sleutels, uitrolscripts, pkill/killall, stiltevenster, rauwe merge via gh, rauwe push en rauw lab) staat nu in de repo, met tests in `hooks/grenzen.test.ts`. De strenge oude check blijft op het hele commando draaien. Eén bewerking gaat eraan vooraf: de waarde van `-m`/`--message` bij `git commit`/`git tag`, `--title`/`--body` bij `gh pr create|edit|comment` en `gh issue`, en `--title`/`--description`/`--message` bij `glab mr create|update|note` wordt leeggemaakt, maar alleen als het hele commando geen van de tekens ``$ ` \ # < > { } ! * ? [`` bevat (dan zijn de quote-regels van bash, zsh en sh gelijk) en de waarde één quote-token is zonder het andere quoteteken erin. Daardoor kan de hook niets doorlaten wat de oude weigerde, behalve tekst in die berichtargumenten (de eigenschapstest bewaakt dat tegen `hooks/fixtures/grenzen-oud.sh`). Brian installeert de hook met `cp scripts/lead/hooks/grenzen.sh ~/.claude/hooks/grenzen.sh`; agents raken `~/.claude` niet aan.
+
+**Rauwe push en rauw lab (17 okt 2026).** Een `git push` met een force-vorm (`-f`, `--force*`, `--mirror`, `-uf`, `+refspec`), met verwijderen (`--delete`, `-d`, `--prune`, `:tak`), naar main (`main`, `HEAD:main`, `x:refs/heads/main`, `--all`), met `--no-verify` of met `POORT_OVERSLAAN` ergens in het commando wordt geweigerd met de verwijzing naar `scripts/lead/push.sh`; een `ssh` naar `jump` (ook `user@jump`, `-J jump`) met `oc` in het commando met de verwijzing naar `scripts/lead/lab-lees.sh`. Streng zoals de rest: segmenten en woorden worden gesplitst zonder op quotes te letten, dus `bash -c '…'`, `ssh host '…'`, `nice …` en `git -C x push` tellen ook. Alleen een segment dat met `echo`, `printf`, `grep` of `rg` begint, telt niet; berichtargumenten zijn al leeggemaakt. Een gewone `git push` of `git push -u origin <tak>` blijft toegestaan.
+
+**Faalt dicht.** Een eigen fout van de hook (stdin niet te lezen, geen geldige JSON, of een python-status anders dan 0 of 2, zoals een crash op invoer van de verkeerde vorm) geeft exit 1 met een melding op stderr ("grenzen.sh: eigen fout (…); faalt dicht"). 0 blijft toestaan en 2 weigeren. Let op: bij Claude Code blokkeert alleen exit 2 een PreToolUse-aanroep; exit 1 telt pas als blokkade met `onFailure: "block"` op de hook-entry in de settings (Brian).

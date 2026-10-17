@@ -98,7 +98,8 @@ const omgeving = (extra: Record<string, string> = {}) => ({
 });
 
 const draai = (script: string, args: string[], extra: Record<string, string> = {}, cwd = repo) => {
-  const r = Bun.spawnSync(["bash", script, ...args], { cwd, env: omgeving(extra) });
+  // merge.sh merget alleen als lead; de rol-tests zetten LAB_AGENT_ROL zelf via extra.
+  const r = Bun.spawnSync(["bash", script, ...args], { cwd, env: omgeving(script === MERGE ? { LAB_AGENT_ROL: "lead", ...extra } : extra) });
   return { code: r.exitCode, uit: r.stdout.toString(), fout: r.stderr.toString() };
 };
 
@@ -249,6 +250,20 @@ describe("merge.sh", () => {
     const r = draai(MERGE, ["71", "--droog"]);
     expect(r.code).toBe(0);
     expect(r.uit).toContain("droog");
+    expect(log("gh.log")).not.toContain("pr merge");
+    expect(remoteTakken()).toContain("lead/test-tak");
+  });
+
+  test("alleen de lead merget: zonder LAB_AGENT_ROL=lead geweigerd, --droog mag wel", () => {
+    pr();
+    writeFileSync(join(dir, "merge-werkt"), "");
+    for (const rol of ["", "agent", "sublead", "vervolg", "Lead"]) {
+      const r = draai(MERGE, ["71"], { LAB_AGENT_ROL: rol });
+      expect(r.code).toBe(1);
+      expect(r.fout).toContain("merge: geweigerd: alleen de lead merget (LAB_AGENT_ROL=lead)");
+    }
+    expect(log("gh.log")).toBe("");
+    expect(draai(MERGE, ["71", "--droog"], { LAB_AGENT_ROL: "agent" }).code).toBe(0);
     expect(log("gh.log")).not.toContain("pr merge");
     expect(remoteTakken()).toContain("lead/test-tak");
   });
