@@ -34,11 +34,23 @@ while [ $# -gt 0 ]; do
 done
 [ -z "$remote" ] || [ "$remote" = origin ] || fout "alleen naar remote 'origin', niet '$remote'"
 
+# Geen config uit de omgeving (git -c via env): die kan core.hooksPath of een pushurl omzetten.
+while IFS= read -r v; do unset "$v"; done < <(compgen -e | grep -E '^GIT_CONFIG_(PARAMETERS|COUNT|KEY_[0-9]+|VALUE_[0-9]+)$' || true)
+
 git rev-parse --git-dir >/dev/null 2>&1 || fout "geen git-repo in $(pwd)"
-git remote get-url origin >/dev/null 2>&1 || fout "deze repo heeft geen remote 'origin'"
+url=$(git remote get-url origin 2>/dev/null) || fout "deze repo heeft geen remote 'origin'"
+pushurl=$(git remote get-url --push origin 2>/dev/null) || fout "kan de push-URL van origin niet lezen"
+[ "$url" = "$pushurl" ] || fout "de push-URL van origin ($pushurl) wijkt af van de fetch-URL ($url)"
+if git config --get-regexp '^url\..*\.pushinsteadof$' >/dev/null 2>&1; then
+  fout "er staat een url.*.pushInsteadOf in de git-config; die stuurt een push naar een andere plek"
+fi
+
+# De pre-push-hook van de repo zelf draait altijd: core.hooksPath vast op <toplevel>/.githooks.
+top=$(git rev-parse --show-toplevel) || fout "geen werkkopie (bare repo?)"
+[ -x "$top/.githooks/pre-push" ] || fout "$top/.githooks/pre-push ontbreekt of is niet uitvoerbaar; zonder poort-hook pusht push.sh niet"
 
 # Nooit POORT_OVERSLAAN doorgeven: de pre-push-hook draait gewoon.
-GIT=(env -u POORT_OVERSLAAN git)
+GIT=(env -u POORT_OVERSLAAN git -c "core.hooksPath=$top/.githooks")
 
 if [ -n "$verwijder" ]; then
   tak=$verwijder
@@ -52,9 +64,17 @@ if [ -n "$verwijder" ]; then
   sha=$(git rev-parse --verify -q "refs/remotes/origin/$tak^{commit}") || fout "kan origin/$tak niet lezen"
   git merge-base --is-ancestor "$sha" refs/remotes/origin/main \
     || fout "origin/$tak (${sha:0:7}) zit niet in origin/main; eerst mergen"
+  # Bij GitHub (en gh beschikbaar) ook een gemergede PR van die tak eisen.
+  rauw=$(git config --get remote.origin.url || true)
+  if [[ $rauw =~ github\.com[:/]([A-Za-z0-9_.-]+)/([A-Za-z0-9_.-]+)$ ]] && command -v gh >/dev/null 2>&1; then
+    repo="${BASH_REMATCH[1]}/${BASH_REMATCH[2]%.git}"
+    n=$(gh pr list --repo "$repo" --head "$tak" --state merged --json number --jq length 2>/dev/null) \
+      || fout "kan de PR's van '$tak' niet opvragen bij $repo (gh)"
+    [[ $n =~ ^[0-9]+$ ]] && [ "$n" -ge 1 ] || fout "geen gemergede PR met tak '$tak' in $repo"
+  fi
   # --force-with-lease als slot, geen force: verwijder alleen als de tak nog op de getoetste sha staat.
   if [ "$droog" = 1 ]; then
-    echo "droog: zou draaien: git push --force-with-lease=refs/heads/$tak:$sha origin --delete refs/heads/$tak"
+    echo "droog: zou draaien (met core.hooksPath=$top/.githooks): git push --force-with-lease=refs/heads/$tak:$sha origin --delete refs/heads/$tak"
     exit 0
   fi
   "${GIT[@]}" push --force-with-lease="refs/heads/$tak:$sha" origin --delete "refs/heads/$tak"
@@ -78,7 +98,7 @@ done < <(git worktree list --porcelain | awk -v ref="refs/heads/$tak" '
 
 # Expliciete refspec: push.default, remote.origin.push of een upstream naar main spelen geen rol.
 if [ "$droog" = 1 ]; then
-  echo "droog: zou draaien: git push -u origin refs/heads/$tak:refs/heads/$tak"
+  echo "droog: zou draaien (met core.hooksPath=$top/.githooks): git push -u origin refs/heads/$tak:refs/heads/$tak"
   exit 0
 fi
 "${GIT[@]}" push -u origin "refs/heads/$tak:refs/heads/$tak"

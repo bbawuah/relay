@@ -43,6 +43,11 @@ beforeEach(() => {
   git(repo, "init", "-q", "-b", "main");
   // vangnet: nooit verdergaan als dit niet de wegwerp-repo is
   expect(git(repo, "rev-parse", "--show-toplevel").uit).toBe(repo);
+  // een poort-hook in de repo zelf (push.sh eist hem); hij logt wat hij ziet
+  mkdirSync(join(repo, ".githooks"));
+  writeFileSync(join(repo, ".githooks", "pre-push"), `#!/bin/sh\necho "draaide:[$POORT_OVERSLAAN]" >> "${dir}/hook.log"\n`);
+  chmodSync(join(repo, ".githooks", "pre-push"), 0o755);
+  git(repo, "add", ".githooks/pre-push");
   commit("begin");
   git(repo, "remote", "add", "origin", origin);
   git(repo, "push", "-q", "origin", "main");
@@ -114,13 +119,38 @@ describe("push.sh", () => {
     expect(opOrigin("lead/x")).not.toBe("");
   });
   test("geeft POORT_OVERSLAAN niet door: de pre-push-hook draait en ziet hem niet", () => {
-    const hooks = join(dir, "hooks");
-    mkdirSync(hooks);
-    writeFileSync(join(hooks, "pre-push"), `#!/bin/sh\necho "draaide:[$POORT_OVERSLAAN]" > "${dir}/hook.log"\n`);
-    chmodSync(join(hooks, "pre-push"), 0o755);
-    git(repo, "config", "core.hooksPath", hooks);
     expect(draai([], { POORT_OVERSLAAN: "1" }).code).toBe(0);
     expect(readFileSync(join(dir, "hook.log"), "utf8").trim()).toBe("draaide:[]");
+  });
+  test("de hook van de repo draait altijd: core.hooksPath in config of env telt niet", () => {
+    const ander = join(dir, "andere-hooks");
+    mkdirSync(ander);
+    writeFileSync(join(ander, "pre-push"), `#!/bin/sh\necho verkeerd >> "${dir}/hook.log"\n`);
+    chmodSync(join(ander, "pre-push"), 0o755);
+    git(repo, "config", "core.hooksPath", ander);
+    const r = draai([], { GIT_CONFIG_PARAMETERS: `'core.hookspath'='${ander}'`, GIT_CONFIG_COUNT: "1", GIT_CONFIG_KEY_0: "core.hooksPath", GIT_CONFIG_VALUE_0: ander });
+    expect(r.code).toBe(0);
+    expect(readFileSync(join(dir, "hook.log"), "utf8").trim()).toBe("draaide:[]");
+  });
+  test("weigert zonder uitvoerbare .githooks/pre-push", () => {
+    rmSync(join(repo, ".githooks", "pre-push"));
+    const r = draai([]);
+    expect(r.code).toBe(1);
+    expect(r.fout).toMatch(/pre-push ontbreekt/);
+    expect(opOrigin("lead/x")).toBe("");
+  });
+  test("weigert een afwijkende push-URL of een pushInsteadOf", () => {
+    const elders = join(dir, "elders.git");
+    git(dir, "init", "-q", "--bare", elders);
+    git(repo, "remote", "set-url", "--push", "origin", elders);
+    expect(draai([]).fout).toMatch(/push-URL van origin/);
+    git(repo, "config", "--unset", "remote.origin.pushurl");
+    git(repo, "config", `url.${elders}.pushInsteadOf`, origin);
+    expect(draai([]).fout).toMatch(/push-URL van origin|pushInsteadOf/);
+    git(repo, "config", "--unset", `url.${elders}.pushInsteadOf`);
+    git(repo, "config", `url.${elders}.pushInsteadOf`, "https://elders.example/");
+    expect(draai([]).fout).toMatch(/pushInsteadOf/);
+    expect(opOrigin("lead/x")).toBe("");
   });
 });
 
@@ -133,6 +163,26 @@ describe("push.sh --verwijder", () => {
     const r = draai(["--verwijder", "lead/klaar"]);
     expect(r.code).toBe(0);
     expect(opOrigin("lead/klaar")).toBe("");
+  });
+  test("bij een GitHub-remote en gh: ook een gemergede PR van de tak eisen", () => {
+    git(repo, "push", "-q", "origin", "lead/x:lead/klaar");
+    git(repo, "push", "-q", "origin", "lead/x:main");
+    // origin heet github.com, maar insteadOf stuurt fetch en push naar de lokale bare repo
+    git(repo, "config", "remote.origin.url", "git@github.com:o/r.git");
+    git(repo, "config", `url.${origin}.insteadOf`, "git@github.com:o/r.git");
+    const bin = join(dir, "bin");
+    mkdirSync(bin);
+    writeFileSync(join(bin, "gh"), `#!/bin/sh\necho "gh $*" >> "${dir}/gh.log"\n[ -f "${dir}/gh-n" ] || exit 1\ncat "${dir}/gh-n"\n`);
+    chmodSync(join(bin, "gh"), 0o755);
+    const pad = { PATH: `${bin}:${process.env.PATH}` };
+    expect(draai(["--verwijder", "lead/klaar"], pad).fout).toMatch(/niet opvragen bij o\/r/);
+    writeFileSync(join(dir, "gh-n"), "0\n");
+    expect(draai(["--verwijder", "lead/klaar"], pad).fout).toMatch(/geen gemergede PR met tak 'lead\/klaar' in o\/r/);
+    expect(opOrigin("lead/klaar")).not.toBe("");
+    writeFileSync(join(dir, "gh-n"), "1\n");
+    expect(draai(["--verwijder", "lead/klaar"], pad).code).toBe(0);
+    expect(opOrigin("lead/klaar")).toBe("");
+    expect(readFileSync(join(dir, "gh.log"), "utf8")).toContain("pr list --repo o/r --head lead/klaar --state merged");
   });
   test("weigert een tak die niet in origin/main zit", () => {
     git(repo, "push", "-q", "origin", "lead/x:lead/open");
