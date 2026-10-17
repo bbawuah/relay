@@ -42,8 +42,53 @@ for a in "${args[@]}"; do
     -f|--filename|--filename=*|-k|--kustomize|--kustomize=*)
       # bij logs is -f "volgen"; elders leest -f een bestand aan de jump-kant
       [ "$sub" = logs ] && [ "$laag" = -f ] || fout "optie '$a' leest bestanden aan de jump-kant" ;;
+    --template*) fout "optie '$a' (templates lezen velden die -o niet toont)" ;;
+    --cache-dir*|--log*|--v|--v=*|--vmodule*|-v) fout "optie '$a' schrijft logs of cache aan de jump-kant" ;;
   esac
+  [[ $laag != *-file* ]] || fout "'$a' noemt een bestand (-file)"
+  # Korte opties alleen los (-n x); samengestelde vormen (-Ao, -lapp=x) niet, behalve -o<vorm>/-o=<vorm>.
+  [[ $a != -[!-]?* || $a == -o* ]] || fout "korte optie '$a': schrijf korte opties los, zoals -n <namespace>"
 done
+
+# -o/--output: alleen wide, name, yaml of json. yaml/json alleen bij get, en alleen op resources zonder
+# sleutelinhoud (geen configmap, route, oauthclient, bc of dc).
+UITVOER_VORM=""
+YAML_MAG=" pod pods po deployment deployments deploy deployment.apps deployments.apps service services svc endpoints ep "
+WAARDE_OPT=" -n --namespace -l --selector -o --output --field-selector -c --container --since --since-time --tail --sort-by -L --label-columns --chunk-size --request-timeout "
+BOOL_OPT=" -A --all-namespaces --show-labels --no-headers --watch -w --ignore-not-found --show-kind --previous -p --follow --timestamps --all-containers "
+posities=() i=1 onzeker=0
+while [ "$i" -lt "${#args[@]}" ]; do
+  a=${args[$i]} vorm=""
+  case $a in
+    -o|--output) vorm=${args[$((i + 1))]:-} ;;
+    -o=*|--output=*) vorm=${a#*=} ;;
+    -o*) vorm=${a#-o} ;;
+  esac
+  if [[ $a == -o* || $a == --output* ]]; then
+    case $vorm in wide|name|yaml|json) ;; *) fout "-o '$vorm' mag niet; alleen wide, name, yaml of json" ;; esac
+    UITVOER_VORM=$vorm
+  fi
+  if [[ $a == -* ]]; then
+    if [[ $a != *=* && $WAARDE_OPT == *" $a "* ]]; then
+      i=$((i + 1)) # het volgende woord is de waarde
+    elif [[ $a == --* && $a != *=* && $BOOL_OPT != *" $a "* ]]; then
+      onzeker=1 # onbekende lange optie: neemt hij een waarde of niet?
+    fi
+  else
+    posities+=("$a")
+  fi
+  i=$((i + 1))
+done
+if [ "$UITVOER_VORM" = yaml ] || [ "$UITVOER_VORM" = json ]; then
+  [ "$sub" = get ] || fout "-o $UITVOER_VORM alleen bij get"
+  [ "$onzeker" = 0 ] || fout "bij -o $UITVOER_VORM: schrijf een onbekende lange optie als --optie=waarde (anders is de resource niet zeker)"
+  [ "${#posities[@]}" -gt 0 ] || fout "-o $UITVOER_VORM zonder resource"
+  if [[ ${posities[0]} == */* ]]; then soorten=("${posities[@]%%/*}"); else IFS=, read -r -a soorten <<<"${posities[0]}"; fi
+  for s in "${soorten[@]}"; do
+    s=$(printf '%s' "$s" | tr '[:upper:]' '[:lower:]')
+    [[ $YAML_MAG == *" $s "* ]] || fout "-o $UITVOER_VORM op '$s' mag niet; alleen pods, deployments, services en endpoints"
+  done
+fi
 
 masker() { sed -E "s/eag_[A-Za-z0-9]+/eag_<…>/g"; }
 

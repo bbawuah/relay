@@ -39,7 +39,15 @@ describe("lab-lees.sh", () => {
     expect(r.code).toBe(0);
     expect(argv()).toEqual(["-T", "jump", "oc", "get", "pods", "-n", "mod-x", "-o", "wide", "--selector=app=web,tier=be"]);
   });
-  for (const ok of [["describe", "pod/web-1"], ["logs", "-f", "deploy/web", "--since=1h"], ["events", "-n", "x"], ["top", "pods"], ["auth", "can-i", "get", "pods", "-n", "x"]])
+  for (const ok of [
+    ["get", "pods", "-o", "yaml"],
+    ["get", "pods", "web-1", "-n", "x", "-o", "yaml"],
+    ["get", "deploy/web", "-o=json"],
+    ["get", "svc,ep", "-ojson"],
+    ["get", "deployments.apps", "--output=yaml", "--ignore-not-found"],
+    ["get", "all", "-o", "wide"],
+    ["get", "pods", "-o", "name", "-A"],
+    ["describe", "pod/web-1"], ["logs", "-f", "deploy/web", "--since=1h"], ["events", "-n", "x"], ["top", "pods"], ["auth", "can-i", "get", "pods", "-n", "x"]])
     test(`laat door: ${ok.join(" ")}`, () => {
       expect(draai(ok).code).toBe(0);
       expect(argv()?.slice(2)).toEqual(["oc", ...ok]);
@@ -106,6 +114,46 @@ describe("lab-lees.sh", () => {
     [["get", "{a,b}"], /teken buiten/],
     [["get", "-o", "jsonpath={.x}"], /teken buiten/],
     [["get", "--"], /geen geldige optie/],
+    // -o alleen wide|name|yaml|json
+    [["get", "pods", "-o", "jsonpath=.items"], /alleen wide, name, yaml of json/],
+    [["get", "cm", "-o", "custom-columns=X:.data"], /alleen wide, name, yaml of json/],
+    [["get", "pods", "--output=custom-columns=X:.spec"], /alleen wide, name, yaml of json/],
+    [["get", "pods", "-ocustom-columns=X:.spec"], /alleen wide, name, yaml of json/],
+    [["get", "pods", "-o=go-template=x"], /alleen wide, name, yaml of json/],
+    [["get", "pods", "-o"], /alleen wide, name, yaml of json/],
+    [["get", "pods", "--template=x"], /templates/],
+    [["get", "pods", "--templates", "x"], /templates/],
+    [["get", "pods", "--cache-dir=/tmp/x"], /logs of cache/],
+    [["get", "pods", "--log-dir=/tmp"], /logs of cache/],
+    [["get", "pods", "--log-file", "/tmp/x"], /logs of cache/],
+    [["get", "pods", "--logtostderr"], /logs of cache/],
+    [["get", "pods", "--loglevel=9"], /logs of cache/],
+    [["get", "pods", "-v"], /logs of cache/],
+    [["get", "pods", "--v=9"], /logs of cache/],
+    [["get", "pods", "--v"], /logs of cache/],
+    [["get", "pods", "--password-file=x"], /-file/],
+    [["get", "pods", "-n", "x-file"], /-file/],
+    // samengestelde korte opties
+    [["get", "pods", "-Ao", "yaml"], /korte optie/],
+    [["get", "pods", "-lapp=web"], /korte optie/],
+    [["get", "pods", "-vv"], /korte optie/],
+    // -o yaml|json alleen op een allowlist van resources
+    [["get", "configmaps", "-o", "yaml"], /mag niet; alleen pods/],
+    [["get", "cm", "x", "-o", "json"], /'cm' mag niet/],
+    [["get", "configmap/x", "-o", "yaml"], /mag niet; alleen pods/],
+    [["get", "pods,cm", "-o", "yaml"], /'cm' mag niet/],
+    [["get", "pods/x", "cm/y", "-o", "yaml"], /'cm' mag niet/],
+    [["get", "route", "-o", "yaml"], /'route' mag niet/],
+    [["get", "routes.route.openshift.io", "-o", "yaml"], /mag niet/],
+    [["get", "oauthclient", "-o", "json"], /mag niet/],
+    [["get", "bc", "-o", "yaml"], /'bc' mag niet/],
+    [["get", "dc", "-o", "yaml"], /'dc' mag niet/],
+    [["get", "all", "-o", "yaml"], /'all' mag niet/],
+    [["get", "--ignore-not-found", "configmaps", "pods", "-o", "yaml"], /'configmaps' mag niet/],
+    [["get", "--onbekend", "configmaps", "pods", "-o", "yaml"], /--optie=waarde/],
+    [["get", "-o", "yaml"], /zonder resource/],
+    [["events", "-o", "yaml"], /alleen bij get/],
+    [["top", "pods", "-o", "json"], /alleen bij get/],
   ];
   for (const [args, reden] of WEIGER)
     test(`weigert ${JSON.stringify(args)}`, () => {
