@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
-import { readFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { schoneEnv } from "../../test-integriteit";
 
@@ -81,6 +82,76 @@ const WEIGER = [
   "cat ~/.config/klaarover/key",
   "grep x .env",
   'echo "ok"\ncat .env.local',
+  // rauwe git push: force, verwijderen, naar main, poort overslaan (alleen via push.sh)
+  "git push --force origin lead/x",
+  "git push -f",
+  "git push -uf origin lead/x",
+  "git push --force-with-lease origin lead/x",
+  "git push origin +lead/x",
+  "git push --mirror",
+  "git push origin --delete lead/x",
+  "git push -d origin lead/x",
+  "git push origin :lead/x",
+  "git push origin main",
+  "git push origin HEAD:main",
+  "git push origin lead/x:refs/heads/main",
+  "git push --all",
+  "git -C ../x push --force",
+  "git -c core.x=y push -f origin x",
+  "cd x && git push -f",
+  "bash -c 'git push -f origin x'",
+  "nice git push --force",
+  "ssh host 'git push origin main'",
+  "POORT_OVERSLAAN=1 git push",
+  "export POORT_OVERSLAAN=1; git push -u origin lead/x",
+  "git push --no-verify",
+  // afgekorte lange opties (git neemt een unieke prefix aan)
+  "git push --forc origin lead/x",
+  "git push --force-w origin lead/x",
+  "git push --del origin lead/x",
+  "git push --mir",
+  "git push --no-veri",
+  "git push --al",
+  "git push origin HEAD:Main",
+  "git push origin x:refs/heads/MASTER",
+  // hooks of aliassen langs de grenzen
+  "git -c core.hooksPath=/dev/null push",
+  "git -c alias.p=push p --force",
+  "git --config-env=core.hooksPath=X push",
+  "GIT_CONFIG_PARAMETERS=\"'core.hooksPath'='/dev/null'\" git push",
+  "git config alias.p 'push --force'",
+  "git config --global alias.p push",
+  "git config core.hooksPath /dev/null",
+  // schrijvende gh api
+  "gh api -X PUT repos/o/r/pulls/1/merge",
+  "gh api --method DELETE repos/o/r/git/refs/heads/x",
+  "gh api --method=POST repos/o/r/issues",
+  "gh api -XPATCH repos/o/r",
+  "gh api repos/o/r/git/refs -f ref=refs/heads/x",
+  // -f/-F/--field/--raw-field/--input zonder expliciete GET is een POST
+  "gh api repos/o/r/pulls/1/merge -f merge_method=squash",
+  "gh api repos/o/r/issues -F title=x",
+  "gh api repos/o/r/issues --field title=x",
+  "gh api repos/o/r/issues --raw-field=title=x",
+  "gh api repos/o/r/pulls/1/merge --input body.json",
+  "gh -R o/r api repos/o/r/issues -f title=x",
+  "gh api -f merge_method=squash repos/o/r/pulls/1/merge",
+  // graphql met een mutation of een query uit een bestand
+  "gh api graphql -f query='mutation { mergePullRequest(input: {pullRequestId: \"x\"}) { clientMutationId } }'",
+  "gh api graphql -F query=@q.graphql",
+  "gh api graphql --input q.json",
+  // een alias kan een merge verstoppen
+  "gh alias set m 'pr merge'",
+  "gh alias import aliassen.yml",
+  "gh -R o/r alias set m x",
+  // rauw ssh jump … oc (alleen via lab-lees.sh)
+  "ssh jump oc get pods",
+  "ssh jump 'oc get secrets -o yaml'",
+  "ssh -o BatchMode=yes jump oc logs x",
+  'ssh brian@jump "cd x; oc get pods"',
+  "ssh -J jump host oc get pods",
+  "/usr/bin/ssh -T jump /usr/local/bin/oc delete pod x",
+  "echo x | ssh jump oc apply -f -",
 ];
 const DOOR = [
   'git commit -m "regel 1\nuitrollen gaat via Brian"',
@@ -97,6 +168,30 @@ const DOOR = [
   "git diff apps/x/scripts/uitrollen.sh",
   "cat apps/x/scripts/uitrollen.sh",
   "kill 123",
+  "git push",
+  "git push -u origin lead/x",
+  "git push origin refs/heads/lead/x:refs/heads/lead/x",
+  "git commit -m 'git push --force naar main is verboden'",
+  "echo git push --force",
+  "grep -n 'git push -f' README.md",
+  "git log --oneline origin/main",
+  "ssh jump ls brian/docs",
+  "scripts/lead/push.sh",
+  "scripts/lead/push.sh --verwijder lead/x",
+  "scripts/lead/lab-lees.sh get pods -n x",
+  "git push --dry-run origin lead/x",
+  "git push --follow-tags origin lead/x",
+  "git config user.name x",
+  "gh api repos/o/r/pulls/1",
+  "gh api -X GET repos/o/r/pulls",
+  // lezen van /merge en /git/refs mag weer
+  "gh api repos/o/r/pulls/1/merge",
+  "gh api repos/o/r/git/refs/heads/x",
+  "gh api -X GET repos/o/r/search/issues -f q=x",
+  "gh api --method GET repos/o/r/pulls -F per_page=5",
+  "gh api graphql -f query='query { viewer { login } }'",
+  "gh alias list",
+  "gh pr view 1 --repo o/r",
 ];
 
 // Witte lijst: alleen bij deze commando's mag de nieuwe hook iets doorlaten wat de oude weigerde.
@@ -129,12 +224,152 @@ describe("grenzen.sh", () => {
     const schendingen = alle.filter((c) => bash(c, OUD).code === 2 && bash(c).code !== 2 && !WITTE_LIJST.test(c));
     expect(schendingen).toEqual([]);
   }, 120_000);
+  test("een rauwe push of ssh jump … oc verwijst naar het smalle script", () => {
+    expect(bash("git push -f").stderr).toContain("scripts/lead/push.sh");
+    expect(bash("git push origin --delete lead/x").stderr).toContain("push.sh --verwijder");
+    expect(bash("git push origin main").stderr).toContain("via een PR");
+    expect(bash("POORT_OVERSLAAN=1 git push").stderr).toContain("alleen Brian");
+    expect(bash("ssh jump oc get pods").stderr).toContain("scripts/lead/lab-lees.sh");
+  });
   test("Read van een sleutelbestand wordt geweigerd, .example mag", () => {
     expect(draai({ tool_name: "Read", tool_input: { file_path: "/h/.config/klaarover/token" } }).code).toBe(2);
     expect(draai({ tool_name: "Read", tool_input: { file_path: "/h/x/.env" } }).code).toBe(2);
     expect(draai({ tool_name: "Read", tool_input: { file_path: "/h/x/.env.example" } }).code).toBe(0);
   });
-  test("ongeldige invoer faalt open", () => {
-    expect(Bun.spawnSync(["bash", HOOK], { stdin: new TextEncoder().encode("geen json"), env: schoneEnv() }).exitCode).toBe(0);
+  const rauw = (tekst: string) => {
+    const p = Bun.spawnSync(["bash", HOOK], { stdin: new TextEncoder().encode(tekst), env: schoneEnv(), stdout: "pipe", stderr: "pipe" });
+    return { code: p.exitCode, stderr: p.stderr.toString() };
+  };
+  test("ongeldige invoer faalt dicht (exit 2, één melding)", () => {
+    for (const t of ["geen json", "", '{"tool_name": "Bash"']) {
+      const r = rauw(t);
+      expect(r.code).toBe(2);
+      expect(r.stderr).toBe("Geweigerd door grenzen.sh: eigen fout (invoer is geen geldige JSON); faalt dicht. Meld het de lead of Brian.\n");
+    }
+  });
+  test("invoer van de verkeerde vorm faalt dicht: tool_input als string of lijst, JSON als lijst", () => {
+    for (const t of ["[1]", '{"tool_name": "Bash", "tool_input": "git push --force"}', '{"tool_name": "Read", "tool_input": ["x"]}']) {
+      const r = rauw(t);
+      expect(r.code).toBe(2);
+      expect(r.stderr).toContain("eigen fout (invoer heeft de verkeerde vorm)");
+    }
+  });
+  test("een kapotte python-stap faalt dicht (exit 2)", () => {
+    const map = mkdtempSync(join(tmpdir(), "grenzen-kapot-"));
+    try {
+      const kapot = join(map, "grenzen.sh");
+      writeFileSync(kapot, readFileSync(HOOK, "utf8").replace("import json, os, re, sys, datetime\n", "import json, os, re, sys, datetime\nraise RuntimeError('kapot')\n"));
+      const r = draai({ tool_name: "Bash", tool_input: { command: "ls" } }, kapot);
+      expect(r.code).toBe(2);
+      expect(r.stderr).toContain("eigen fout (python-status 1); faalt dicht");
+    } finally {
+      rmSync(map, { recursive: true, force: true });
+    }
+  });
+  test("een commando van meer dan 300 kB gaat via stdin en wordt nog getoetst", () => {
+    const lang = `echo ${"x".repeat(300_000)}; git push --force origin lead/x`;
+    const r = bash(lang);
+    expect(r.code).toBe(2);
+    expect(r.stderr).toContain("force-push mag niet");
+    expect(bash(`echo ${"x".repeat(300_000)}`).code).toBe(0);
+  });
+});
+
+describe("grenzen.sh: merge.sh vanuit een subagent", () => {
+  const met = (command: string, extra: { agent_id?: string; agent_type?: string }) => draai({ tool_name: "Bash", tool_input: { command }, ...extra });
+  for (const c of ["scripts/lead/merge.sh 153", "/usr/local/lib/lab-lead/merge.sh 153 --droog", "bash ./merge.sh 1", "cd x && LAB_AGENT_ROL=lead ~/r/scripts/lead/merge.sh 1", "bash -c 'scripts/lead/merge.sh 1'"])
+    test(`weigert ${JSON.stringify(c)} met agent_id of agent_type`, () => {
+      for (const extra of [{ agent_id: "a123" }, { agent_type: "general-purpose" }]) {
+        const r = met(c, extra);
+        expect(r.code).toBe(2);
+        expect(r.stderr).toContain("subagent of fork merget niet");
+      }
+      expect(bash(c).code).toBe(0); // de lead zelf (geen agent_id) mag
+    });
+  test("lezen van merge.sh mag ook voor een subagent", () => {
+    for (const c of ["cat scripts/lead/merge.sh", "git diff scripts/lead/merge.sh", "grep -n x scripts/lead/merge.sh"]) expect(met(c, { agent_id: "a1" }).code).toBe(0);
+  });
+});
+
+describe("grenzen.sh: rauwe merge zodra LAB_GRENS_MERGE=1", () => {
+  const metMerge = (command: string) => {
+    const env = { ...schoneEnv(), HOME: "/nonexistent-grenzen-test", LAB_GRENS_MERGE: "1" };
+    const invoer = JSON.stringify({ tool_name: "Bash", tool_input: { command } });
+    const p = Bun.spawnSync(["bash", HOOK], { stdin: new TextEncoder().encode(invoer), env, stdout: "pipe", stderr: "pipe" });
+    return { code: p.exitCode, stderr: p.stderr.toString() };
+  };
+  const PR_MERGE = ["pr", "merge"].join(" ");
+  for (const c of [`gh ${PR_MERGE} 1`, `gh -R o/r ${PR_MERGE} 1`, `gh --repo o/r ${PR_MERGE} 1 --squash`, `gh --repo=o/r ${PR_MERGE} 1`, `gh "pr" 'merge' 1`, `gh pr -R o/r merge 1`, `/opt/homebrew/bin/gh -R o/r ${PR_MERGE}`])
+    test(`weigert ${JSON.stringify(c)}`, () => {
+      const r = metMerge(c);
+      expect(r.code).toBe(2);
+      expect(r.stderr).toContain("merge.sh");
+    });
+  test("lezen van een PR mag", () => {
+    for (const c of ["gh pr view 1", "gh -R o/r pr checks 1", "gh api repos/o/r/pulls/1/merge"]) expect(metMerge(c).code).toBe(0);
+  });
+});
+
+describe("grenzen.sh: push zonder doeltak op main", () => {
+  const repo = (tak: string) => {
+    const map = mkdtempSync(join(tmpdir(), "grenzen-repo-"));
+    Bun.spawnSync(["git", "init", "-q", "-b", tak, map], { env: schoneEnv() });
+    return map;
+  };
+  test("weigert `git push` en `git push origin HEAD` als de huidige tak main of master is", () => {
+    for (const tak of ["main", "master"]) {
+      const map = repo(tak);
+      try {
+        for (const c of ["git push", "git push origin", "git push origin HEAD", "git push -u origin +HEAD"]) {
+          const r = draai({ tool_name: "Bash", tool_input: { command: c }, cwd: map });
+          expect(r.code).toBe(2);
+        }
+        expect(draai({ tool_name: "Bash", tool_input: { command: `cd ${map} && git push` }, cwd: "/" }).code).toBe(2);
+        expect(draai({ tool_name: "Bash", tool_input: { command: `git -C ${map} push` }, cwd: "/" }).code).toBe(2);
+        expect(draai({ tool_name: "Bash", tool_input: { command: "git push origin lead/x" }, cwd: map }).code).toBe(0);
+      } finally {
+        rmSync(map, { recursive: true, force: true });
+      }
+    }
+  });
+  test("laat `git push` door op een eigen tak", () => {
+    const map = repo("lead/x");
+    try {
+      expect(draai({ tool_name: "Bash", tool_input: { command: "git push" }, cwd: map }).code).toBe(0);
+      expect(draai({ tool_name: "Bash", tool_input: { command: "git push origin HEAD" }, cwd: map }).code).toBe(0);
+    } finally {
+      rmSync(map, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("grenzen.sh: here-doc-berichten", () => {
+  const PR = "gh pr create --title \"lead: x\" --body \"$(cat <<'EOF'\n## Samenvatting\n\ngit push --force en ./uitrollen.sh staan alleen in de tekst; pkill -f x\nEOF\n)\"";
+  test("de here-doc-tekst van gh pr create en git commit wordt leeggemaakt", () => {
+    expect(bash(PR).code).toBe(0);
+    expect(bash(`git commit -q -m "$(cat <<'EOF'\nlead: x\n\nssh jump oc get pods ging via lab-lees.sh\nEOF\n)"`).code).toBe(0);
+    expect(bash(`git commit -m "$(cat <<EOF\nlead: x, git push -f is verboden\nEOF\n)"`).code).toBe(0);
+    expect(bash(`gh pr comment 1 --body "$(cat <<'EOF'\nuitrollen.sh via Brian\nEOF\n)"`).code).toBe(0);
+  });
+  test("ook met een kop `cd x && …` of `git -C x commit`", () => {
+    expect(bash(`cd /tmp/wt && ${PR}`).code).toBe(0);
+    expect(bash(`git -C /tmp/wt commit -m "$(cat <<'EOF'\nlead: x\n\ngit push --force staat alleen in de tekst\nEOF\n)"`).code).toBe(0);
+    expect(bash(`cd /tmp/wt && git -C sub commit -m "$(cat <<'EOF'\nuitrollen.sh via Brian\nEOF\n)"`).code).toBe(0);
+    // twee koppen of iets anders dan cd ervoor blijft streng
+    expect(bash(`./uitrollen.sh && ${PR}`).code).toBe(2);
+    expect(bash(`cd a && cd b && git commit -m "$(cat <<'EOF'\n./uitrollen.sh\nEOF\n)"`).code).toBe(2);
+  });
+  test("wat na de here-doc komt, wordt nog getoetst", () => {
+    expect(bash(`${PR} && ./uitrollen.sh`).code).toBe(2);
+    expect(bash(`${PR}; git push --force`).code).toBe(2);
+  });
+  test("streng bij twijfel", () => {
+    // ongequote marker met $( in de tekst: wordt echt uitgevoerd
+    expect(bash(`git commit -m "$(cat <<EOF\n$(./uitrollen.sh)\nEOF\n)"`).code).toBe(2);
+    // de eindmarkering staat al eerder in de tekst: bash stopt daar, de rest is een commando
+    expect(bash(`gh pr create --body "$(cat <<'EOF'\na\nEOF\n./uitrollen.sh\nEOF\n)"`).code).toBe(2);
+    // iets onduidelijks vóór de here-doc
+    expect(bash(`echo $(./uitrollen.sh) | gh pr create --body "$(cat <<'EOF'\na\nEOF\n)"`).code).toBe(2);
+    expect(bash(`./uitrollen.sh; gh pr create --body "$(cat <<'EOF'\na\nEOF\n)"`).code).toBe(2);
   });
 });

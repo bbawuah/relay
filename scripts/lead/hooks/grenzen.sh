@@ -5,17 +5,30 @@
 #   - uitrolscripts draaien (uitrol gaat via Brian)
 #   - zware runs (poort, e2e, bekijk) in het stiltevenster 05:00–07:15
 #   - een rauwe `gh pr merge` (alleen via scripts/lead/merge.sh), zodra LAB_GRENS_MERGE=1 of
-#     ~/.claude/hooks/grenzen.merge bestaat (aan na de merge van scripts/lead/merge.sh)
-# Faalt open: bij een fout in dit script zelf exit 0, zodat het werk niet stilvalt.
-invoer="$(cat)" || exit 0
-/usr/bin/python3 - "$invoer" <<'PY'
+#     ~/.claude/hooks/grenzen.merge bestaat (aan na de merge van scripts/lead/merge.sh); herkend op de
+#     woorden, ook met gh-vlaggen als -R o/r ervoor
+#   - een schrijvende `gh api` (methode anders dan GET, of -f/-F/--field/--raw-field/--input zonder
+#     expliciete GET), `gh api graphql` met een mutation, en `gh alias set|import`
+#   - een rauwe `git push` met force, verwijderen, naar main, --no-verify of POORT_OVERSLAAN
+#     (alleen via scripts/lead/push.sh), en een rauwe `ssh jump … oc` (alleen via scripts/lead/lab-lees.sh)
+#   - elke aanroep van merge.sh (elk pad) vanuit een subagent of fork (`agent_id`/`agent_type` in de invoer)
+# Faalt dicht (17 okt 2026): bij een eigen fout (invoer geen JSON of van de verkeerde vorm, een
+# python-status anders dan 0 of 2) exit 2 met een melding: weigeren. 0 = toestaan.
+# De hookinvoer gaat via stdin naar python (niet via argv: geen ARG_MAX-grens bij lange commando's).
+faal() { echo "Geweigerd door grenzen.sh: eigen fout ($1); faalt dicht. Meld het de lead of Brian." >&2; exit 2; }
+code=""
+IFS= read -r -d '' code <<'PY' || true
 import json, os, re, sys, datetime
 try:
-    d = json.loads(sys.argv[1])
+    d = json.loads(sys.stdin.read())
 except Exception:
-    sys.exit(0)
+    sys.exit(3)
+if not isinstance(d, dict):
+    sys.exit(4)
 tool = d.get("tool_name", "")
 ti = d.get("tool_input") or {}
+if not isinstance(ti, dict):
+    sys.exit(4)
 
 def weiger(reden):
     print(f"Geweigerd door grenzen.sh: {reden}", file=sys.stderr)
@@ -123,7 +136,34 @@ if tool == "Bash":
             return cmd
         except Exception:
             return cmd
-    cz = leegmaken(c)
+    # Here-doc-berichten leegmaken: `gh pr create|edit|comment --body "$(cat <<'EOF' … EOF\n)"` en
+    # `git commit -m "$(cat <<EOF … EOF\n)"` worden `--body ''`, maar alleen als alles ervóór op de
+    # regel eenduidig is (gewone woorden en eenvoudige quotes), de tekst geen regel met de eindmarkering
+    # bevat, en bij een ongequote marker geen `$`, backtick of `\`. Anders blijft het commando streng.
+    WOORD = r"(?:[A-Za-z0-9_./:=@,+%-]+|'[^'\n]*'|\"[^\"$`\\\n]*\")"
+    # Een kop `cd <map> && ` ervoor en `git -C <map> commit` mogen ook.
+    KOP = re.compile(r"[ \t]*(?:cd[ \t]+" + WOORD + r"[ \t]*&&[ \t]*)?(?:gh[ \t]+pr[ \t]+(?:create|edit|comment)|git(?:[ \t]+-C[ \t]+" + WOORD + r")?[ \t]+commit)(?:[ \t]+" + WOORD + r")*[ \t]+")
+    HD = re.compile(r"(--body|--title|-m|--message)(?:[ \t]+|=)\"\$\(cat[ \t]+<<(-?)[ \t]*(['\"]?)([A-Za-z_][A-Za-z0-9_]*)\3[ \t]*\n(.*?)\n(\t*)\4\n[ \t]*\)\"(?=[ \t\n;&|]|$)", re.S)
+    def heredoc_leeg(cmd):
+        try:
+            for _ in range(10):
+                m = HD.search(cmd)
+                if not m:
+                    break
+                vlag, streep, q, eind, tekst, tabs = m.groups()
+                if not KOP.fullmatch(cmd[:m.start()]):
+                    return cmd
+                if tabs and not streep:
+                    return cmd
+                if re.search(r"(^|\n)" + ("\t*" if streep else "") + re.escape(eind) + r"(\n|$)", tekst):
+                    return cmd
+                if not q and re.search(r"[$`\\]", tekst):
+                    return cmd
+                cmd = cmd[:m.start()] + vlag + " ''" + cmd[m.end():]
+            return cmd
+        except Exception:
+            return cmd
+    cz = leegmaken(heredoc_leeg(c))
     # Alleen als een uitrolscript echt gestart wordt: het pad staat op de commandopositie van een
     # segment (eventueel na VAR=x, exec/sudo/env/nohup/time of sh/bash/zsh), of `bun run … uitrollen`.
     # Een pad als argument (grep, cat, sed, git diff, ls) is geen start (vals alarm 6 okt).
@@ -153,16 +193,226 @@ if tool == "Bash":
             w = w[1:]
         if w and re.fullmatch(r"(/\S*/)?(pkill|killall)", w[0]):
             weiger("pkill/killall stopt ook processen van anderen. Stop alleen je eigen proces: `kill <pid>` (pid uit je eigen start, of `lsof -ti tcp:<eigen poort>`).")
+    # Rauwe `git push` met force, verwijderen of naar main, rauwe git-config voor aliassen en hooks,
+    # schrijvende `gh api`, merge.sh vanuit een subagent en een rauwe `ssh jump … oc`: alleen via de smalle
+    # scripts (17 okt 2026). Streng: segmenten en woorden worden gesplitst zonder op quotes te letten en
+    # quotes vallen van de woorden af, dus `bash -c '…'`, `ssh host '…'` en `nice …` tellen ook. Alleen
+    # een segment dat met echo/printf/grep/rg begint, telt niet (tekst, geen start).
+    PUSH_SH = "scripts/lead/push.sh"
+    LAB_SH = "scripts/lead/lab-lees.sh"
+    BUITEN = " Buiten lab-bawuah: met het volledige pad ~/Desktop/LAB-BAWUAH/lab-bawuah/scripts/lead/."
+    TEKST = ("echo", "printf", "grep", "rg", "egrep", "fgrep")
+    LEZEN = TEKST + ("cat", "head", "tail", "less", "more", "bat", "wc", "diff", "ls", "stat", "file", "shellcheck", "git")
+    GIT_OPT_WAARDE = ("-C", "-c", "--git-dir", "--work-tree", "--namespace", "--exec-path", "--config-env")
+    PUSH_OPT_WAARDE = ("-o", "--push-option", "--repo", "--receive-pack", "--exec")
+    SSH_OPT_WAARDE = set("BbcDEeFIiJLlmOoPpQRSWw")
+    # Lange push-opties die git ook afgekort aanneemt (--forc, --del, --no-veri): een `--`-woord van
+    # minstens 2 letters dat een prefix is van een van deze, telt als die optie.
+    VERBODEN_LANG = {
+        "--force": "force", "--force-with-lease": "force", "--force-if-includes": "force", "--mirror": "force",
+        "--delete": "weg", "--prune": "weg", "--all": "main", "--branches": "main", "--no-verify": "poort",
+    }
+    MELDING = {
+        "force": f"force-push mag niet. Push je eigen tak met {PUSH_SH}.{BUITEN}",
+        "weg": f"een remote tak verwijderen gaat alleen via {PUSH_SH} --verwijder <tak> (alleen als hij in origin/main zit).{BUITEN}",
+        "main": f"naar main gaat alles via een PR. Push je eigen tak met {PUSH_SH}.{BUITEN}",
+        "poort": "--no-verify slaat de poort over; dat mag alleen Brian.",
+    }
+    MAIN = re.compile(r"(\S*:)?(refs/heads/)?(main|master)", re.I)
+    def woorden(seg):
+        return [x.strip("'\"") for x in seg.split()]
+    def eerste(w):
+        while w and (re.match(r"^[A-Za-z_][A-Za-z0-9_]*=", w[0]) or w[0] in ("exec", "sudo", "env", "nohup", "time", "command", "xargs", "nice")):
+            w = w[1:]
+        return w[0] if w else ""
+    def git_aanroepen(w):
+        # per `git` in het segment: (globale opties als paren, subcommando, argumenten)
+        uit = []
+        for i, x in enumerate(w):
+            if not re.fullmatch(r"(\S*/)?git", x):
+                continue
+            j, glob = i + 1, []
+            while j < len(w) and w[j].startswith("-"):
+                if w[j] in GIT_OPT_WAARDE:
+                    glob.append((w[j], w[j + 1] if j + 1 < len(w) else ""))
+                    j += 2
+                else:
+                    glob.append((w[j], ""))
+                    j += 1
+            if j < len(w):
+                uit.append((glob, w[j], w[j + 1:]))
+        return uit
+    def push_bezwaar(a):
+        # geeft (melding of None, lijst positionele argumenten: remote en refspecs)
+        k, pos = 0, []
+        while k < len(a):
+            x = a[k]
+            if x in PUSH_OPT_WAARDE:
+                k += 2
+                continue
+            if x.startswith("--"):
+                naam = x.split("=", 1)[0]
+                if len(naam) >= 4:
+                    for v, soort in VERBODEN_LANG.items():
+                        if v.startswith(naam):
+                            return MELDING[soort], pos
+            elif x.startswith("-") and len(x) > 1:
+                if "f" in x[1:]:
+                    return MELDING["force"], pos
+                if "d" in x[1:]:
+                    return MELDING["weg"], pos
+            elif x.startswith("+") and len(x) > 1:
+                return MELDING["force"], pos
+            elif re.fullmatch(r":\S+", x):
+                return MELDING["weg"], pos
+            else:
+                if pos and MAIN.fullmatch(x):
+                    return MELDING["main"], pos
+                pos.append(x)
+            k += 1
+        return None, pos
+    def huidige_tak(map_):
+        try:
+            import subprocess
+            env = {k: v for k, v in os.environ.items() if not k.startswith("GIT_")}
+            r = subprocess.run(["git", "-C", map_, "symbolic-ref", "--short", "-q", "HEAD"], capture_output=True, text=True, timeout=3, env=env)
+            return r.stdout.strip() if r.returncode == 0 else ""
+        except Exception:
+            return ""
+    def ssh_naar_jump(w):
+        for i, x in enumerate(w):
+            if not re.fullmatch(r"(\S*/)?ssh", x):
+                continue
+            j = i + 1
+            via_jump = False
+            while j < len(w) and w[j].startswith("-"):
+                o = w[j]
+                if o == "--":
+                    j += 1
+                    break
+                if len(o) == 2 and o[1] in SSH_OPT_WAARDE:
+                    if j + 1 < len(w) and re.search(r"(^|[@,=])jump($|[,:])", w[j + 1]):
+                        via_jump = True
+                    j += 2
+                else:
+                    j += 1
+            if via_jump or (j < len(w) and re.fullmatch(r"([^@\s]+@)?jump", w[j])):
+                return True
+        return False
+    # gh-opties met een waarde: overslaan bij het zoeken naar het subcommando en het endpoint.
+    GH_OPT_WAARDE = ("-R", "--repo", "--hostname", "-X", "--method", "-f", "-F", "--field", "--raw-field",
+                     "--input", "-H", "--header", "-q", "--jq", "-t", "--template", "--cache", "-p", "--preview")
+    def gh_posities(a):
+        uit, k = [], 0
+        while k < len(a):
+            y = a[k]
+            if y in GH_OPT_WAARDE:
+                k += 2
+                continue
+            if not y.startswith("-"):
+                uit.append((k, y))
+            k += 1
+        return uit
+    def gh_bezwaar(w):
+        for i, x in enumerate(w):
+            if not re.fullmatch(r"(\S*/)?gh", x):
+                continue
+            a = w[i + 1:]
+            pos = gh_posities(a)
+            namen = [y for _, y in pos]
+            if namen[:2] == ["pr", "merge"] and merge_aan:
+                return "mergen gaat alleen via scripts/lead/merge.sh <pr> (controleert review, poort en state)."
+            if namen[:1] == ["alias"] and namen[1:2] in (["set"], ["import"]):
+                return "gh alias set|import mag niet: een alias kan een merge of push verstoppen. Vraag het Brian."
+            if namen[:1] != ["api"]:
+                continue
+            a = a[pos[0][0] + 1:]
+            methode, velden = None, False
+            for k, y in enumerate(a):
+                if y in ("-X", "--method"):
+                    methode = a[k + 1] if k + 1 < len(a) else ""
+                elif y.startswith("--method="):
+                    methode = y.split("=", 1)[1]
+                elif y.startswith("-X") and len(y) > 2:
+                    methode = y[2:]
+                if re.fullmatch(r"-[fF].*|--(raw-)?field(=.*)?|--input(=.*)?", y):
+                    velden = True
+            eind = [y for _, y in gh_posities(a)][:1]
+            if eind == ["graphql"]:
+                # graphql gaat altijd via POST; lezen mag, een mutation (of een query uit een bestand) niet
+                if re.search(r"(?i)mutation", " ".join(a)) or any(y.startswith("--input") or "=@" in y for y in a):
+                    return "gh api graphql met een mutation (of een query uit een bestand) schrijft naar GitHub; dat mag niet rauw."
+                continue
+            # zonder expliciete methode maken -f/-F/--field/--raw-field/--input er een POST van
+            schrijven = (methode.upper() != "GET") if methode is not None else velden
+            if schrijven:
+                return f"gh api met methode {methode or 'POST (door -f/-F/--input)'} schrijft naar GitHub; alleen lezen (GET) mag rauw. Mergen via scripts/lead/merge.sh."
+        return None
+    merge_aan = os.environ.get("LAB_GRENS_MERGE") == "1" or os.path.exists(os.path.expanduser("~/.claude/hooks/grenzen.merge"))
+    is_subagent = bool(d.get("agent_id") or d.get("agent_type"))
+    basis = str(d.get("cwd") or os.getcwd())
+    hier = basis
+    jump = False
+    for seg in re.split(r"&&|\|\||[;&|()\n`]|\$\(", cz):
+        w = woorden(seg)
+        e = eerste(w)
+        if e == "cd":
+            rest = [x for x in w[w.index("cd") + 1:] if not x.startswith("-")]
+            hier = os.path.join(hier, os.path.expanduser(rest[0])) if rest else os.path.expanduser("~")
+            continue
+        if e in TEKST:
+            continue
+        # merge.sh (elk pad) nooit vanuit een subagent of fork: de rol van de lead erft anders mee via env.
+        if is_subagent and e not in LEZEN and any(re.search(r"(^|/)merge\.sh$", x) for x in w):
+            weiger("een subagent of fork merget niet: alleen de lead zelf draait scripts/lead/merge.sh.")
+        for glob, sub, args in git_aanroepen(w):
+            for o, v in glob:
+                if o == "-c" and re.search(r"(?i)(^alias\.|hookspath)", v):
+                    weiger("git -c met alias.* of core.hooksPath mag niet rauw (zo gaat een push langs de poort).")
+                if o.startswith("--config-env") and (sub == "push" or re.search(r"(?i)(alias\.|hookspath)", o + v)):
+                    weiger("git --config-env bij een push mag niet rauw.")
+            if sub == "config" and any(re.match(r"(?i)(alias\.|core\.hookspath$)", x) for x in args):
+                weiger("een git-alias of core.hooksPath zetten mag niet rauw (zo gaat een push langs de grenzen). Vraag het Brian.")
+            if sub != "push":
+                continue
+            if "POORT_OVERSLAAN" in cz:
+                weiger("POORT_OVERSLAAN bij een push mag alleen Brian. Draai bun run check en push zonder.")
+            if "GIT_CONFIG" in cz:
+                weiger("GIT_CONFIG* bij een push mag niet rauw (zo gaat een push langs de poort).")
+            b, pos = push_bezwaar(args)
+            if b:
+                weiger(b)
+            # zonder expliciete doeltak (of met HEAD) gaat de push naar de huidige tak: niet als dat main is
+            if len(pos) <= 1 or any(re.fullmatch(r"(?i)\+?HEAD", x) for x in pos[1:]):
+                map_ = hier
+                for o, v in glob:
+                    if o == "-C" and v:
+                        map_ = os.path.join(map_, os.path.expanduser(v))
+                if MAIN.fullmatch(huidige_tak(map_) or "-"):
+                    weiger(MELDING["main"])
+        b = gh_bezwaar(w)
+        if b:
+            weiger(b)
+        if ssh_naar_jump(w):
+            jump = True
+    if jump and re.search(r"(^|[\s'\"/;&|(`])oc($|[\s'\";&|)])", cz):
+        weiger(f"het lab lees je alleen via {LAB_SH} <get|describe|logs|events|top|auth can-i> … (alleen-lezen, geen secrets).{BUITEN}")
     nu = datetime.datetime.now().time()
     if datetime.time(5, 0) <= nu < datetime.time(7, 15):
         if re.search(r"bun run (poort|bekijk|test:tmux|test:e2e)|playwright", c):
             weiger("stiltevenster 05:00–07:15: geen poort, e2e of bekijk. Plan het na 07:15.")
-    merge_aan = os.environ.get("LAB_GRENS_MERGE") == "1" or os.path.exists(os.path.expanduser("~/.claude/hooks/grenzen.merge"))
-    if merge_aan and re.search(r"\bgh\s+pr\s+merge\b", c):
+    if merge_aan and re.search(r"\bgh\s+pr\s+merge\b", cz):
         weiger("mergen gaat alleen via scripts/lead/merge.sh <pr> (controleert review, poort en state).")
 sys.exit(0)
 PY
+# De invoer van de hook (stdin) gaat rechtstreeks naar python; de code staat in argv.
+/usr/bin/python3 -c "$code"
 status=$?
-# Alleen een bewuste weigering (2) doorgeven; elke andere fout = open.
-[ "$status" -eq 2 ] && exit 2
-exit 0
+# 0 = toestaan, 2 = bewuste weigering; elke andere status is een eigen fout: dicht (ook weigeren).
+case $status in
+  0) exit 0 ;;
+  2) exit 2 ;;
+  3) faal "invoer is geen geldige JSON" ;;
+  4) faal "invoer heeft de verkeerde vorm" ;;
+  *) faal "python-status $status" ;;
+esac
