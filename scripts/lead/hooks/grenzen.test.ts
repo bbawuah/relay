@@ -124,11 +124,26 @@ const WEIGER = [
   "git config core.hooksPath /dev/null",
   // schrijvende gh api
   "gh api -X PUT repos/o/r/pulls/1/merge",
-  "gh api repos/o/r/pulls/1/merge",
   "gh api --method DELETE repos/o/r/git/refs/heads/x",
   "gh api --method=POST repos/o/r/issues",
   "gh api -XPATCH repos/o/r",
   "gh api repos/o/r/git/refs -f ref=refs/heads/x",
+  // -f/-F/--field/--raw-field/--input zonder expliciete GET is een POST
+  "gh api repos/o/r/pulls/1/merge -f merge_method=squash",
+  "gh api repos/o/r/issues -F title=x",
+  "gh api repos/o/r/issues --field title=x",
+  "gh api repos/o/r/issues --raw-field=title=x",
+  "gh api repos/o/r/pulls/1/merge --input body.json",
+  "gh -R o/r api repos/o/r/issues -f title=x",
+  "gh api -f merge_method=squash repos/o/r/pulls/1/merge",
+  // graphql met een mutation of een query uit een bestand
+  "gh api graphql -f query='mutation { mergePullRequest(input: {pullRequestId: \"x\"}) { clientMutationId } }'",
+  "gh api graphql -F query=@q.graphql",
+  "gh api graphql --input q.json",
+  // een alias kan een merge verstoppen
+  "gh alias set m 'pr merge'",
+  "gh alias import aliassen.yml",
+  "gh -R o/r alias set m x",
   // rauw ssh jump … oc (alleen via lab-lees.sh)
   "ssh jump oc get pods",
   "ssh jump 'oc get secrets -o yaml'",
@@ -169,6 +184,14 @@ const DOOR = [
   "git config user.name x",
   "gh api repos/o/r/pulls/1",
   "gh api -X GET repos/o/r/pulls",
+  // lezen van /merge en /git/refs mag weer
+  "gh api repos/o/r/pulls/1/merge",
+  "gh api repos/o/r/git/refs/heads/x",
+  "gh api -X GET repos/o/r/search/issues -f q=x",
+  "gh api --method GET repos/o/r/pulls -F per_page=5",
+  "gh api graphql -f query='query { viewer { login } }'",
+  "gh alias list",
+  "gh pr view 1 --repo o/r",
 ];
 
 // Witte lijst: alleen bij deze commando's mag de nieuwe hook iets doorlaten wat de oude weigerde.
@@ -253,7 +276,7 @@ describe("grenzen.sh", () => {
 });
 
 describe("grenzen.sh: merge.sh vanuit een subagent", () => {
-  const met = (command: string, extra: Record<string, string>) => draai({ tool_name: "Bash", tool_input: { command }, ...extra });
+  const met = (command: string, extra: { agent_id?: string; agent_type?: string }) => draai({ tool_name: "Bash", tool_input: { command }, ...extra });
   for (const c of ["scripts/lead/merge.sh 153", "/usr/local/lib/lab-lead/merge.sh 153 --droog", "bash ./merge.sh 1", "cd x && LAB_AGENT_ROL=lead ~/r/scripts/lead/merge.sh 1", "bash -c 'scripts/lead/merge.sh 1'"])
     test(`weigert ${JSON.stringify(c)} met agent_id of agent_type`, () => {
       for (const extra of [{ agent_id: "a123" }, { agent_type: "general-purpose" }]) {
@@ -265,6 +288,25 @@ describe("grenzen.sh: merge.sh vanuit een subagent", () => {
     });
   test("lezen van merge.sh mag ook voor een subagent", () => {
     for (const c of ["cat scripts/lead/merge.sh", "git diff scripts/lead/merge.sh", "grep -n x scripts/lead/merge.sh"]) expect(met(c, { agent_id: "a1" }).code).toBe(0);
+  });
+});
+
+describe("grenzen.sh: rauwe merge zodra LAB_GRENS_MERGE=1", () => {
+  const metMerge = (command: string) => {
+    const env = { ...schoneEnv(), HOME: "/nonexistent-grenzen-test", LAB_GRENS_MERGE: "1" };
+    const invoer = JSON.stringify({ tool_name: "Bash", tool_input: { command } });
+    const p = Bun.spawnSync(["bash", HOOK], { stdin: new TextEncoder().encode(invoer), env, stdout: "pipe", stderr: "pipe" });
+    return { code: p.exitCode, stderr: p.stderr.toString() };
+  };
+  const PR_MERGE = ["pr", "merge"].join(" ");
+  for (const c of [`gh ${PR_MERGE} 1`, `gh -R o/r ${PR_MERGE} 1`, `gh --repo o/r ${PR_MERGE} 1 --squash`, `gh --repo=o/r ${PR_MERGE} 1`, `gh "pr" 'merge' 1`, `gh pr -R o/r merge 1`, `/opt/homebrew/bin/gh -R o/r ${PR_MERGE}`])
+    test(`weigert ${JSON.stringify(c)}`, () => {
+      const r = metMerge(c);
+      expect(r.code).toBe(2);
+      expect(r.stderr).toContain("merge.sh");
+    });
+  test("lezen van een PR mag", () => {
+    for (const c of ["gh pr view 1", "gh -R o/r pr checks 1", "gh api repos/o/r/pulls/1/merge"]) expect(metMerge(c).code).toBe(0);
   });
 });
 
@@ -308,6 +350,14 @@ describe("grenzen.sh: here-doc-berichten", () => {
     expect(bash(`git commit -q -m "$(cat <<'EOF'\nlead: x\n\nssh jump oc get pods ging via lab-lees.sh\nEOF\n)"`).code).toBe(0);
     expect(bash(`git commit -m "$(cat <<EOF\nlead: x, git push -f is verboden\nEOF\n)"`).code).toBe(0);
     expect(bash(`gh pr comment 1 --body "$(cat <<'EOF'\nuitrollen.sh via Brian\nEOF\n)"`).code).toBe(0);
+  });
+  test("ook met een kop `cd x && …` of `git -C x commit`", () => {
+    expect(bash(`cd /tmp/wt && ${PR}`).code).toBe(0);
+    expect(bash(`git -C /tmp/wt commit -m "$(cat <<'EOF'\nlead: x\n\ngit push --force staat alleen in de tekst\nEOF\n)"`).code).toBe(0);
+    expect(bash(`cd /tmp/wt && git -C sub commit -m "$(cat <<'EOF'\nuitrollen.sh via Brian\nEOF\n)"`).code).toBe(0);
+    // twee koppen of iets anders dan cd ervoor blijft streng
+    expect(bash(`./uitrollen.sh && ${PR}`).code).toBe(2);
+    expect(bash(`cd a && cd b && git commit -m "$(cat <<'EOF'\n./uitrollen.sh\nEOF\n)"`).code).toBe(2);
   });
   test("wat na de here-doc komt, wordt nog getoetst", () => {
     expect(bash(`${PR} && ./uitrollen.sh`).code).toBe(2);

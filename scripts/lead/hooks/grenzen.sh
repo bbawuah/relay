@@ -5,7 +5,10 @@
 #   - uitrolscripts draaien (uitrol gaat via Brian)
 #   - zware runs (poort, e2e, bekijk) in het stiltevenster 05:00–07:15
 #   - een rauwe `gh pr merge` (alleen via scripts/lead/merge.sh), zodra LAB_GRENS_MERGE=1 of
-#     ~/.claude/hooks/grenzen.merge bestaat (aan na de merge van scripts/lead/merge.sh)
+#     ~/.claude/hooks/grenzen.merge bestaat (aan na de merge van scripts/lead/merge.sh); herkend op de
+#     woorden, ook met gh-vlaggen als -R o/r ervoor
+#   - een schrijvende `gh api` (methode anders dan GET, of -f/-F/--field/--raw-field/--input zonder
+#     expliciete GET), `gh api graphql` met een mutation, en `gh alias set|import`
 #   - een rauwe `git push` met force, verwijderen, naar main, --no-verify of POORT_OVERSLAAN
 #     (alleen via scripts/lead/push.sh), en een rauwe `ssh jump … oc` (alleen via scripts/lead/lab-lees.sh)
 #   - elke aanroep van merge.sh (elk pad) vanuit een subagent of fork (`agent_id`/`agent_type` in de invoer)
@@ -138,7 +141,8 @@ if tool == "Bash":
     # regel eenduidig is (gewone woorden en eenvoudige quotes), de tekst geen regel met de eindmarkering
     # bevat, en bij een ongequote marker geen `$`, backtick of `\`. Anders blijft het commando streng.
     WOORD = r"(?:[A-Za-z0-9_./:=@,+%-]+|'[^'\n]*'|\"[^\"$`\\\n]*\")"
-    KOP = re.compile(r"[ \t]*(?:gh[ \t]+pr[ \t]+(?:create|edit|comment)|git[ \t]+commit)(?:[ \t]+" + WOORD + r")*[ \t]+")
+    # Een kop `cd <map> && ` ervoor en `git -C <map> commit` mogen ook.
+    KOP = re.compile(r"[ \t]*(?:cd[ \t]+" + WOORD + r"[ \t]*&&[ \t]*)?(?:gh[ \t]+pr[ \t]+(?:create|edit|comment)|git(?:[ \t]+-C[ \t]+" + WOORD + r")?[ \t]+commit)(?:[ \t]+" + WOORD + r")*[ \t]+")
     HD = re.compile(r"(--body|--title|-m|--message)(?:[ \t]+|=)\"\$\(cat[ \t]+<<(-?)[ \t]*(['\"]?)([A-Za-z_][A-Za-z0-9_]*)\3[ \t]*\n(.*?)\n(\t*)\4\n[ \t]*\)\"(?=[ \t\n;&|]|$)", re.S)
     def heredoc_leeg(cmd):
         try:
@@ -295,24 +299,56 @@ if tool == "Bash":
             if via_jump or (j < len(w) and re.fullmatch(r"([^@\s]+@)?jump", w[j])):
                 return True
         return False
-    def gh_api_bezwaar(w):
-        for i, x in enumerate(w):
-            if not (re.fullmatch(r"(\S*/)?gh", x) and i + 1 < len(w) and w[i + 1] == "api"):
+    # gh-opties met een waarde: overslaan bij het zoeken naar het subcommando en het endpoint.
+    GH_OPT_WAARDE = ("-R", "--repo", "--hostname", "-X", "--method", "-f", "-F", "--field", "--raw-field",
+                     "--input", "-H", "--header", "-q", "--jq", "-t", "--template", "--cache", "-p", "--preview")
+    def gh_posities(a):
+        uit, k = [], 0
+        while k < len(a):
+            y = a[k]
+            if y in GH_OPT_WAARDE:
+                k += 2
                 continue
-            a = w[i + 2:]
+            if not y.startswith("-"):
+                uit.append((k, y))
+            k += 1
+        return uit
+    def gh_bezwaar(w):
+        for i, x in enumerate(w):
+            if not re.fullmatch(r"(\S*/)?gh", x):
+                continue
+            a = w[i + 1:]
+            pos = gh_posities(a)
+            namen = [y for _, y in pos]
+            if namen[:2] == ["pr", "merge"] and merge_aan:
+                return "mergen gaat alleen via scripts/lead/merge.sh <pr> (controleert review, poort en state)."
+            if namen[:1] == ["alias"] and namen[1:2] in (["set"], ["import"]):
+                return "gh alias set|import mag niet: een alias kan een merge of push verstoppen. Vraag het Brian."
+            if namen[:1] != ["api"]:
+                continue
+            a = a[pos[0][0] + 1:]
+            methode, velden = None, False
             for k, y in enumerate(a):
-                methode = None
                 if y in ("-X", "--method"):
                     methode = a[k + 1] if k + 1 < len(a) else ""
                 elif y.startswith("--method="):
                     methode = y.split("=", 1)[1]
                 elif y.startswith("-X") and len(y) > 2:
                     methode = y[2:]
-                if methode is not None and methode.upper() != "GET":
-                    return f"gh api met methode {methode or '?'} schrijft naar GitHub; alleen GET mag rauw."
-                if re.search(r"/merge|/git/refs", y, re.I):
-                    return "gh api op /merge of /git/refs mag niet rauw: mergen via scripts/lead/merge.sh, pushen en verwijderen via scripts/lead/push.sh."
+                if re.fullmatch(r"-[fF].*|--(raw-)?field(=.*)?|--input(=.*)?", y):
+                    velden = True
+            eind = [y for _, y in gh_posities(a)][:1]
+            if eind == ["graphql"]:
+                # graphql gaat altijd via POST; lezen mag, een mutation (of een query uit een bestand) niet
+                if re.search(r"(?i)mutation", " ".join(a)) or any(y.startswith("--input") or "=@" in y for y in a):
+                    return "gh api graphql met een mutation (of een query uit een bestand) schrijft naar GitHub; dat mag niet rauw."
+                continue
+            # zonder expliciete methode maken -f/-F/--field/--raw-field/--input er een POST van
+            schrijven = (methode.upper() != "GET") if methode is not None else velden
+            if schrijven:
+                return f"gh api met methode {methode or 'POST (door -f/-F/--input)'} schrijft naar GitHub; alleen lezen (GET) mag rauw. Mergen via scripts/lead/merge.sh."
         return None
+    merge_aan = os.environ.get("LAB_GRENS_MERGE") == "1" or os.path.exists(os.path.expanduser("~/.claude/hooks/grenzen.merge"))
     is_subagent = bool(d.get("agent_id") or d.get("agent_type"))
     basis = str(d.get("cwd") or os.getcwd())
     hier = basis
@@ -354,7 +390,7 @@ if tool == "Bash":
                         map_ = os.path.join(map_, os.path.expanduser(v))
                 if MAIN.fullmatch(huidige_tak(map_) or "-"):
                     weiger(MELDING["main"])
-        b = gh_api_bezwaar(w)
+        b = gh_bezwaar(w)
         if b:
             weiger(b)
         if ssh_naar_jump(w):
@@ -365,7 +401,6 @@ if tool == "Bash":
     if datetime.time(5, 0) <= nu < datetime.time(7, 15):
         if re.search(r"bun run (poort|bekijk|test:tmux|test:e2e)|playwright", c):
             weiger("stiltevenster 05:00–07:15: geen poort, e2e of bekijk. Plan het na 07:15.")
-    merge_aan = os.environ.get("LAB_GRENS_MERGE") == "1" or os.path.exists(os.path.expanduser("~/.claude/hooks/grenzen.merge"))
     if merge_aan and re.search(r"\bgh\s+pr\s+merge\b", cz):
         weiger("mergen gaat alleen via scripts/lead/merge.sh <pr> (controleert review, poort en state).")
 sys.exit(0)
