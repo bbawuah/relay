@@ -83,7 +83,7 @@ const draai = (extra: Record<string, string>, args: string[] = []) => {
 
 describe("spawn.sh wacht op de vertrouwensvraag", () => {
   test("wachten, melden, daarna de startzin typen en het ⏺-bewijs zien", () => {
-    const r = draai({ TRUST_SECONDEN: "1", WACHT_VERTROUWEN: "30" });
+    const r = draai({ TRUST_SECONDEN: "3", WACHT_VERTROUWEN: "30" });
     expect(r.fout).toMatch(/w1 wacht op vertrouwen in pane %\d+ \(map /);
     expect(r.fout.match(/wacht op vertrouwen/g)?.length).toBe(1); // één melding, geen herhaling
     expect(r.code).toBe(0);
