@@ -8,7 +8,7 @@
 //
 //   sherif      dependency-regels over alle package.json's      (hele repo)
 //   boundaries  turbo boundaries: imports zonder dependency      (hele repo)
-//   ds-regels   designsysteem-regels R1–R7 (scripts/ds-regels.ts) (alle apps)
+//   ds-regels   designsysteem-regels R1–R9 (scripts/ds-regels.ts) (alle apps)
 //   werk-commentaar  TODO/HACK/FIXME/XXX/workaround alleen als TODO(JJJJ-MM-DD): reden; verlopen = FOUT
 //   echte-klok  unittests wachten niet op de echte klok: Bun.sleep/setTimeout ≥ 10 ms = FOUT (scripts/echte-klok.ts)
 //   git-scrub   een testbestand dat git aanroept gebruikt een env zonder GIT_* (schoneEnv()); anders FOUT (scripts/git-scrub.ts)
@@ -600,6 +600,18 @@ export const KANARIES: Kanarie[] = [
         "apps/template/src/kanarie-ds.mdx",
         "Zo niet: `rounded-3xl` of `<Card>` als sectie.\n\n```tsx\n<Card className=\"rounded-3xl\" />\n```\n\n<Card>kanarie</Card>\n",
       ),
+  },
+  {
+    stap: "ds-regels",
+    wat: "een Tailwind-paletkleur met variant in apps/template (R8)",
+    verwacht: /FOUT ds-regels .*1 nieuw/,
+    zet: (m) => schrijf(m, "apps/template/src/kanarie-ds-palet.tsx", 'export const Kanarie = () => <p className="hover:text-red-500/80">kanarie</p>;\n'),
+  },
+  {
+    stap: "ds-regels",
+    wat: "een hex-kleur in de opmaak van apps/template (R9)",
+    verwacht: /FOUT ds-regels .*1 nieuw/,
+    zet: (m) => schrijf(m, "apps/template/src/kanarie-ds-hex.tsx", 'export const Kanarie = () => <p style={{ color: "#1B2A4E" }}>kanarie</p>;\n'),
   },
   {
     stap: "ds-regels",
