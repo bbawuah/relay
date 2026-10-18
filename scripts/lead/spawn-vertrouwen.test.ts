@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, setDefaultTimeout, test } from "bun:test";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -7,6 +7,10 @@ import { join } from "node:path";
 // `-L spawntest-<pid> -f /dev/null` voorzet. TMUX/TMUX_PANE zijn leeg, de echte server wordt nooit geraakt.
 // Het nep-spawnscript start een pane die eerst de echte vertrouwenstekst van Claude Code toont (opgehaald
 // met `claude` in een nieuwe map) en die na enkele seconden vervangt door de prompt.
+
+// echte-klok: elke test start een echte tmux-server en een pane die echt wacht (TRUST_SECONDEN); bun's standaard 5s
+// is dan onder machinebelasting te krap (de test duurde al ~5s zonder belasting). Alleen een bovengrens, geen wachttijd.
+setDefaultTimeout(60_000);
 
 const SPAWN = join(import.meta.dir, "spawn.sh");
 const ECHTE_TMUX = Bun.which("tmux") ?? "tmux";
@@ -66,8 +70,8 @@ const draai = (extra: Record<string, string>, args: string[] = []) => {
       TMUX_PANE: "",
       LAB_SPAWN_SCRIPT: join(bin, "nep-agent-spawn.sh"),
       LAB_SPAWN_POLS: "1",
-      LAB_SPAWN_WACHT: "5",
-      LAB_SPAWN_BEWIJS: "5",
+      LAB_SPAWN_WACHT: "30",
+      LAB_SPAWN_BEWIJS: "30",
       LAB_LEAD_NAAM: "",
       LAB_LEAD_STAAT: join(dir, "staat"),
       LAB_CLAUDE_JSON: join(dir, "claude.json"),
@@ -79,7 +83,7 @@ const draai = (extra: Record<string, string>, args: string[] = []) => {
 
 describe("spawn.sh wacht op de vertrouwensvraag", () => {
   test("wachten, melden, daarna de startzin typen en het ⏺-bewijs zien", () => {
-    const r = draai({ TRUST_SECONDEN: "3", WACHT_VERTROUWEN: "20" });
+    const r = draai({ TRUST_SECONDEN: "1", WACHT_VERTROUWEN: "30" });
     expect(r.fout).toMatch(/w1 wacht op vertrouwen in pane %\d+ \(map /);
     expect(r.fout.match(/wacht op vertrouwen/g)?.length).toBe(1); // één melding, geen herhaling
     expect(r.code).toBe(0);
