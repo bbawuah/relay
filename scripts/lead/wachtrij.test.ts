@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { schoneEnv } from "../test-integriteit.ts";
 import { metStartHerstel, stopReden } from "./spawn-crash.ts";
-import { STANDAARD_POORT, bouwBody, ciWorkflow, geenCiMelding, gevaarScore, onschadelijk, standaardPoort, inStiltevenster, kiesPrs, leesMarker, leesOpties, leesStempel, okRegels, stempelVan, zwaarsteGevaar, type Pr } from "./wachtrij.ts";
+import { STANDAARD_POORT, bouwBody, ciWorkflow, geenCiMelding, gevaarScore, onschadelijk, standaardPoort, inStiltevenster, wachtrijEnv, kiesPrs, leesMarker, leesOpties, leesStempel, okRegels, stempelVan, zwaarsteGevaar, type Pr } from "./wachtrij.ts";
 
 // Alle CLI-tests draaien met een nep-gh vooraan op PATH en een wegwerp-git-repo met een
 // lokale bare "origin". Geen echte GitHub, geen echte PR's, geen echte poort (--poort-cmd).
@@ -27,6 +27,18 @@ const pr = (n: number, o: Partial<Pr> = {}): Pr => {
     ...o,
   };
 };
+
+describe("wachtrijEnv", () => {
+  test("één gedeelde TURBO_CACHE_DIR voor alle wachtrij-worktrees, zonder GIT_*", () => {
+    const env = wachtrijEnv({ PATH: "/bin", GIT_DIR: "/x", TURBO_CACHE_DIR: "/ambient" }, "/home/nep");
+    expect(env.TURBO_CACHE_DIR).toBe("/home/nep/.cache/lab-turbo-wachtrij");
+    expect(env.PATH).toBe("/bin");
+    expect(Object.keys(env).some((k) => k.startsWith("GIT_"))).toBe(false);
+  });
+  test("LAB_WACHTRIJ_TURBO_CACHE overschrijft de standaard", () => {
+    expect(wachtrijEnv({ LAB_WACHTRIJ_TURBO_CACHE: "/eigen" }, "/home/nep").TURBO_CACHE_DIR).toBe("/eigen");
+  });
+});
 
 describe("kiesPrs", () => {
   test("neemt alleen PR's met akkoord op de huidige head, op volgorde van nummer", () => {
@@ -356,6 +368,26 @@ describe("wachtrij.ts", () => {
     const hoofd = log("gh.log");
     expect(hoofd).toContain("--head wachtrij/20261006-1200");
     expect(hoofd).toContain("--base main");
+  });
+
+  test("de poort in de wachtrij-worktree krijgt de gedeelde TURBO_CACHE_DIR (standaard onder HOME, overschrijfbaar)", () => {
+    maakTak("tak-1", "b.txt", "een\n");
+    zetPrs([prVoorTak(1, "tak-1")]);
+    const uitvoer = join(dir, "cache-dir.txt");
+    const thuis = join(dir, "thuis");
+    const r = draaiWachtrij(["--nu", "20261006-1200", "--map", wt, "--poort-cmd", `printf %s "$TURBO_CACHE_DIR" > ${uitvoer}`], { HOME: thuis, TURBO_CACHE_DIR: "/ambient/niet-gebruiken" });
+    expect(r.code).toBe(0);
+    expect(readFileSync(uitvoer, "utf8")).toBe(join(thuis, ".cache", "lab-turbo-wachtrij"));
+  });
+
+  test("LAB_WACHTRIJ_TURBO_CACHE overschrijft de gedeelde cachemap voor de poort", () => {
+    maakTak("tak-1", "b.txt", "een\n");
+    zetPrs([prVoorTak(1, "tak-1")]);
+    const uitvoer = join(dir, "cache-dir.txt");
+    const eigen = join(dir, "eigen-cache");
+    const r = draaiWachtrij(["--nu", "20261006-1200", "--map", wt, "--poort-cmd", `printf %s "$TURBO_CACHE_DIR" > ${uitvoer}`], { LAB_WACHTRIJ_TURBO_CACHE: eigen });
+    expect(r.code).toBe(0);
+    expect(readFileSync(uitvoer, "utf8")).toBe(eigen);
   });
 
   test("integratie-PR zonder enige check-run: expliciete waarschuwing", () => {

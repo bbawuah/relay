@@ -4,6 +4,7 @@
 // wachtrij/<jjjjmmdd-hhmm> vanaf origin/main, draait één volledige poort en opent één
 // integratie-PR. Zie scripts/lead/README.md.
 import { existsSync, readFileSync } from "node:fs";
+import { homedir } from "node:os";
 import path from "node:path";
 import { amsterdam, inStiltevenster, vanAmsterdam } from "../stiltevenster.ts";
 import { schoneEnv } from "../test-integriteit.ts";
@@ -14,6 +15,17 @@ export function ciWorkflow(env: Record<string, string | undefined> = process.env
   const m = readFileSync(conf, "utf8").match(/^CI_WORKFLOW=(\S+)\s*$/m);
   if (!m) throw new Error(`CI_WORKFLOW ontbreekt in ${conf}`);
   return m[1];
+}
+
+/**
+ * De omgeving voor alle commando's die in de wachtrij-worktrees draaien (de poort en de
+ * opdrachten in die worktrees): zonder GIT_*, met één gedeelde turbo-cache (TURBO_CACHE_DIR)
+ * voor alle wachtrij-worktrees, zodat de ene wachtrijrun de e2e (en lint/test/build) van de
+ * andere uit de cache haalt. Standaard ~/.cache/lab-turbo-wachtrij; overschrijf met env
+ * LAB_WACHTRIJ_TURBO_CACHE.
+ */
+export function wachtrijEnv(env: Record<string, string | undefined> = process.env, thuis = homedir()): Record<string, string> {
+  return { ...schoneEnv(env), TURBO_CACHE_DIR: env.LAB_WACHTRIJ_TURBO_CACHE || path.join(thuis, ".cache", "lab-turbo-wachtrij") };
 }
 
 export type Pr = {
@@ -239,7 +251,7 @@ export function leesOpties(args: string[]): Opties | string {
 }
 
 const run = (cmd: string[], cwd?: string) => {
-  const r = Bun.spawnSync(cmd, { cwd, env: schoneEnv(), stdout: "pipe", stderr: "pipe" });
+  const r = Bun.spawnSync(cmd, { cwd, env: wachtrijEnv(), stdout: "pipe", stderr: "pipe" });
   return { code: r.exitCode, uit: r.stdout.toString().trim(), fout: r.stderr.toString().trim() };
 };
 
@@ -425,7 +437,7 @@ function hoofd(args: string[]): never {
   }
 
   console.log(`wachtrij: poort draaien in ${map}: ${o.poortCmd}`);
-  const poort = Bun.spawnSync(["sh", "-c", o.poortCmd], { cwd: map, env: schoneEnv(), stdout: "inherit", stderr: "inherit" });
+  const poort = Bun.spawnSync(["sh", "-c", o.poortCmd], { cwd: map, env: wachtrijEnv(), stdout: "inherit", stderr: "inherit" });
   if (poort.exitCode !== 0) {
     return klaar(1, `wachtrij: poort rood (exit ${poort.exitCode}); geen push, geen PR.${resten(map, tak, false)}`);
   }
