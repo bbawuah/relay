@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, setDefaultTimeout, test } from "bun:test";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -211,6 +211,10 @@ describe("tijd en opties", () => {
     expect(leesOpties(["--prs", "81", "--ruim-takken"])).toMatch(/--prs hoort niet/);
   });
 });
+
+// echte-klok: elke CLI-test bouwt een wegwerprepo en draait tientallen git- en bun-subprocessen (~1s zonder belasting,
+// tot >5s onder load). Alleen een bovengrens op de testduur; er wordt nergens op de klok gewacht.
+setDefaultTimeout(60_000);
 
 // ── CLI in een wegwerprepo ───────────────────────────────────────────────────
 
