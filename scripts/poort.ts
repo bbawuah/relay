@@ -59,6 +59,7 @@ import { ongebruikt, sleutels as dsSleutels, zoek as dsZoek } from "./ds-regels"
 import { beschrijf as ekBeschrijf, nieuweTreffers as ekNieuw, OPLOSSING as EK_OPLOSSING, sleutel as ekSleutel, zoek as ekZoek } from "./echte-klok";
 import { beoordeelBare, beschrijf as gsBeschrijf, nieuweTreffers as gsNieuw, OPLOSSING as GS_OPLOSSING, sleutel as gsSleutel, zoek as gsZoek } from "./git-scrub";
 import { leesPr } from "./bewijs-pr";
+import { inStiltevenster } from "./stiltevenster";
 import { leesContext as roLees, stap as roStap } from "./rood-op-basis";
 import { analyseer as tiAnalyseer } from "./test-integriteit";
 import { JUISTE_VORM, sleutel as wcSleutel, zoek as wcZoek } from "./werk-commentaar";
@@ -146,11 +147,8 @@ function duur(ms: number): string {
   return ms < 60_000 ? `${(ms / 1000).toFixed(1)}s` : `${Math.floor(ms / 60_000)}m${Math.round((ms % 60_000) / 1000)}s`;
 }
 
-/** Stiltevenster 05:00–07:15 lokale tijd (zelfde venster als de uitrolscripts). */
-export function inStiltevenster(nu: Date = new Date()): boolean {
-  const m = nu.getHours() * 60 + nu.getMinutes();
-  return m >= 5 * 60 && m < 7 * 60 + 15;
-}
+// Stiltevenster 05:00–07:15: één definitie in ./stiltevenster.
+export { inStiltevenster };
 
 // ── Baseline ────────────────────────────────────────────────────────────────
 

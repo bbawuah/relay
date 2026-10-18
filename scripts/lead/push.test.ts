@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { schoneEnv } from "../test-integriteit";
@@ -210,7 +210,8 @@ describe(".githooks/pre-push", () => {
   beforeEach(() => {
     // nep-bun: de echte poort draait hier niet
     mkdirSync(join(dir, "bin"));
-    writeFileSync(join(dir, "bin", "bun"), `#!/bin/sh\necho "bun $*" >> "${dir}/bun.log"\nexit 0\n`);
+    // de stiltevenster-CLI gaat door naar de echte bun, de rest is de nep-poort
+    writeFileSync(join(dir, "bin", "bun"), `#!/bin/sh\ncase "$1" in *stiltevenster.ts) exec "${process.execPath}" "$@";; esac\necho "bun $*" >> "${dir}/bun.log"\nexit 0\n`);
     chmodSync(join(dir, "bin", "bun"), 0o755);
   });
   test("weigert POORT_OVERSLAAN in een agentsessie (LAB_AGENT_ROL)", () => {
@@ -224,7 +225,25 @@ describe(".githooks/pre-push", () => {
     expect(r.fout).toMatch(/poort overgeslagen/);
   });
   test("zonder POORT_OVERSLAAN draait de poort, ook voor een agent", () => {
-    expect(hook({ LAB_AGENT_ROL: "agent" }).code).toBe(0);
+    expect(hook({ LAB_AGENT_ROL: "agent", STILTEVENSTER_NU: "2026-10-18T10:00:00Z" }).code).toBe(0);
     expect(readFileSync(join(dir, "bun.log"), "utf8")).toContain("bun run check");
+  });
+  describe("stiltevenster", () => {
+    const IN = { STILTEVENSTER_NU: "2026-10-18T03:30:00Z" };
+    const BUITEN = { STILTEVENSTER_NU: "2026-10-18T05:15:00Z" };
+    test("weigert een agent (LAB_AGENT_ROL) in het venster, zonder de poort te draaien", () => {
+      const r = hook({ LAB_AGENT_ROL: "agent", ...IN });
+      expect(r.code).toBe(1);
+      expect(r.fout).toMatch(/stiltevenster 05:00–07:15, geen push vanuit een agentsessie/);
+      expect(existsSync(join(dir, "bun.log"))).toBe(false);
+    });
+    test("Brian (zonder LAB_AGENT_ROL) mag in het venster door tot aan de poort", () => {
+      expect(hook(IN).code).toBe(0);
+      expect(readFileSync(join(dir, "bun.log"), "utf8")).toContain("bun run check");
+    });
+    test("een agent buiten het venster komt door tot aan de poort", () => {
+      expect(hook({ LAB_AGENT_ROL: "agent", ...BUITEN }).code).toBe(0);
+      expect(readFileSync(join(dir, "bun.log"), "utf8")).toContain("bun run check");
+    });
   });
 });
