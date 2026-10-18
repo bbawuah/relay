@@ -16,7 +16,7 @@
 //   rood-op-basis  een fix (tak of PR-titel met "fix") brengt een unittest mee die op de basis faalt en op de tak slaagt (scripts/rood-op-basis.ts)
 //   scripts-tests  bun test ./scripts/ (de tests van poort en ds-regels; < 1 s, altijd)
 //   biome       biome ci: lint (alleen foutregels), geen format  (hele repo)
-//   taken       turbo run lint typecheck test                    (affected)
+//   taken       turbo run lint typecheck test                    (affected; met POORT_DB_VERPLICHT=1 en docker als goldcoast-api/db affected, scripts/db-verplicht.ts)
 //   build       turbo run build, zonder de site (zie baseline)   (affected)
 //   e2e         turbo run e2e --concurrency=1                    (affected; tmux, watchparty, storybook-axe)
 //               met een machinebreed slot (scripts/e2e-slot.ts): standaard 2 runs tegelijk, POORT_E2E_SLOTS
@@ -59,6 +59,7 @@ import { ongebruikt, sleutels as dsSleutels, zoek as dsZoek } from "./ds-regels"
 import { beschrijf as ekBeschrijf, nieuweTreffers as ekNieuw, OPLOSSING as EK_OPLOSSING, sleutel as ekSleutel, zoek as ekZoek } from "./echte-klok";
 import { beoordeelBare, beschrijf as gsBeschrijf, nieuweTreffers as gsNieuw, OPLOSSING as GS_OPLOSSING, sleutel as gsSleutel, zoek as gsZoek } from "./git-scrub";
 import { leesPr } from "./bewijs-pr";
+import { DB_MELDING, dbVerplicht } from "./db-verplicht";
 import { inStiltevenster } from "./stiltevenster";
 import { leesContext as roLees, stap as roStap } from "./rood-op-basis";
 import { analyseer as tiAnalyseer } from "./test-integriteit";
@@ -372,7 +373,21 @@ function turboResultaat(r: Uitkomst): Resultaat {
 
 const TAKEN = ["lint", "typecheck", "test"];
 
-function stapTaken(ctx: Context, ci: boolean): Resultaat {
+/** De packages met een (affected) test-taak; null als dat niet te bepalen is of alles draait. */
+function testPakketten(ctx: Context): string[] | null {
+  if (!ctx.affected) return null;
+  const dry = turbo(ctx, ["test"], ["--dry=json"]);
+  const taken = dry.code === 0 ? leesDryTaken(dry.stdout) : null;
+  return taken ? taken.filter((t) => t.task === "test").map((t) => t.package) : null;
+}
+
+function stapTaken(basis: Context, ci: boolean): Resultaat {
+  // DB-integratietests mogen niet stil overslaan (scripts/db-verplicht.ts): affected goldcoast-api/db eist docker.
+  const verplicht = dbVerplicht({ pakketten: testPakketten(basis), nu: new Date() });
+  if (verplicht && draai(["docker", "info", "--format", "{{.ServerVersion}}"]).code !== 0) {
+    return { status: "FOUT", detail: "geen docker", uitleg: `     ${DB_MELDING}` };
+  }
+  const ctx: Context = verplicht ? { ...basis, env: { ...basis.env, POORT_DB_VERPLICHT: "1" } } : basis;
   const zonder = ci ? (leesBaseline().uitzonderingen.ci?.zonder ?? []) : [];
   if (!zonder.length) return turboResultaat(turbo(ctx, TAKEN));
   // Een package met een uitgezonderde taak gaat uit de gewone run en krijgt een
