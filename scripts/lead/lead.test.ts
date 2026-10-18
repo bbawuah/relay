@@ -397,7 +397,7 @@ describe("merge.sh", () => {
     writeFileSync(join(dir, "base-lijst.json"), "geen json");
     const r = draai(MERGE, ["71"]);
     expect(r.code).toBe(1);
-    expect(r.fout).toMatch(/onleesbaar; remote tak lead\/test-tak blijft staan/);
+    expect(r.fout).toMatch(/onleesbaar\)?; remote tak lead\/test-tak blijft staan/);
     expect(remoteTakken()).toContain("lead/test-tak");
   });
 
