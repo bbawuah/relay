@@ -59,7 +59,7 @@ import { ongebruikt, sleutels as dsSleutels, zoek as dsZoek } from "./ds-regels"
 import { beschrijf as ekBeschrijf, nieuweTreffers as ekNieuw, OPLOSSING as EK_OPLOSSING, sleutel as ekSleutel, zoek as ekZoek } from "./echte-klok";
 import { beoordeelBare, beschrijf as gsBeschrijf, nieuweTreffers as gsNieuw, OPLOSSING as GS_OPLOSSING, sleutel as gsSleutel, zoek as gsZoek } from "./git-scrub";
 import { leesPr } from "./bewijs-pr";
-import { DB_MELDING, dbOmgeving, dbVerplicht } from "./db-verplicht";
+import { dockerOntbreekt, omgevingVoor, pakkettenVanTaken } from "./db-verplicht";
 import { inStiltevenster } from "./stiltevenster";
 import { leesContext as roLees, stap as roStap } from "./rood-op-basis";
 import { analyseer as tiAnalyseer } from "./test-integriteit";
@@ -377,17 +377,15 @@ const TAKEN = ["lint", "typecheck", "test"];
 function testPakketten(ctx: Context): string[] | null {
   if (!ctx.affected) return null;
   const dry = turbo(ctx, ["test"], ["--dry=json"]);
-  const taken = dry.code === 0 ? leesDryTaken(dry.stdout) : null;
-  return taken ? taken.filter((t) => t.task === "test").map((t) => t.package) : null;
+  return pakkettenVanTaken(dry.code === 0 ? leesDryTaken(dry.stdout) : null, "test");
 }
 
 function stapTaken(basis: Context, ci: boolean): Resultaat {
   // DB-integratietests mogen niet stil overslaan (scripts/db-verplicht.ts): affected goldcoast-api/db eist docker.
-  const verplicht = dbVerplicht({ pakketten: testPakketten(basis), nu: new Date() });
-  if (verplicht && draai(["docker", "info", "--format", "{{.ServerVersion}}"]).code !== 0) {
-    return { status: "FOUT", detail: "geen docker", uitleg: `     ${DB_MELDING}` };
-  }
-  const ctx: Context = { ...basis, env: dbOmgeving(basis.env, verplicht) };
+  const { env, verplicht } = omgevingVoor(basis.env, testPakketten(basis), new Date());
+  const geenDocker = dockerOntbreekt(verplicht, !verplicht || draai(["docker", "info", "--format", "{{.ServerVersion}}"]).code === 0);
+  if (geenDocker) return { status: "FOUT", detail: "geen docker", uitleg: `     ${geenDocker}` };
+  const ctx: Context = { ...basis, env };
   const zonder = ci ? (leesBaseline().uitzonderingen.ci?.zonder ?? []) : [];
   if (!zonder.length) return turboResultaat(turbo(ctx, TAKEN));
   // Een package met een uitgezonderde taak gaat uit de gewone run en krijgt een
@@ -436,7 +434,11 @@ async function stapE2e(ctx: Context): Promise<Resultaat> {
   const vrij = () => slot.vrij();
   process.on("exit", vrij);
   try {
-    const r = turboResultaat(turbo(ctx, ["e2e"], ["--concurrency=1"]));
+    // cross-tenant (goldcoast-api) draait in de e2e-taak: ook daar eist de poort docker (scripts/db-verplicht.ts).
+    const { env, verplicht } = omgevingVoor(ctx.env, e2e, new Date());
+    const geenDocker = dockerOntbreekt(verplicht, !verplicht || draai(["docker", "info", "--format", "{{.ServerVersion}}"]).code === 0);
+    if (geenDocker) return { status: "FOUT", detail: "geen docker", uitleg: `     ${geenDocker}` };
+    const r = turboResultaat(turbo({ ...ctx, env }, ["e2e"], ["--concurrency=1"]));
     return { ...r, detail: `${e2e.join(", ")}: ${r.detail}` };
   } finally {
     vrij();
