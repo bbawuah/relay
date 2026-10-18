@@ -351,7 +351,7 @@ describe("merge.sh", () => {
     writeFileSync(join(dir, "edit-faalt"), "");
     const r = draai(MERGE, ["71"]);
     expect(r.code).toBe(1);
-    expect(r.fout).toMatch(/PR 245 \(base lead\/test-tak\) kon niet naar main; remote tak lead\/test-tak blijft staan/);
+    expect(r.fout).toMatch(/PR 245 \(base lead\/test-tak\) kon niet naar main; al op main gezet: geen; remote tak lead\/test-tak blijft staan/);
     expect(log("gh.log")).not.toContain("gh api -X DELETE");
     expect(remoteTakken()).toContain("lead/test-tak");
   });
