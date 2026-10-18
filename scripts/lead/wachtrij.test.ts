@@ -3,6 +3,7 @@ import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, wr
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { schoneEnv } from "../test-integriteit.ts";
+import { metStartHerstel, stopReden } from "./spawn-crash.ts";
 import { STANDAARD_POORT, bouwBody, ciWorkflow, geenCiMelding, gevaarScore, onschadelijk, standaardPoort, inStiltevenster, kiesPrs, leesMarker, leesOpties, leesStempel, okRegels, stempelVan, zwaarsteGevaar, type Pr } from "./wachtrij.ts";
 
 // Alle CLI-tests draaien met een nep-gh vooraan op PATH en een wegwerp-git-repo met een
@@ -246,8 +247,10 @@ const maakTak = (naam: string, bestand: string, inhoud: string) => {
 // LAB_WACHTRIJ_KLOK: vaste klok voor het stiltevenster, zodat de tests niet van het uur afhangen.
 const omgeving = (extra: Record<string, string> = {}) => ({ ...schoneEnv(), PATH: `${bin}:${process.env.PATH}`, FAKE_DIR: dir, TMUX: "", TMUX_PANE: "", LAB_WACHTRIJ_KLOK: "20261006-1200", LAB_WACHTRIJ_CI_WACHT: "0", ...extra });
 const draaiWachtrij = (args: string[], extra: Record<string, string> = {}) => {
-  const r = Bun.spawnSync(["bun", WACHTRIJ, ...args], { cwd: repo, env: omgeving(extra) });
-  return { code: r.exitCode, uit: r.stdout.toString(), fout: r.stderr.toString() };
+  // Een bun-start-crash (SIGTRAP zonder uitvoer) wordt eenmaal herhaald; zie spawn-crash.ts.
+  const { r } = metStartHerstel(() => Bun.spawnSync(["bun", WACHTRIJ, ...args], { cwd: repo, env: omgeving(extra) }));
+  // code blijft null bij een signaal; `reden` zegt welk, zodat een rode test de oorzaak toont.
+  return { code: r.exitCode, uit: r.stdout.toString(), fout: r.stderr.toString(), reden: stopReden(r) };
 };
 const log = (naam: string) => (existsSync(join(dir, naam)) ? readFileSync(join(dir, naam), "utf8") : "");
 const zetPrs = (prs: Pr[]) => writeFileSync(join(dir, "prlist.json"), JSON.stringify(prs));
@@ -298,6 +301,7 @@ describe("wachtrij.ts", () => {
   test("lege wachtrij: meldt dat en doet niets", () => {
     zetPrs([]);
     const r = draaiWachtrij(["--nu", "20261006-1200", "--map", wt]);
+    expect(r.reden).toBe("exit 0");
     expect(r.code).toBe(0);
     expect(r.uit).toMatch(/leeg/);
     expect(existsSync(wt)).toBe(false);
