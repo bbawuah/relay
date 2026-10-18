@@ -47,6 +47,14 @@ if [ "$1 $2" = "pr view" ]; then
   [ -f "$FAKE_DIR/gh-faalt" ] && exit 1
   cat "$FAKE_DIR/pr.json"; exit 0
 fi
+if [ "$1 $2" = "pr list" ]; then
+  [ -f "$FAKE_DIR/lijst-faalt" ] && { echo "nep: list mislukt" >&2; exit 1; }
+  cat "$FAKE_DIR/base-lijst.json" 2>/dev/null || echo "[]"; exit 0
+fi
+if [ "$1 $2" = "pr edit" ]; then
+  [ -f "$FAKE_DIR/edit-faalt" ] && { echo "nep: edit mislukt" >&2; exit 1; }
+  git --git-dir "$FAKE_DIR/origin.git" for-each-ref --format="$3 %(refname)" refs/heads >> "$FAKE_DIR/edit-zag.txt"; exit 0
+fi
 if [ "$1 $2" = "pr merge" ]; then
   [ -f "$FAKE_DIR/merge-werkt" ] && sed -i.bak 's/"state":"OPEN"/"state":"MERGED"/' "$FAKE_DIR/pr.json"
   exit 0
@@ -317,6 +325,44 @@ describe("merge.sh", () => {
     expect(log("gh.log")).toContain("gh pr merge 71 --merge");
     expect(remoteTakken()).not.toContain("lead/test-tak");
     expect(remoteTakken()).toContain("refs/heads/main");
+  });
+
+  test("zet open PR's met de gemergede tak als base eerst op main, pas daarna gaat de tak weg", () => {
+    pr();
+    writeFileSync(join(dir, "merge-werkt"), "");
+    writeFileSync(join(dir, "base-lijst.json"), JSON.stringify([{ number: 245 }, { number: 247 }]));
+    const r = draai(MERGE, ["71"]);
+    expect(r.code).toBe(0);
+    const regels = log("gh.log").trim().split("\n");
+    expect(regels).toContain("gh pr list --base lead/test-tak --state open --json number --repo bbawuah/LAB-BAWUAH");
+    expect(regels).toContain("gh pr edit 245 --base main --repo bbawuah/LAB-BAWUAH");
+    expect(regels).toContain("gh pr edit 247 --base main --repo bbawuah/LAB-BAWUAH");
+    expect(regels.findIndex((l) => l.startsWith("gh pr edit"))).toBeLessThan(regels.findIndex((l) => l.startsWith("gh api -X DELETE")));
+    // op het moment van de wijziging stond de tak er nog
+    expect(log("edit-zag.txt")).toContain("refs/heads/lead/test-tak");
+    expect(remoteTakken()).not.toContain("lead/test-tak");
+  });
+
+  test("verwijdert de tak niet als een afhankelijke PR niet naar main kan", () => {
+    pr();
+    writeFileSync(join(dir, "merge-werkt"), "");
+    writeFileSync(join(dir, "base-lijst.json"), JSON.stringify([{ number: 245 }]));
+    writeFileSync(join(dir, "edit-faalt"), "");
+    const r = draai(MERGE, ["71"]);
+    expect(r.code).toBe(1);
+    expect(r.fout).toMatch(/PR 245 \(base lead\/test-tak\) kon niet naar main; remote tak lead\/test-tak blijft staan/);
+    expect(log("gh.log")).not.toContain("gh api -X DELETE");
+    expect(remoteTakken()).toContain("lead/test-tak");
+  });
+
+  test("verwijdert de tak niet als de lijst afhankelijke PR's niet op te halen is", () => {
+    pr();
+    writeFileSync(join(dir, "merge-werkt"), "");
+    writeFileSync(join(dir, "lijst-faalt"), "");
+    const r = draai(MERGE, ["71"]);
+    expect(r.code).toBe(1);
+    expect(r.fout).toMatch(/niet op te halen; remote tak lead\/test-tak blijft staan/);
+    expect(remoteTakken()).toContain("lead/test-tak");
   });
 
   test("laat de remote tak staan als de PR na het mergen niet MERGED is", () => {

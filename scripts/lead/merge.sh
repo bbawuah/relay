@@ -146,7 +146,7 @@ if [ -n "$contract" ]; then
 fi
 
 if [ "$droog" = 1 ]; then
-  echo "droog: PR $pr voldoet; zou draaien: gh pr merge $pr --merge --match-head-commit $headvol --repo $REPO, controleren op MERGED, dan gh api -X DELETE repos/$REPO/git/refs/heads/$tak"
+  echo "droog: PR $pr voldoet; zou draaien: gh pr merge $pr --merge --match-head-commit $headvol --repo $REPO, controleren op MERGED, open PR's met base $tak naar main zetten, dan gh api -X DELETE repos/$REPO/git/refs/heads/$tak"
   exit 0
 fi
 
@@ -158,6 +158,15 @@ if [ "$na" != MERGED ]; then
   echo "merge: PR $pr staat na het mergen op '$na', niet MERGED; remote tak $tak blijft staan" >&2
   exit 1
 fi
+# Open PR's die op deze tak gebaseerd zijn eerst naar main: anders sluit GitHub ze bij het
+# verwijderen van de tak (#245, #247). Lukt dat niet, dan blijft de tak staan.
+afhankelijk=$(gh pr list --base "$tak" --state open --json number --repo "$REPO" | jq -r '.[].number') \
+  || { echo "merge: PR $pr is gemerged, maar de PR's met base $tak zijn niet op te halen; remote tak $tak blijft staan" >&2; exit 1; }
+for n in $afhankelijk; do
+  gh pr edit "$n" --base main --repo "$REPO" \
+    || { echo "merge: PR $pr is gemerged, maar PR $n (base $tak) kon niet naar main; remote tak $tak blijft staan" >&2; exit 1; }
+  echo "merge: PR $n had $tak als base, nu main"
+done
 # Via de API, niet via een lokale push: geen worktree-config, remote of pre-push-hook onder de allow-regel.
 gh api -X DELETE "repos/$REPO/git/refs/heads/$tak" --silent \
   || { echo "merge: PR $pr is gemerged, maar remote tak $tak kon niet weg (gh api)" >&2; exit 1; }

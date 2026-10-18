@@ -269,7 +269,8 @@ beforeEach(() => {
     `#!/usr/bin/env bash
 echo "gh $*" >> "$FAKE_DIR/gh.log"
 case "$1 $2" in
-  "pr list") cat "$FAKE_DIR/prlist.json"; exit 0 ;;
+  "pr list") if [ "$3" = --base ]; then if [ -f "$FAKE_DIR/lijst-faalt" ]; then echo "nep: list mislukt" >&2; exit 1; fi; cat "$FAKE_DIR/base-$4.json" 2>/dev/null || echo "[]"; else cat "$FAKE_DIR/prlist.json"; fi; exit 0 ;;
+  "pr edit") [ -f "$FAKE_DIR/edit-faalt" ] && { echo "nep: edit mislukt" >&2; exit 1; }; git --git-dir "$FAKE_DIR/origin.git" for-each-ref --format="$3 %(refname)" refs/heads >> "$FAKE_DIR/edit-zag.txt"; exit 0 ;;
   "pr view") if [ "$3" = "https://github.com/nep/nep/pull/99" ] && [ -f "$FAKE_DIR/ci.json" ]; then cat "$FAKE_DIR/ci.json"; exit 0; elif [ -f "$FAKE_DIR/prview-$3.json" ]; then cat "$FAKE_DIR/prview-$3.json"; else cat "$FAKE_DIR/prview.json"; fi; exit 0 ;;
   "pr merge") printf "%s\\n" "$@" > "$FAKE_DIR/merge.txt"; sed -i.bak 's/"state":"OPEN"/"state":"MERGED"/' "$FAKE_DIR/prview.json"; exit 0 ;;
   "api -X") [ "$3" = DELETE ] && { git --git-dir "$FAKE_DIR/origin.git" update-ref -d "refs/heads/\${4#repos/*/*/git/refs/heads/}"; exit $?; } ;;
@@ -637,6 +638,50 @@ describe("wachtrij.ts --ruim-takken", () => {
     expect(r.fout).toMatch(/andere sha/);
     expect(remoteTakken()).toContain("refs/heads/tak-1");
     expect(remoteTakken()).toContain("refs/heads/foo/tak-1");
+  });
+
+  test("zet open PR's met een op te ruimen tak als base eerst op main, pas daarna gaat de tak weg", () => {
+    maakTak("tak-1", "b.txt", "een\n");
+    mergeNaarMain(["tak-1"]);
+    writeFileSync(join(dir, "base-tak-1.json"), JSON.stringify([{ number: 245 }, { number: 247 }]));
+    const r = draaiWachtrij(["--ruim-takken", "50"]);
+    expect(r.code).toBe(0);
+    const gh = log("gh.log");
+    expect(gh).toContain("gh pr list --base tak-1 --state open --json number");
+    expect(gh).toContain("gh pr edit 245 --base main");
+    expect(gh).toContain("gh pr edit 247 --base main");
+    // op het moment van de wijziging stond de tak er nog; daarna is hij weg
+    expect(log("edit-zag.txt")).toContain("refs/heads/tak-1");
+    expect(remoteTakken()).not.toContain("refs/heads/tak-1");
+  });
+
+  test("laat de tak staan met een melding als een afhankelijke PR niet naar main kan", () => {
+    maakTak("tak-1", "b.txt", "een\n");
+    mergeNaarMain(["tak-1"]);
+    writeFileSync(join(dir, "base-tak-1.json"), JSON.stringify([{ number: 245 }]));
+    writeFileSync(join(dir, "edit-faalt"), "");
+    const r = draaiWachtrij(["--ruim-takken", "50"]);
+    expect(r.code).toBe(1);
+    expect(r.fout).toMatch(/PR #245 heeft tak-1 als base en kon niet naar main.*tak blijft staan/);
+    expect(remoteTakken()).toContain("refs/heads/tak-1");
+  });
+
+  test("laat de tak staan als de afhankelijke PR's niet op te halen zijn", () => {
+    maakTak("tak-1", "b.txt", "een\n");
+    mergeNaarMain(["tak-1"]);
+    writeFileSync(join(dir, "lijst-faalt"), "");
+    const r = draaiWachtrij(["--ruim-takken", "50"]);
+    expect(r.code).toBe(1);
+    expect(r.fout).toMatch(/niet op te halen.*tak blijft staan/);
+    expect(remoteTakken()).toContain("refs/heads/tak-1");
+  });
+
+  test("zonder afhankelijke PR's wordt niets gewijzigd en gaat de tak weg", () => {
+    maakTak("tak-1", "b.txt", "een\n");
+    mergeNaarMain(["tak-1"]);
+    expect(draaiWachtrij(["--ruim-takken", "50"]).code).toBe(0);
+    expect(log("gh.log")).not.toContain("gh pr edit");
+    expect(remoteTakken()).not.toContain("refs/heads/tak-1");
   });
 
   test("--droog verwijdert niets", () => {
