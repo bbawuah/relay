@@ -418,9 +418,9 @@ export async function stapE2e(ctx: Context, dep: E2eAfhankelijk = {}): Promise<R
     .filter((t) => t.task === "e2e" && t.command !== "<NONEXISTENT>")
     .map((t) => t.package);
   if (!e2e.length) return { status: "SKIP", detail: "geen e2e geraakt" };
-  if (inStiltevenster((dep.nu ?? (() => new Date()))())) {
-    return { status: "FOUT", detail: `stiltevenster 05:00–07:15, e2e van ${e2e.join(", ")} niet gedraaid; na 07:15 opnieuw, of --zonder-e2e` };
-  }
+  const nu = dep.nu ?? (() => new Date());
+  const venster = (wanneer: string): Resultaat => ({ status: "FOUT", detail: `stiltevenster 05:00–07:15 ${wanneer}, e2e van ${e2e.join(", ")} niet gedraaid of niet geldig; na 07:15 opnieuw, of --zonder-e2e` });
+  if (inStiltevenster(nu())) return venster("(voor het slot)");
   // Maximaal POORT_E2E_SLOTS (standaard 2) volledige e2e-runs tegelijk op de machine;
   // binnen een run blijft turbo op --concurrency=1.
   let slot: Awaited<ReturnType<typeof neemSlot>>;
@@ -432,7 +432,12 @@ export async function stapE2e(ctx: Context, dep: E2eAfhankelijk = {}): Promise<R
   const vrij = () => slot.vrij();
   process.on("exit", vrij);
   try {
-    const r = turboResultaat(draaiTurbo(ctx, ["e2e"], ["--concurrency=1"]));
+    // Het slot kan lang wachten: het venster kan intussen begonnen zijn. Opnieuw toetsen vóór de run,
+    // en na de run (begon het venster tijdens de run, dan geldt de uitslag niet).
+    if (inStiltevenster(nu())) return venster("(begonnen tijdens het wachten op een slot)");
+    // --cache=local:rw: e2e-uitslagen gaan nooit via de remote cache (remoteCache in turbo.json) naar of van een andere machine.
+    const r = turboResultaat(draaiTurbo(ctx, ["e2e"], ["--concurrency=1", "--cache=local:rw"]));
+    if (inStiltevenster(nu())) return venster("(begonnen tijdens de run)");
     return { ...r, detail: `${e2e.join(", ")}: ${r.detail}` };
   } finally {
     vrij();

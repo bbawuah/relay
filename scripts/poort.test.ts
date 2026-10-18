@@ -65,7 +65,42 @@ describe("stapE2e: stiltevenster vóór turbo (geen groene cachehit in het venst
       const r = await stapE2e(ctx, { nu: op(iso), turbo, neemSlot: slot });
       expect(r.status).toBe("OK");
       expect(r.detail).toContain("1 uit cache");
-      expect(aanroepen).toEqual([["e2e", "--dry=json"], ["e2e", "--concurrency=1"]]);
+      expect(aanroepen).toEqual([["e2e", "--dry=json"], ["e2e", "--concurrency=1", "--cache=local:rw"]]);
     }
+  });
+
+  test("venster begint tijdens het wachten op een slot: FOUT, turbo draait de run niet", async () => {
+    let nu = new Date("2026-10-18T02:50:00Z"); // 04:50 Amsterdam
+    const { aanroepen, turbo } = nepTurbo();
+    const wachtendSlot = async () => {
+      nu = new Date("2026-10-18T03:01:00Z"); // 05:01
+      return { vrij() {} };
+    };
+    const r = await stapE2e(ctx, { nu: () => nu, turbo, neemSlot: wachtendSlot });
+    expect(r.status).toBe("FOUT");
+    expect(r.detail).toMatch(/tijdens het wachten/);
+    expect(aanroepen).toEqual([["e2e", "--dry=json"]]);
+  });
+
+  test("venster begint tijdens de run: FOUT", async () => {
+    let nu = new Date("2026-10-18T02:50:00Z");
+    const { turbo } = nepTurbo();
+    const r = await stapE2e(ctx, {
+      nu: () => nu,
+      turbo: (c, t, e = []) => {
+        const u = turbo(c, t, e);
+        if (!e.includes("--dry=json")) nu = new Date("2026-10-18T03:01:00Z");
+        return u;
+      },
+      neemSlot: slot,
+    });
+    expect(r.status).toBe("FOUT");
+    expect(r.detail).toMatch(/tijdens de run/);
+  });
+
+  test("de run gaat nooit via de remote cache", async () => {
+    const { aanroepen, turbo } = nepTurbo();
+    await stapE2e(ctx, { nu: op("2026-10-18T02:00:00Z"), turbo, neemSlot: slot });
+    expect(aanroepen[1]).toContain("--cache=local:rw");
   });
 });
