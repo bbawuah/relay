@@ -163,6 +163,8 @@ fi
 limiet=1000
 lijst=$(gh pr list --base "$tak" --state open --limit "$limiet" --json number --repo "$REPO") \
   || { echo "merge: PR $pr is gemerged, maar de PR's met base $tak zijn niet op te halen; remote tak $tak blijft staan" >&2; exit 1; }
+printf '%s' "$lijst" | jq -e 'type == "array"' >/dev/null \
+  || { echo "merge: PR $pr is gemerged, maar het antwoord over de PR's met base $tak is geen lijst (onleesbaar); remote tak $tak blijft staan" >&2; exit 1; }
 aantal=$(printf '%s' "$lijst" | jq 'length') \
   || { echo "merge: PR $pr is gemerged, maar het antwoord over de PR's met base $tak is onleesbaar; remote tak $tak blijft staan" >&2; exit 1; }
 [ "$aantal" -lt "$limiet" ] \

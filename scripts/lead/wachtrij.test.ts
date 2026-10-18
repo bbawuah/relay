@@ -688,6 +688,17 @@ describe("wachtrij.ts --ruim-takken", () => {
     expect(remoteTakken()).toContain("refs/heads/tak-1");
   });
 
+  test.each(["null", "5", "{}"])("antwoord %s is geen lijst: tak blijft staan", (antwoord) => {
+    maakTak("tak-1", "b.txt", "een\n");
+    mergeNaarMain(["tak-1"]);
+    writeFileSync(join(dir, "base-tak-1.json"), antwoord);
+    const r = draaiWachtrij(["--ruim-takken", "50"]);
+    expect(r.code).toBe(1);
+    expect(r.fout).toMatch(/onleesbaar antwoord.*tak blijft staan/);
+    expect(log("gh.log")).not.toContain("gh pr edit");
+    expect(remoteTakken()).toContain("refs/heads/tak-1");
+  });
+
   test("onleesbare JSON over de afhankelijke PR's: tak blijft staan", () => {
     maakTak("tak-1", "b.txt", "een\n");
     mergeNaarMain(["tak-1"]);

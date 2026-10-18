@@ -379,6 +379,18 @@ describe("merge.sh", () => {
     expect(remoteTakken()).toContain("lead/test-tak");
   });
 
+  test.each(["null", "5", "{}"])("antwoord %s is geen lijst: fail-closed, tak blijft staan", (antwoord) => {
+    pr();
+    writeFileSync(join(dir, "merge-werkt"), "");
+    writeFileSync(join(dir, "base-lijst.json"), antwoord);
+    const r = draai(MERGE, ["71"]);
+    expect(r.code).not.toBe(0);
+    expect(r.fout).toMatch(/geen lijst.*remote tak lead\/test-tak blijft staan/);
+    expect(log("gh.log")).not.toContain("gh pr edit");
+    expect(log("gh.log")).not.toContain("gh api -X DELETE");
+    expect(remoteTakken()).toContain("lead/test-tak");
+  });
+
   test("onleesbaar antwoord over de afhankelijke PR's: tak blijft staan", () => {
     pr();
     writeFileSync(join(dir, "merge-werkt"), "");
