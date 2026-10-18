@@ -34,20 +34,20 @@ const REVIEW = {
   required: ['blokkerend', 'nietBlokkerend', 'oordeel'],
 }
 
-const reviewPrompt = (taak, b) => `Je bent de reviewer die niet plant. Repo ~/Desktop/LAB-BAWUAH/lab-bawuah. Toets PR #${b.pr} (\`gh pr diff ${b.pr}\`) aan AGENTS.md en aan deze taak:\n${taak.opdracht}\nAlleen lezen; niets draaien tegen echte diensten. Let op correctheid, scope (alleen de genoemde bestanden), testkwaliteit (zou de test de fout echt vangen?), GIT_*-scrub in tests, en of de PR-body het sjabloon volgt. Geef blokkerende punten met bestand/regel; laat stijlvoorkeuren weg.`
+const reviewPrompt = (taak, b) => `Je bent de reviewer die niet plant. Repo ~/Desktop/LAB-BAWUAH/lab-bawuah. Toets PR #${b.pr} (\`gh pr diff ${b.pr}\`) aan AGENTS.md en aan deze taak:\n${taak.opdracht}\nAlleen lezen; niets draaien tegen echte diensten. Werk alleen in je eigen worktree, nooit in de hoofdcheckout ~/Desktop/LAB-BAWUAH/lab-bawuah (geen checkout, switch, reset of pull daar); lees de PR via `gh pr diff` of `git show origin/<tak>:<pad>`. Let op correctheid, scope (alleen de genoemde bestanden), testkwaliteit (zou de test de fout echt vangen?), GIT_*-scrub in tests, en of de PR-body het sjabloon volgt. Geef blokkerende punten met bestand/regel; laat stijlvoorkeuren weg.`
 
 const resultaten = await pipeline(
   args.taken,
   (taak) => agent(`${taak.opdracht}\n\nTak: \`${taak.tak}\`. ${GRENZEN}\nGeef terug: tak, PR-nummer, kop-SHA, korte samenvatting, testuitslag, open punten.`,
     { label: `bouw:${taak.id}`, phase: 'Bouwen', model: 'sonnet', isolation: 'worktree', schema: BOUW }),
-  (b, taak) => b && agent(reviewPrompt(taak, b), { label: `review:${taak.id}`, phase: 'Review', model: taak.zwaar ? 'opus' : 'sonnet', schema: REVIEW })
+  (b, taak) => b && agent(reviewPrompt(taak, b), { label: `review:${taak.id}`, phase: 'Review', model: taak.zwaar ? 'opus' : 'sonnet', isolation: 'worktree', schema: REVIEW })
     .then((r) => ({ taak, b, r })),
   async (x) => {
     if (!x || !x.r || x.r.blokkerend.length === 0) return x
     log(`${x.taak.id}: ${x.r.blokkerend.length} blokkerend punt(en), herstelronde`)
     const b2 = await agent(`Herstel PR #${x.b.pr} (tak \`${x.b.tak}\`): check de tak uit in een eigen worktree, verwerk deze blokkerende reviewpunten en push op dezelfde tak:\n- ${x.r.blokkerend.join('\n- ')}\n\nOorspronkelijke taak:\n${x.taak.opdracht}\n${GRENZEN}`,
       { label: `herstel:${x.taak.id}`, phase: 'Herstel', model: 'sonnet', isolation: 'worktree', schema: BOUW })
-    const r2 = b2 && await agent(reviewPrompt(x.taak, b2), { label: `herreview:${x.taak.id}`, phase: 'Herstel', model: x.taak.zwaar ? 'opus' : 'sonnet', schema: REVIEW })
+    const r2 = b2 && await agent(reviewPrompt(x.taak, b2), { label: `herreview:${x.taak.id}`, phase: 'Herstel', model: x.taak.zwaar ? 'opus' : 'sonnet', isolation: 'worktree', schema: REVIEW })
     return { taak: x.taak, b: b2 || x.b, r: r2 || x.r, hersteld: true }
   },
 )
