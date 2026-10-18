@@ -34,7 +34,7 @@ const REVIEW = {
   required: ['blokkerend', 'nietBlokkerend', 'oordeel'],
 }
 
-const reviewPrompt = (taak, b) => `Je bent de reviewer die niet plant. Repo ~/Desktop/LAB-BAWUAH/lab-bawuah. Toets PR #${b.pr} (\`gh pr diff ${b.pr}\`) aan AGENTS.md en aan deze taak:\n${taak.opdracht}\nAlleen lezen; niets draaien tegen echte diensten. Werk alleen in je eigen worktree, nooit in de hoofdcheckout ~/Desktop/LAB-BAWUAH/lab-bawuah (geen checkout, switch, reset of pull daar); lees de PR via `gh pr diff` of `git show origin/<tak>:<pad>`. Let op correctheid, scope (alleen de genoemde bestanden), testkwaliteit (zou de test de fout echt vangen?), GIT_*-scrub in tests, en of de PR-body het sjabloon volgt. Geef blokkerende punten met bestand/regel; laat stijlvoorkeuren weg.`
+const reviewPrompt = (taak, b) => `Je bent de reviewer die niet plant. Repo ~/Desktop/LAB-BAWUAH/lab-bawuah. Toets PR #${b.pr} (\`gh pr diff ${b.pr}\`) aan AGENTS.md en aan deze taak:\n${taak.opdracht}\nAlleen lezen; niets draaien tegen echte diensten. Werk alleen in je eigen worktree, nooit in de hoofdcheckout ~/Desktop/LAB-BAWUAH/lab-bawuah (geen checkout, switch, reset of pull daar); lees de PR via \`gh pr diff\` of \`git show origin/<tak>:<pad>\`. Let op correctheid, scope (alleen de genoemde bestanden), testkwaliteit (zou de test de fout echt vangen?), GIT_*-scrub in tests, en of de PR-body het sjabloon volgt. Geef blokkerende punten met bestand/regel; laat stijlvoorkeuren weg.`
 
 const resultaten = await pipeline(
   args.taken,
