@@ -5,6 +5,7 @@
 // integratie-PR. Zie scripts/lead/README.md.
 import { existsSync, readFileSync } from "node:fs";
 import path from "node:path";
+import { amsterdam, inStiltevenster, vanAmsterdam } from "../stiltevenster.ts";
 import { schoneEnv } from "../test-integriteit.ts";
 
 /** Workflownaam van de CI: één bron in lead.conf (ook door merge.sh gelezen); override met env LAB_MERGE_CI_WORKFLOW. */
@@ -163,20 +164,18 @@ export function bouwBody(opts: { gemerged: Pr[]; afgevallen: Afgevallen[]; head:
 
 // ── Stiltevenster (zelfde venster als scripts/poort.ts) ──────────────────────
 
-export function inStiltevenster(nu: Date): boolean {
-  const m = nu.getHours() * 60 + nu.getMinutes();
-  return m >= 5 * 60 && m < 7 * 60 + 15;
-}
+export { inStiltevenster };
 
-/** "20261006-1430" → Date (lokale tijd). */
+/** "20261006-1430" → Date (Amsterdamse tijd). */
 export function leesStempel(s: string): Date | null {
   const m = s.match(/^(\d{4})(\d{2})(\d{2})-(\d{2})(\d{2})$/);
-  return m ? new Date(+m[1], +m[2] - 1, +m[3], +m[4], +m[5]) : null;
+  return m ? vanAmsterdam(+m[1], +m[2], +m[3], +m[4], +m[5]) : null;
 }
 
 export function stempelVan(d: Date): string {
   const p = (n: number) => String(n).padStart(2, "0");
-  return `${d.getFullYear()}${p(d.getMonth() + 1)}${p(d.getDate())}-${p(d.getHours())}${p(d.getMinutes())}`;
+  const a = amsterdam(d);
+  return `${a.jaar}${p(a.maand)}${p(a.dag)}-${p(a.uur)}${p(a.minuut)}`;
 }
 
 // ── Uitvoering ───────────────────────────────────────────────────────────────
