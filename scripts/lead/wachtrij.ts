@@ -259,8 +259,10 @@ function ghJson<T>(args: string[]): T {
  * GitHub die PR's automatisch: #245 en #247). Geeft null bij succes (ook zonder afhankelijke
  * PR's) of een melding: dan mag de tak NIET weg. merge.sh doet hetzelfde met gh in bash.
  */
+export const PR_LIMIET = 1000;
+
 export function zetAfhankelijkeOpMain(tak: string, gh: (args: string[]) => { code: number; uit: string; fout: string }): string | null {
-  const lijst = gh(["pr", "list", "--base", tak, "--state", "open", "--json", "number"]);
+  const lijst = gh(["pr", "list", "--base", tak, "--state", "open", "--limit", String(PR_LIMIET), "--json", "number"]);
   if (lijst.code !== 0) return `afhankelijke PR's van ${tak} niet op te halen (${lijst.fout}); tak blijft staan`;
   let nummers: number[];
   try {
@@ -268,9 +270,12 @@ export function zetAfhankelijkeOpMain(tak: string, gh: (args: string[]) => { cod
   } catch {
     return `onleesbaar antwoord van gh bij de afhankelijke PR's van ${tak}; tak blijft staan`;
   }
+  if (nummers.length >= PR_LIMIET) return `${nummers.length} PR's met base ${tak}: de lijst kan afgekapt zijn (limiet ${PR_LIMIET}); tak blijft staan`;
+  const verplaatst: number[] = [];
   for (const n of nummers) {
     const r = gh(["pr", "edit", String(n), "--base", "main"]);
-    if (r.code !== 0) return `PR #${n} heeft ${tak} als base en kon niet naar main (${r.fout}); tak blijft staan`;
+    if (r.code !== 0) return `PR #${n} heeft ${tak} als base en kon niet naar main (${r.fout}); al op main gezet: ${verplaatst.length ? verplaatst.map((v) => `#${v}`).join(" ") : "geen"}; tak blijft staan`;
+    verplaatst.push(n);
     console.log(`wachtrij: PR #${n} had ${tak} als base, nu main`);
   }
   return null;

@@ -270,7 +270,7 @@ beforeEach(() => {
 echo "gh $*" >> "$FAKE_DIR/gh.log"
 case "$1 $2" in
   "pr list") if [ "$3" = --base ]; then if [ -f "$FAKE_DIR/lijst-faalt" ]; then echo "nep: list mislukt" >&2; exit 1; fi; cat "$FAKE_DIR/base-$4.json" 2>/dev/null || echo "[]"; else cat "$FAKE_DIR/prlist.json"; fi; exit 0 ;;
-  "pr edit") [ -f "$FAKE_DIR/edit-faalt" ] && { echo "nep: edit mislukt" >&2; exit 1; }; git --git-dir "$FAKE_DIR/origin.git" for-each-ref --format="$3 %(refname)" refs/heads >> "$FAKE_DIR/edit-zag.txt"; exit 0 ;;
+  "pr edit") [ -f "$FAKE_DIR/edit-faalt" ] && { [ ! -s "$FAKE_DIR/edit-faalt" ] || [ "$(cat "$FAKE_DIR/edit-faalt")" = "$3" ]; } && { echo "nep: edit mislukt" >&2; exit 1; }; git --git-dir "$FAKE_DIR/origin.git" for-each-ref --format="$3 %(refname)" refs/heads >> "$FAKE_DIR/edit-zag.txt"; exit 0 ;;
   "pr view") if [ "$3" = "https://github.com/nep/nep/pull/99" ] && [ -f "$FAKE_DIR/ci.json" ]; then cat "$FAKE_DIR/ci.json"; exit 0; elif [ -f "$FAKE_DIR/prview-$3.json" ]; then cat "$FAKE_DIR/prview-$3.json"; else cat "$FAKE_DIR/prview.json"; fi; exit 0 ;;
   "pr merge") printf "%s\\n" "$@" > "$FAKE_DIR/merge.txt"; sed -i.bak 's/"state":"OPEN"/"state":"MERGED"/' "$FAKE_DIR/prview.json"; exit 0 ;;
   "api -X") [ "$3" = DELETE ] && { git --git-dir "$FAKE_DIR/origin.git" update-ref -d "refs/heads/\${4#repos/*/*/git/refs/heads/}"; exit $?; } ;;
@@ -647,7 +647,7 @@ describe("wachtrij.ts --ruim-takken", () => {
     const r = draaiWachtrij(["--ruim-takken", "50"]);
     expect(r.code).toBe(0);
     const gh = log("gh.log");
-    expect(gh).toContain("gh pr list --base tak-1 --state open --json number");
+    expect(gh).toContain("gh pr list --base tak-1 --state open --limit 1000 --json number");
     expect(gh).toContain("gh pr edit 245 --base main");
     expect(gh).toContain("gh pr edit 247 --base main");
     // op het moment van de wijziging stond de tak er nog; daarna is hij weg
@@ -663,6 +663,38 @@ describe("wachtrij.ts --ruim-takken", () => {
     const r = draaiWachtrij(["--ruim-takken", "50"]);
     expect(r.code).toBe(1);
     expect(r.fout).toMatch(/PR #245 heeft tak-1 als base en kon niet naar main.*tak blijft staan/);
+    expect(remoteTakken()).toContain("refs/heads/tak-1");
+  });
+
+  test("een lijst van precies de limiet kan afgekapt zijn: tak blijft staan met melding", () => {
+    maakTak("tak-1", "b.txt", "een\n");
+    mergeNaarMain(["tak-1"]);
+    writeFileSync(join(dir, "base-tak-1.json"), JSON.stringify(Array.from({ length: 1000 }, (_, i) => ({ number: i + 1 }))));
+    const r = draaiWachtrij(["--ruim-takken", "50"]);
+    expect(r.code).toBe(1);
+    expect(r.fout).toMatch(/1000 PR's met base tak-1.*afgekapt.*tak blijft staan/);
+    expect(log("gh.log")).not.toContain("gh pr edit");
+    expect(remoteTakken()).toContain("refs/heads/tak-1");
+  });
+
+  test("tweede edit faalt: tak blijft en de melding noemt wat al op main staat", () => {
+    maakTak("tak-1", "b.txt", "een\n");
+    mergeNaarMain(["tak-1"]);
+    writeFileSync(join(dir, "base-tak-1.json"), JSON.stringify([{ number: 245 }, { number: 247 }]));
+    writeFileSync(join(dir, "edit-faalt"), "247");
+    const r = draaiWachtrij(["--ruim-takken", "50"]);
+    expect(r.code).toBe(1);
+    expect(r.fout).toMatch(/PR #247 .*kon niet naar main.*al op main gezet: #245; tak blijft staan/);
+    expect(remoteTakken()).toContain("refs/heads/tak-1");
+  });
+
+  test("onleesbare JSON over de afhankelijke PR's: tak blijft staan", () => {
+    maakTak("tak-1", "b.txt", "een\n");
+    mergeNaarMain(["tak-1"]);
+    writeFileSync(join(dir, "base-tak-1.json"), "geen json");
+    const r = draaiWachtrij(["--ruim-takken", "50"]);
+    expect(r.code).toBe(1);
+    expect(r.fout).toMatch(/onleesbaar antwoord.*tak blijft staan/);
     expect(remoteTakken()).toContain("refs/heads/tak-1");
   });
 

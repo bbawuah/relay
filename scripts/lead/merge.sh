@@ -160,11 +160,18 @@ if [ "$na" != MERGED ]; then
 fi
 # Open PR's die op deze tak gebaseerd zijn eerst naar main: anders sluit GitHub ze bij het
 # verwijderen van de tak (#245, #247). Lukt dat niet, dan blijft de tak staan.
-afhankelijk=$(gh pr list --base "$tak" --state open --json number --repo "$REPO" | jq -r '.[].number') \
+limiet=1000
+lijst=$(gh pr list --base "$tak" --state open --limit "$limiet" --json number --repo "$REPO") \
   || { echo "merge: PR $pr is gemerged, maar de PR's met base $tak zijn niet op te halen; remote tak $tak blijft staan" >&2; exit 1; }
-for n in $afhankelijk; do
+aantal=$(printf '%s' "$lijst" | jq 'length') \
+  || { echo "merge: PR $pr is gemerged, maar het antwoord over de PR's met base $tak is onleesbaar; remote tak $tak blijft staan" >&2; exit 1; }
+[ "$aantal" -lt "$limiet" ] \
+  || { echo "merge: PR $pr is gemerged, maar $aantal PR's met base $tak is de limiet: de lijst kan afgekapt zijn; remote tak $tak blijft staan" >&2; exit 1; }
+verplaatst=""
+for n in $(printf '%s' "$lijst" | jq -r '.[].number'); do
   gh pr edit "$n" --base main --repo "$REPO" \
-    || { echo "merge: PR $pr is gemerged, maar PR $n (base $tak) kon niet naar main; remote tak $tak blijft staan" >&2; exit 1; }
+    || { echo "merge: PR $pr is gemerged, maar PR $n (base $tak) kon niet naar main; al op main gezet:${verplaatst:- geen}; remote tak $tak blijft staan" >&2; exit 1; }
+  verplaatst="$verplaatst #$n"
   echo "merge: PR $n had $tak als base, nu main"
 done
 # Via de API, niet via een lokale push: geen worktree-config, remote of pre-push-hook onder de allow-regel.
