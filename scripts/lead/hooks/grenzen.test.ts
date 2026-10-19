@@ -1,5 +1,5 @@
 import { afterAll, describe, expect, test } from "bun:test";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { schoneEnv } from "../../test-integriteit";
@@ -383,5 +383,75 @@ describe("grenzen.sh: here-doc-berichten", () => {
     // iets onduidelijks vóór de here-doc
     expect(bash(`echo $(./uitrollen.sh) | gh pr create --body "$(cat <<'EOF'\na\nEOF\n)"`).code).toBe(2);
     expect(bash(`./uitrollen.sh; gh pr create --body "$(cat <<'EOF'\na\nEOF\n)"`).code).toBe(2);
+  });
+});
+
+describe("grenzen.sh: grootte van vaultnotities", () => {
+  const HOME = mkdtempSync(join(tmpdir(), "grenzen-vault-"));
+  const VAULT = join(HOME, "vault-b-status");
+  mkdirSync(join(VAULT, "archief"), { recursive: true });
+  mkdirSync(join(VAULT, "emb-gemma"), { recursive: true });
+  mkdirSync(join(VAULT, "spoor"), { recursive: true });
+  afterAll(() => rmSync(HOME, { recursive: true, force: true }));
+  const GROOT = "x".repeat(50 * 1024);
+  const KLEIN = "y".repeat(1024);
+  const hook = (tool: string, tool_input: unknown, extra: Record<string, string> = {}) => {
+    const env = { ...schoneEnv(), HOME, LAB_GRENS_MERGE: "", ...extra };
+    const p = Bun.spawnSync(["bash", HOOK], { stdin: new TextEncoder().encode(JSON.stringify({ tool_name: tool, tool_input, cwd: EIGEN_TAK })), env, stdout: "pipe", stderr: "pipe" });
+    return { code: p.exitCode, stderr: p.stderr.toString() };
+  };
+  const schrijf = (naam: string, tekst: string) => writeFileSync(join(VAULT, naam), tekst);
+
+  test("een nieuw te groot bestand wordt geweigerd, met grootte, limiet en oplossing", () => {
+    const r = hook("Write", { file_path: join(VAULT, "PLAN-nieuw.md"), content: GROOT });
+    expect(r.code).toBe(2);
+    expect(r.stderr).toContain("50 KB");
+    expect(r.stderr).toContain("40 KB");
+    expect(r.stderr).toContain("splits per spoor");
+    expect(r.stderr).toContain("archief/");
+  });
+  test("een klein bestand en een bestand precies op de limiet mogen", () => {
+    expect(hook("Write", { file_path: join(VAULT, "klein.md"), content: KLEIN }).code).toBe(0);
+    expect(hook("Write", { file_path: join(VAULT, "grens.md"), content: "z".repeat(40960) }).code).toBe(0);
+    expect(hook("Write", { file_path: join(VAULT, "grens.md"), content: "z".repeat(40961) }).code).toBe(2);
+  });
+  test("bytes tellen, geen tekens", () => {
+    expect(hook("Write", { file_path: join(VAULT, "u.md"), content: "é".repeat(25000) }).code).toBe(2);
+  });
+  test("een Edit die een groot bestand laat groeien wordt geweigerd; krimpen of gelijk blijven mag", () => {
+    schrijf("groot.md", `kop\n${GROOT}`);
+    expect(hook("Edit", { file_path: join(VAULT, "groot.md"), old_string: "kop", new_string: "een langere kop" }).code).toBe(2);
+    expect(hook("Edit", { file_path: join(VAULT, "groot.md"), old_string: "kop", new_string: "kop2" }).code).toBe(2);
+    expect(hook("Edit", { file_path: join(VAULT, "groot.md"), old_string: "kop", new_string: "kop" }).code).toBe(0);
+    expect(hook("Edit", { file_path: join(VAULT, "groot.md"), old_string: "kop\n", new_string: "" }).code).toBe(0);
+    expect(hook("Write", { file_path: join(VAULT, "groot.md"), content: KLEIN }).code).toBe(0);
+  });
+  test("replace_all telt elk voorkomen; MultiEdit telt alle edits", () => {
+    schrijf("midden.md", "a ".repeat(15000));
+    expect(hook("Edit", { file_path: join(VAULT, "midden.md"), old_string: "a", new_string: "aa", replace_all: true }).code).toBe(2);
+    expect(hook("Edit", { file_path: join(VAULT, "midden.md"), old_string: "a", new_string: "aa" }).code).toBe(0);
+    expect(hook("MultiEdit", { file_path: join(VAULT, "midden.md"), edits: [{ old_string: "a a", new_string: "a" }, { old_string: "a", new_string: "aaaaaaaa", replace_all: true }] }).code).toBe(2);
+  });
+  test("een Edit op een ontbrekend bestand is geen eigen fout: alleen de nieuwe tekst telt", () => {
+    expect(hook("Edit", { file_path: join(VAULT, "bestaat-niet.md"), old_string: "a", new_string: KLEIN }).code).toBe(0);
+    expect(hook("Edit", { file_path: join(VAULT, "bestaat-niet.md"), old_string: "a", new_string: GROOT }).code).toBe(2);
+  });
+  test("uitzonderingen: lead.md in de root, archief/ en emb-gemma/", () => {
+    expect(hook("Write", { file_path: join(VAULT, "lead.md"), content: GROOT }).code).toBe(0);
+    expect(hook("Write", { file_path: join(VAULT, "archief", "oud.md"), content: GROOT }).code).toBe(0);
+    expect(hook("Write", { file_path: join(VAULT, "emb-gemma", "x.md"), content: GROOT }).code).toBe(0);
+    // lead.md in een submap is geen uitzondering
+    expect(hook("Write", { file_path: join(VAULT, "spoor", "lead.md"), content: GROOT }).code).toBe(2);
+    // een pad met .. dat uit archief/ naar de root loopt telt als de root
+    expect(hook("Write", { file_path: join(VAULT, "archief", "..", "groot2.md"), content: GROOT }).code).toBe(2);
+  });
+  test("een .md buiten de vault en een niet-.md in de vault mogen", () => {
+    expect(hook("Write", { file_path: join(HOME, "elders", "plan.md"), content: GROOT }).code).toBe(0);
+    expect(hook("Write", { file_path: join(HOME, "vault-b-status-kopie", "plan.md"), content: GROOT }).code).toBe(0);
+    expect(hook("Write", { file_path: join(VAULT, "data.json"), content: GROOT }).code).toBe(0);
+  });
+  test("LAB_VAULT_MAX_KB verlegt de limiet", () => {
+    expect(hook("Write", { file_path: join(VAULT, "a.md"), content: GROOT }, { LAB_VAULT_MAX_KB: "100" }).code).toBe(0);
+    expect(hook("Write", { file_path: join(VAULT, "a.md"), content: KLEIN }, { LAB_VAULT_MAX_KB: "0.5" }).code).toBe(2);
   });
 });
