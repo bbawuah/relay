@@ -11,6 +11,8 @@
 #     expliciete GET), `gh api graphql` met een mutation, en `gh alias set|import`
 #   - een rauwe `git push` met force, verwijderen, naar main, --no-verify of POORT_OVERSLAAN
 #     (alleen via scripts/lead/push.sh), en een rauwe `ssh jump … oc` (alleen via scripts/lead/lab-lees.sh)
+#   - schrijvende commando's (git checkout/fetch/commit, pre-commit, formatters, bun install) van een agent in de
+#     gedeelde hoofdcheckout (geen linked worktree); de lead en een eigen worktree mogen wel
 #   - recursief zoeken (grep -r, rg, git grep) zonder uitsluiting van config.properties, config.json en .env*
 #   - elke aanroep van merge.sh (elk pad) vanuit een subagent of fork (`agent_id`/`agent_type` in de invoer)
 # Faalt dicht (17 okt 2026): bij een eigen fout (invoer geen JSON of van de verkeerde vorm, een
@@ -579,6 +581,144 @@ if tool == "Bash":
         for i, x in enumerate(w):
             if i not in git_grep and os.path.basename(x) in ZOEK:
                 zoek_controle("rg" if os.path.basename(x) == "rg" else "grep", ruw, w, i, gepijpt, hier_zoek)
+    # Geen schrijvende commando's in de gedeelde hoofdcheckout (19 okt 2026, twee keer op één dag: een
+    # reviewer deed daar een `git fetch`, daarna draaide een sessie `pre-commit run --all-files` en wijzigden
+    # de fixer-hooks 43 getrackte bestanden). Geldt voor een sessie met LAB_AGENT_ROL gezet en ongelijk aan
+    # `lead`, en voor elke subagent of fork (`agent_id`/`agent_type`). Werkmap = de `cwd` uit de invoer, een
+    # `cd`/`pushd` in het commando en `git -C <pad>`. Hoofdcheckout = een map waarvan `git rev-parse
+    # --git-dir` gelijk is aan `--git-common-dir` (dus geen linked worktree) en waarvan de werkboom de
+    # hoofdcheckout van Brian is (LAB_HOOFDCHECKOUT, standaard ~/Desktop/LAB-BAWUAH/lab-bawuah; een eigen
+    # clone heeft dezelfde vorm en mag wel). Schrijvend: zie hieronder.
+    # Een werkmap die niet te bepalen is (`cd $VAR`, `cd -`) wordt toegestaan. Niet gedekt: schrijven via
+    # redirects of andere programma's (sed -i, mv, rm, een script dat intern schrijft), `git --git-dir`
+    # en `--work-tree`.
+    rol = os.environ.get("LAB_AGENT_ROL", "")
+    if (rol and rol != "lead") or is_subagent:
+        import subprocess
+        GIT_SCHRIJF = {"checkout", "switch", "reset", "restore", "clean", "fetch", "pull", "push", "commit", "merge",
+                       "rebase", "cherry-pick", "am", "apply", "revert", "add", "rm", "mv"}
+        PAKKET = ("bun", "npm", "pnpm", "yarn")
+        PAKKET_INSTALL = ("install", "i", "ci", "add", "remove", "rm", "update", "upgrade", "link", "unlink")
+        SCRIPT_SCHRIJF = re.compile(r"(format|fmt|fix)([:_-].*)?")
+        # De gedeelde hoofdcheckout: git-dir gelijk aan git-common-dir (geen linked worktree) én de werkboom is
+        # een van de paden in LAB_HOOFDCHECKOUT (dubbele punt als scheiding; standaard de checkout van Brian).
+        # Zonder dat tweede kenmerk zou ook een eigen clone (zelfde vorm) als hoofdcheckout tellen.
+        hoofd_paden = {os.path.realpath(os.path.expanduser(x)) for x in
+                       os.environ.get("LAB_HOOFDCHECKOUT", "~/Desktop/LAB-BAWUAH/lab-bawuah").split(":") if x}
+        hoofd_cache = {}
+        def is_hoofd(pad):
+            while pad and not os.path.isdir(pad) and os.path.dirname(pad) != pad:
+                pad = os.path.dirname(pad)
+            if pad in hoofd_cache:
+                return hoofd_cache[pad]
+            uit = False
+            try:
+                env = {k: v for k, v in os.environ.items() if not k.startswith("GIT_")}
+                r = subprocess.run(["git", "-C", pad, "rev-parse", "--git-dir", "--git-common-dir", "--show-toplevel"], capture_output=True, text=True, timeout=5, env=env)
+                regels = r.stdout.split("\n")
+                if r.returncode == 0 and len(regels) >= 3 and regels[0] and regels[1] and regels[2]:
+                    gd, cd, top = (os.path.realpath(os.path.join(pad, x)) for x in regels[:3])
+                    uit = gd == cd and top in hoofd_paden
+            except Exception:
+                uit = False
+            hoofd_cache[pad] = uit
+            return uit
+        def heeft(a, *vlaggen):
+            return any(x in vlaggen or any(x.startswith(v + "=") for v in vlaggen if v.startswith("--")) for x in a)
+        def tool_schrijft(w):
+            # geeft de naam van het schrijvende commando, of None
+            for _ in range(4):
+                while w and (re.match(r"^[A-Za-z_][A-Za-z0-9_]*=", w[0]) or w[0] in ("exec", "sudo", "env", "nohup", "time", "command", "nice", "xargs", "timeout")):
+                    w = w[1:]
+                if w and re.fullmatch(r"(/\S*/)?(ba|z)?sh", w[0]) and "-c" in w:
+                    w = w[w.index("-c") + 1:]
+                    continue
+                if not w:
+                    return None
+                n = os.path.basename(w[0])
+                r = [x for x in w[1:]]
+                if n in ("bunx", "npx", "pnpx", "uvx"):
+                    while r and r[0].startswith("-"):
+                        r = r[1:]
+                    w = r
+                elif n in ("bun", "pnpm", "npm", "yarn") and r[:1] in (["x"], ["dlx"], ["exec"]):
+                    w = r[1:]
+                elif n in ("uv", "poetry", "pipx") and r[:1] == ["run"]:
+                    w = r[1:]
+                elif re.fullmatch(r"python3?(\.\d+)?", n) and r[:1] == ["-m"]:
+                    w = r[1:]
+                else:
+                    break
+            if not w:
+                return None
+            n, a = os.path.basename(w[0]), w[1:]
+            if n == "pre-commit":
+                return None if heeft(a, "-h", "--help", "--version") else "pre-commit"
+            if n in PAKKET:
+                if a[:1] and a[0] in PAKKET_INSTALL:
+                    return f"{n} {a[0]}"
+                script = a[1] if a[:1] == ["run"] and len(a) > 1 else (a[0] if a else "")
+                rest = a[2:] if a[:1] == ["run"] else a[1:]
+                if SCRIPT_SCHRIJF.fullmatch(script) and not heeft(rest, "--check", "-c", "--list-different"):
+                    return f"{n} run {script}"
+                if script.startswith("lint") and heeft(rest, "--fix"):
+                    return f"{n} run {script} --fix"
+                return None
+            if n == "prettier":
+                return "prettier --write" if heeft(a, "--write", "-w") else None
+            if n in ("oxfmt", "black", "isort"):
+                return None if heeft(a, "--check", "--list-different", "--diff", "--check-only", "-c", "-l", "--help", "-h", "--version") else n
+            if n == "biome":
+                return "biome --write" if heeft(a, "--write", "--fix", "--apply", "--apply-unsafe") else None
+            if n == "ruff":
+                if a[:1] == ["format"]:
+                    return None if heeft(a[1:], "--check", "--diff", "--help", "-h") else "ruff format"
+                return "ruff --fix" if heeft(a, "--fix", "--unsafe-fixes") else None
+            if n == "eslint":
+                return "eslint --fix" if heeft(a, "--fix", "--fix-type") else None
+            return None
+        def git_schrijft(sub, args):
+            if sub in GIT_SCHRIJF:
+                return True
+            if sub == "stash":
+                return not args or args[0] not in ("list", "show")
+            if sub == "worktree":
+                return bool(args) and args[0] in ("add", "remove", "move", "prune", "lock", "unlock", "repair")
+            if sub == "branch":
+                return any(re.fullmatch(r"-[A-Za-z]*[dDmM][A-Za-z]*|--delete|--move", x) for x in args)
+            return False
+        def los(p, hier_):
+            # None = niet te bepalen (variabele, backtick, `-`): toestaan
+            if hier_ is None or "$" in p or "`" in p or p == "-":
+                return None
+            return os.path.join(hier_, os.path.expanduser(p))
+        hier_h = basis
+        for seg in re.split(r"&&|\|\||[;&|()\n`]|\$\(", cz):
+            w = woorden(seg)
+            e = eerste(w)
+            if e in ("cd", "pushd"):
+                rest = [x for x in w[w.index(e) + 1:] if not x.startswith("-")]
+                hier_h = los(rest[0], hier_h) if rest else os.path.expanduser("~")
+                continue
+            if e in TEKST or e == "" or hier_h is None:
+                continue
+            gevonden = None
+            for glob, sub, args in git_aanroepen(w):
+                map_ = hier_h
+                for o, v in glob:
+                    if o == "-C":
+                        map_ = los(v, map_)
+                if map_ is not None and git_schrijft(sub, args) and is_hoofd(map_):
+                    gevonden = (f"git {sub}", map_)
+                    break
+            if not gevonden:
+                naam = tool_schrijft(w)
+                if naam and is_hoofd(hier_h):
+                    gevonden = (naam, hier_h)
+            if gevonden:
+                weiger(f"`{gevonden[0]}` schrijft in de gedeelde hoofdcheckout ({gevonden[1]}); agents werken daar nooit. "
+                       "Werk in je eigen worktree of clone: ga daarheen met `cd <eigen pad>`, gebruik `git -C <eigen pad> …` of een absoluut pad. "
+                       "Lezen (git status/log/show/diff, cat) mag hier wel.")
     nu = datetime.datetime.now().time()
     if datetime.time(5, 0) <= nu < datetime.time(7, 15):
         if re.search(r"bun run (poort|bekijk|test:tmux|test:e2e)|playwright", c):
