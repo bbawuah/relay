@@ -1,6 +1,17 @@
 # Lead-scripts
 
-Drie scripts voor de lead: een sessie starten met een opdrachtbestand, een PR mergen zonder de voorwaarden te vergeten, en een merge-wachtrij die meerdere goedgekeurde PR's als één integratie-PR door de poort haalt. Alle kennen `--droog` (laat zien wat er zou gebeuren, doet niets).
+Scripts voor de lead: een sessie starten met een opdrachtbestand, een PR mergen zonder de voorwaarden te vergeten, een merge-wachtrij die meerdere goedgekeurde PR's als één integratie-PR door de poort haalt, een tak pushen of een gemergede remote tak verwijderen (`push.sh`), en het lab alleen lezen (`lab-lees.sh`). Alle kennen `--droog` (laat zien wat er zou gebeuren, doet niets).
+
+## Vangnet, geen grens
+
+Deze scripts en `hooks/grenzen.sh` vangen vergissingen van agents op; ze zijn geen grens. Een agent die het bewust wil, komt er langs: hij draait onder dezelfde macOS-gebruiker als Brian, kan bestanden in de repo en zijn eigen omgeving wijzigen en heeft dezelfde `gh`-, git- en ssh-toegang. Wat de grens echt maakt, is architectuur (nog niet gebouwd):
+
+- **een eigen macOS-gebruiker voor agents, of managed settings** van Claude Code die een agent niet kan wijzigen (nu kan een agent met schrijfrecht op zijn eigen home de hook en de allow-regels in principe aanpassen);
+- **een verplichte review in de ruleset** (of een CODEOWNERS met de lead): nu vraagt de ruleset 0 reviews, dus wie `gh` heeft, kan mergen zodra de poort groen is;
+- **een read-only lab-account** met een smalle rol aan de lab-kant (geen secrets, geen configmaps), in plaats van het eigen account achter `ssh jump`;
+- **`ForceCommand` op de jump** voor dat account, zodat daar alleen de alleen-lezen `oc`-aanroepen kunnen draaien, wat er aan de mini-kant ook gebeurt.
+
+Tot die tijd krijgt alleen `merge.sh` een allow-regel, op de root-kopie `/usr/local/lib/lab-lead/merge.sh` (zie `installeer-grens.ts`), niet op de repo. `push.sh` en `lab-lees.sh` krijgen geen allow-regel: ze zijn de aanbevolen route (de hook verwijst ernaar), maar elke aanroep gaat nog langs de veiligheidscheck van Claude Code.
 
 ## spawn.sh
 
@@ -43,6 +54,7 @@ scripts/lead/merge.sh 71           # mergen
 
 Weigert met exit 1 en een duidelijke reden als:
 
+- `LAB_AGENT_ROL` niet `lead` is ("merge: geweigerd: alleen de lead merget (LAB_AGENT_ROL=lead)"): een gespawnde agent kan zelf een akkoord-comment posten, maar niet mergen. `--droog` mag zonder die rol. De lead krijgt de rol door te starten met `lead <onderwerp>` (zie "Startregel van de lead"); een prefix `LAB_AGENT_ROL=lead scripts/lead/merge.sh …` valt buiten de allow-regel en gaat dus langs de veiligheidscheck;
 - de PR niet OPEN is;
 - de PR uit een fork komt (`isCrossRepository`) of de tak `main`/`master` is;
 - er geen PR-comment is die begint met "Lead-review: akkoord <sha7>", met de eerste 7 tekens van de huidige head. Een akkoord van vóór een nieuwe push telt dus niet ("push na akkoord"). Voorbeeld: `Lead-review: akkoord b80ed00`;
@@ -50,7 +62,7 @@ Weigert met exit 1 en een duidelijke reden als:
 - de verplichte check `poort` ontbreekt of niet groen is (de nieuwste run op starttijd telt; andere checks niet);
 - `mergeable` niet `MERGEABLE` is, of de tak achterloopt op main (`BEHIND`, de ruleset is strict), of `mergeStateStatus` iets anders is dan CLEAN of UNSTABLE (allowlist). Bij UNSTABLE volgt een waarschuwing.
 
-Zijn de voorwaarden in orde, dan: de merge met `--merge --match-head-commit <volledige head-sha>` (de head die net tegen het akkoord is getoetst; verschuift de head tussen controle en merge, dan weigert GitHub), daarna controleren dat `state` `MERGED` is, en pas dan `git push origin --delete <tak>`. Staat de PR niet op MERGED, dan blijft de remote tak staan en eindigt het script met exit 1.
+Zijn de voorwaarden in orde, dan: de merge met `--merge --match-head-commit <volledige head-sha>` (de head die net tegen het akkoord is getoetst; verschuift de head tussen controle en merge, dan weigert GitHub), daarna controleren dat `state` `MERGED` is, en pas dan de remote tak weg via de API (`gh api -X DELETE repos/<GH_REPO>/git/refs/heads/<tak>`, dus niet via git en de pre-push-hook). Staat de PR niet op MERGED, dan blijft de remote tak staan en eindigt het script met exit 1.
 
 ### Bezitscheck (optioneel)
 
@@ -60,7 +72,28 @@ scripts/lead/merge.sh 71 --droog --contract ~/vault-b-status/werkwijze-b/CONTRAC
 
 Leest de regel `Bezit: …` in de sectie `## <spoor> ·` van het contract, haalt de paden uit de stukken tussen backticks (een stuk telt als pad als het een `/` of `.` bevat; `scripts/lead/*.test.ts` is een patroon, `docs/` een map, een kaal `merge.sh` telt als bestandsnaam in welke map dan ook) en vergelijkt ze met de bestanden van de PR. Bestanden buiten het Bezit komen als waarschuwing op stderr; het mergen gaat door, de lead beslist. Zonder `--contract` en `--spoor` doet merge.sh niets extra's; één van de twee alleen, een onbekend spoor of een contract zonder paden in de Bezit-regel is een weigering.
 
-Het script gebruikt `gh` en `jq` en pusht vanuit de huidige git-map; draai het vanuit een clone van de repo.
+Het script gebruikt `gh` en `jq` en pusht vanuit de huidige git-map; draai het vanuit een clone van de repo. Elke `gh`-aanroep krijgt `--repo` uit `lead.conf` (`GH_REPO=bbawuah/LAB-BAWUAH`), dus de werkmap kiest de repo niet. `lead.conf` wordt niet ge-sourcet: merge.sh leest alleen de regels `CI_WORKFLOW=` en `GH_REPO=` met een vaste vorm (een regel met code erin wordt nooit uitgevoerd).
+
+merge.sh, push.sh en lab-lees.sh draaien met `#!/bin/bash -p` (geen `BASH_ENV`, die ook nog wordt ge-unset). Als root-kopie in `/usr/local/lib/lab-lead/` zetten ze een vaste `PATH=/usr/bin:/bin:/opt/homebrew/bin`, en merge.sh negeert daar `LAB_MERGE_CHECK` en `LAB_MERGE_CI_WORKFLOW` (die zijn er voor de tests). In de repo blijft `PATH` staan, zodat de tests een nep-`gh` vooraan kunnen zetten.
+
+## installeer-grens.ts
+
+Zodra er een allow-regel op `merge.sh` staat, is dat script het vangnet voor mergen. In de repo of een worktree kan een agent het aanpassen; daarom wijst de allow-regel naar de kopie in `/usr/local/lib/lab-lead/` (root:wheel), niet naar de repo. Alleen `merge.sh` en `lead.conf` (die merge.sh naast zichzelf leest) worden geïnstalleerd; `push.sh` en `lab-lees.sh` blijven in de repo zolang ze geen allow-regel hebben.
+
+```sh
+bun scripts/lead/installeer-grens.ts               # print de sudo-commando's; voert zelf niets uit
+bun scripts/lead/installeer-grens.ts --controleer  # vergelijk de kopieën met origin/main
+```
+
+De verwachte inhoud komt uit `origin/main`, niet uit de werkkopie: het script haalt `main` vers op (`git fetch origin`) en leest de blobs met `git cat-file -p origin/main:scripts/lead/<bestand>`. Zonder opties print het de regels die Brian zelf draait: `sudo install -d -o root -g wheel -m 755 /usr/local/lib/lab-lead` en `sudo install -o root -g wheel -m 755|644 <bron> <doel>` voor `merge.sh` (755) en `lead.conf` (644), plus `shasum -a 256 /usr/local/lib/lab-lead/*` met de verwachte sha256 per bestand. Wijkt de werkkopie af van `origin/main`, dan print het niets en weigert het (exit 1). Het voert nooit sudo uit.
+
+`--controleer` eist:
+
+- het doel is zijn eigen echte pad (`realpath(doel) === doel`, geen symlink in het pad), en elke voorouder tot `/` is van root, geen symlink en niet schrijfbaar voor groep of anderen;
+- de doelmap en elk bestand: aanwezig, geen symlink, eigenaar root, niet schrijfbaar voor groep of anderen, geen ACL (`ls -led`), de juiste modus;
+- per bestand dezelfde sha256 als de blob in `origin/main`.
+
+Exit 1 met een FOUT-regel per probleem. `--doel`, `--eigenaar <uid>`, `--repo <map>` en `--zonder-fetch` zijn er voor de tests (`installeer-grens.test.ts`: een wegwerp-repo met `refs/remotes/origin/main`, een tijdelijke doelmap met de eigen uid en een nep-`sudo` die nooit wordt aangeroepen). Na elke merge die `merge.sh` of `lead.conf` wijzigt: opnieuw installeren en `--controleer`.
 
 ## wachtrij.ts
 
@@ -88,6 +121,57 @@ Stappen:
 | `--ci-wacht <s>` | Seconden (standaard 30, of env `LAB_WACHTRIJ_CI_WACHT`) die na het openen van de integratie-PR gewacht wordt op de eerste CI-CheckRun (`__typename` CheckRun, `workflowName` CI; Vercel-entries tellen niet). Is er dan nog geen, dan staat in de uitvoer `WAARSCHUWING: geen CI-run voor <sha7>; sluit en heropen de PR of push opnieuw`. |
 | `--map <pad>` | Pad van de worktree. |
 | `--basis <ref>` | Basis van de wachtrij en van de poort (`--base`), standaard `origin/main`; de body noemt deze basis. De integratie-PR zelf gaat altijd naar `main`. |
+
+## push.sh
+
+```sh
+scripts/lead/push.sh                         # huidige tak naar origin/<tak>, met upstream
+scripts/lead/push.sh --droog                 # alleen tonen
+scripts/lead/push.sh --verwijder lead/x      # remote tak weg, alleen als hij in origin/main zit
+```
+
+Pusht met een expliciete refspec (`git push -u origin refs/heads/<tak>:refs/heads/<tak>`), dus `push.default`, `remote.origin.push` of een upstream die naar `origin/main` wijst (zoals bij een verse agenttak vanaf `origin/main`) spelen geen rol. Gewone `git`; `gh` alleen bij `--verwijder` op een GitHub-remote. In een andere repo met het volledige pad naar deze checkout (push.sh wordt niet geïnstalleerd, zie "Vangnet, geen grens"), maar alleen als die repo een uitvoerbare `.githooks/pre-push` heeft (zie hieronder); de GitLab-repo's hebben die nu niet.
+
+Vóór elke push: `GIT_CONFIG_PARAMETERS`, `GIT_CONFIG_COUNT`, `GIT_CONFIG_KEY_*` en `GIT_CONFIG_VALUE_*` gaan uit de omgeving; de push draait met `git -c core.hooksPath=<toplevel>/.githooks`, zodat de poort-hook van de repo zelf altijd draait (ook als `core.hooksPath` in de config elders naar wijst), en weigert zonder uitvoerbare `<toplevel>/.githooks/pre-push`. De push-URL van origin moet gelijk zijn aan de fetch-URL, en er mag geen `url.*.pushInsteadOf` in de config staan.
+
+Weigert met exit 1 en een reden:
+
+- tak `main` of `master`, of detached HEAD;
+- elke force-vorm: `-f`, `--force`, `--force-with-lease`, `--force-if-includes`, `--mirror`, samengestelde korte opties met `f` (`-uf`) en een refspec met `+`;
+- `--no-verify`, `--delete`/`-d`, een refspec of elke andere optie;
+- een andere remote dan `origin` (alleen `origin` mag als argument);
+- een tak die (ook) in een andere worktree is uitgecheckt dan de huidige (`git worktree list`).
+
+`POORT_OVERSLAAN` wordt nooit doorgegeven (`env -u`): de pre-push-hook draait gewoon.
+
+`--verwijder <tak>`: alleen een exacte taknaam (`git check-ref-format`, geen `*`, `?`, `[`, niet met `-`), nooit `main`/`master`. Het script haalt `origin/main` en `origin/<tak>` vers op, eist `git merge-base --is-ancestor origin/<tak> origin/main` en verwijdert met `--force-with-lease=refs/heads/<tak>:<sha>` als slot: is de tak na de controle nog verschoven, dan weigert git. Is `remote.origin.url` een GitHub-URL en is `gh` er, dan eist het script ook een gemergede PR van die tak (`gh pr list --repo <eigenaar/repo> --head <tak> --state merged`); faalt `gh`, dan weigert het. Ook bij verwijderen draait de pre-push-hook.
+
+## lab-lees.sh
+
+```sh
+scripts/lead/lab-lees.sh get pods -n <namespace> -o wide
+scripts/lead/lab-lees.sh logs deploy/web --since=1h
+scripts/lead/lab-lees.sh auth can-i list pods -n <namespace>
+scripts/lead/lab-lees.sh describe pod/web-1 --droog
+```
+
+Alleen-lezen op het lab via `ssh jump`: draait `ssh -T jump oc <args>` met een vaste argv. Toegestaan zijn `get`, `describe`, `logs`, `events`, `top` en `auth can-i`; elk ander subcommando weigert. Altijd geweigerd:
+
+- elk argument met `secret` erin (hoofdletterongevoelig: `secrets`, `secret/x`, `pods,Secrets`, ook bij `auth can-i`), dus ook `-o yaml|json` op secrets;
+- de woorden `exec`, `rsh`, `port-forward`, `cp`, `debug`, `edit`, `apply`, `delete`, `patch`, `scale`, `rollout` (en `attach`, `run`, `create`, `replace`, `label`, `annotate`, `set`, `expose`, `proxy`) als argument;
+- `--raw`; opties die identiteit of doel wijzigen (`--token`, `--as*`, `--kubeconfig`, `--server`/`-s`, `--context`, `--cluster`, `--user`, client-certificaten, `--insecure-skip-tls-verify`); `-f`/`--filename` en `-k`/`--kustomize` (behalve `logs -f`, volgen);
+- elk argument met een teken buiten `[A-Za-z0-9._:/=,@-]`. ssh plakt de argv aan de jump-kant aan elkaar voor de shell daar; zonder spatie, quote, `; | & $ \` \ * ? [ ] { } ~ ! < >` of regeleinde blijft elk argument één woord zonder expansie. 
+- `-o`/`--output` (ook `-o=…`, `-oyaml`, `--output=…`) alleen `wide`, `name`, `yaml` of `json`; geen jsonpath, custom-columns of templates. `-o yaml|json` alleen bij `get` en alleen op `pods`, `deployments`, `services` en `endpoints` (met hun korte namen, als soort of `soort/naam`); niet op `configmap`/`cm`, `route`, `oauthclient`, `bc`, `dc` of `all` (`get all -o wide` mag wel). Bij `-o yaml|json` moet een onbekende lange optie de vorm `--optie=waarde` hebben, zodat zeker is welk woord de resource is;
+- `--template*`, elk argument met `-file` erin, `--cache-dir*`, `--log*` (ook `--loglevel`, `--logtostderr`), `-v`, `--v`, `--v=…`, `--vmodule*`;
+- samengestelde korte opties (`-Ao`, `-lapp=x`): schrijf korte opties los (`-n <ns>`, `-l app=x`), behalve de `-o<vorm>`-vormen.
+
+Secrets via configmaps, routes of env van pods zijn hiermee niet dicht (`describe configmap` toont data): dat vraagt een read-only account met een smalle rol aan de lab-kant.
+
+Stdout en stderr gaan elk door het masker `sed -E "s/eag_[A-Za-z0-9]+/eag_<…>/g"`; de exitcode van ssh blijft. De tests (`lab-lees.test.ts`) gebruiken een nep-`ssh` vooraan op `PATH`; het lab wordt nooit aangeroepen.
+
+## .githooks/pre-push
+
+Draait `bun run check` vóór elke push. `POORT_OVERSLAAN=1` slaat de poort over, maar alleen voor Brian: is `LAB_AGENT_ROL` gezet (spawn.sh zet die voor elke sessie), dan weigert de hook met "Alleen Brian mag de poort overslaan". `--no-verify` slaat de hook helemaal over; dat vangt `hooks/grenzen.sh` (een rauwe `git push --no-verify` wordt geweigerd). Getest in `push.test.ts` met een nep-`bun`.
 
 ## Hooks en `lead status`
 
@@ -180,4 +264,14 @@ De tests zetten een nep-`gh` en nep-`tmux` vooraan op `PATH` en gebruiken een we
 
 ## hooks/grenzen.sh
 
-De bron van de PreToolUse-hook `grenzen.sh` (sleutels, uitrolscripts, pkill/killall, stiltevenster, rauwe merge via gh) staat nu in de repo, met tests in `hooks/grenzen.test.ts`. De strenge oude check blijft op het hele commando draaien. Eén bewerking gaat eraan vooraf: de waarde van `-m`/`--message` bij `git commit`/`git tag`, `--title`/`--body` bij `gh pr create|edit|comment` en `gh issue`, en `--title`/`--description`/`--message` bij `glab mr create|update|note` wordt leeggemaakt, maar alleen als het hele commando geen van de tekens ``$ ` \ # < > { } ! * ? [`` bevat (dan zijn de quote-regels van bash, zsh en sh gelijk) en de waarde één quote-token is zonder het andere quoteteken erin. Daardoor kan de hook niets doorlaten wat de oude weigerde, behalve tekst in die berichtargumenten (de eigenschapstest bewaakt dat tegen `hooks/fixtures/grenzen-oud.sh`). Brian installeert de hook met `cp scripts/lead/hooks/grenzen.sh ~/.claude/hooks/grenzen.sh`; agents raken `~/.claude` niet aan.
+De bron van de PreToolUse-hook `grenzen.sh` (sleutels, uitrolscripts, pkill/killall, stiltevenster, rauwe merge via gh, rauwe push en rauw lab) staat nu in de repo, met tests in `hooks/grenzen.test.ts`. De strenge oude check blijft op het hele commando draaien. Eén bewerking gaat eraan vooraf: de waarde van `-m`/`--message` bij `git commit`/`git tag`, `--title`/`--body` bij `gh pr create|edit|comment` en `gh issue`, en `--title`/`--description`/`--message` bij `glab mr create|update|note` wordt leeggemaakt, maar alleen als het hele commando geen van de tekens ``$ ` \ # < > { } ! * ? [`` bevat (dan zijn de quote-regels van bash, zsh en sh gelijk) en de waarde één quote-token is zonder het andere quoteteken erin. Daardoor kan de hook niets doorlaten wat de oude weigerde, behalve tekst in die berichtargumenten (de eigenschapstest bewaakt dat tegen `hooks/fixtures/grenzen-oud.sh`). Brian installeert de hook met `cp scripts/lead/hooks/grenzen.sh ~/.claude/hooks/grenzen.sh`; agents raken `~/.claude` niet aan.
+
+**Rauwe push en rauw lab (17 okt 2026).** Een `git push` met een force-vorm (`-f`, `--force*`, `--mirror`, `-uf`, `+refspec`), met verwijderen (`--delete`, `-d`, `--prune`, `:tak`), naar main (`main`, `HEAD:main`, `x:refs/heads/main`, `--all`), met `--no-verify` of met `POORT_OVERSLAAN` ergens in het commando wordt geweigerd met de verwijzing naar `scripts/lead/push.sh`; een `ssh` naar `jump` (ook `user@jump`, `-J jump`) met `oc` in het commando met de verwijzing naar `scripts/lead/lab-lees.sh`. Streng zoals de rest: segmenten en woorden worden gesplitst zonder op quotes te letten, dus `bash -c '…'`, `ssh host '…'`, `nice …` en `git -C x push` tellen ook. Alleen een segment dat met `echo`, `printf`, `grep` of `rg` begint, telt niet; berichtargumenten zijn al leeggemaakt. Een gewone `git push` of `git push -u origin <tak>` blijft toegestaan.
+
+**Herstelronde #153.** Daarnaast weigert de hook: afgekorte lange push-opties (git neemt een unieke prefix aan: `--forc`, `--del`, `--no-veri`, `--al`; elk `--`-woord van minstens twee letters dat een prefix is van een verboden optie), `HEAD:Main` en `MASTER` hoofdletterongevoelig, `git push`/`git push origin`/`git push origin HEAD` als de huidige tak (in `cwd` uit de hookinvoer, na `cd x &&` of `git -C x`) `main` of `master` is, `git -c` met `alias.*` of `core.hooksPath`, `--config-env` bij een push, `GIT_CONFIG` in een push-commando, `git config alias.*` en `git config core.hooksPath`, en een schrijvende `gh api` (zie hieronder). Een subagent of fork (`agent_id` of `agent_type` in de hookinvoer) draait `merge.sh` nooit, ongeacht het pad en ongeacht `LAB_AGENT_ROL` (die erft mee via env); lezen (`cat`, `git diff`, `grep`) mag wel.
+
+**Herstelronde #153b.** De `gh`-toets werkt op de woorden (quotes weg) en slaat gh-vlaggen met een waarde (`-R o/r`, `--repo`, `--hostname`) over tot het subcommando. Geweigerd: `gh pr merge` (ook `gh -R o/r pr merge`, `gh "pr" 'merge'`) zodra de merge-toets aan staat; `gh alias set|import`; een `gh api` die schrijft: een methode anders dan GET (`-X`, `-XPUT`, `--method`, `--method=`), of `-f`/`-F`/`--field`/`--raw-field`/`--input` zonder expliciete `-X GET`/`--method GET` (gh maakt er dan een POST van); `gh api graphql` met `mutation` erin, of met een query uit een bestand (`--input`, `=@`). Lezen mag: `gh api repos/o/r/pulls/1/merge` en `.../git/refs/...` met GET, en een graphql-`query`.
+
+**Here-doc-berichten.** `gh pr create|edit|comment --body "$(cat <<'EOF' … EOF\n)"` en `git commit -m "$(cat <<EOF … EOF\n)"` worden vóór de toets `--body ''`, zodat PR-teksten geen valse weigering geven. Alleen als alles ervóór op de regel eenduidig is (het commando aan het begin, eventueel na één `cd <map> && `, of `git -C <map> commit`; verder gewone woorden en eenvoudige quotes), de tekst geen eerdere regel met de eindmarkering heeft (anders stopt bash daar en is de rest een commando) en bij een ongequote marker geen `$`, backtick of `\` bevat. Wat na de here-doc komt, wordt gewoon getoetst; bij twijfel blijft het commando streng.
+
+**Faalt dicht.** Een eigen fout van de hook (geen geldige JSON, invoer van de verkeerde vorm zoals `tool_input` als string, of een python-status anders dan 0 of 2) geeft exit 2 met één melding ("Geweigerd door grenzen.sh: eigen fout (…); faalt dicht"): weigeren. 0 blijft toestaan. De hookinvoer gaat via stdin naar python, niet via argv, dus ook een commando van honderden kB wordt getoetst (geen ARG_MAX).

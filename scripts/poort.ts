@@ -8,7 +8,7 @@
 //
 //   sherif      dependency-regels over alle package.json's      (hele repo)
 //   boundaries  turbo boundaries: imports zonder dependency      (hele repo)
-//   ds-regels   designsysteem-regels R1–R7 (scripts/ds-regels.ts) (alle apps)
+//   ds-regels   designsysteem-regels R1–R9 (scripts/ds-regels.ts) (alle apps)
 //   werk-commentaar  TODO/HACK/FIXME/XXX/workaround alleen als TODO(JJJJ-MM-DD): reden; verlopen = FOUT
 //   echte-klok  unittests wachten niet op de echte klok: Bun.sleep/setTimeout ≥ 10 ms = FOUT (scripts/echte-klok.ts)
 //   git-scrub   een testbestand dat git aanroept gebruikt een env zonder GIT_* (schoneEnv()); anders FOUT (scripts/git-scrub.ts)
@@ -60,6 +60,7 @@ import { ongebruikt, sleutels as dsSleutels, zoek as dsZoek } from "./ds-regels"
 import { beschrijf as ekBeschrijf, nieuweTreffers as ekNieuw, OPLOSSING as EK_OPLOSSING, sleutel as ekSleutel, zoek as ekZoek } from "./echte-klok";
 import { beoordeelBare, beschrijf as gsBeschrijf, nieuweTreffers as gsNieuw, OPLOSSING as GS_OPLOSSING, sleutel as gsSleutel, zoek as gsZoek } from "./git-scrub";
 import { leesPr } from "./bewijs-pr";
+import { inStiltevenster } from "./stiltevenster";
 import { leesContext as roLees, stap as roStap } from "./rood-op-basis";
 import { analyseer as tiAnalyseer } from "./test-integriteit";
 import { JUISTE_VORM, sleutel as wcSleutel, zoek as wcZoek } from "./werk-commentaar";
@@ -147,11 +148,8 @@ function duur(ms: number): string {
   return ms < 60_000 ? `${(ms / 1000).toFixed(1)}s` : `${Math.floor(ms / 60_000)}m${Math.round((ms % 60_000) / 1000)}s`;
 }
 
-/** Stiltevenster 05:00–07:15 lokale tijd (zelfde venster als de uitrolscripts). */
-export function inStiltevenster(nu: Date = new Date()): boolean {
-  const m = nu.getHours() * 60 + nu.getMinutes();
-  return m >= 5 * 60 && m < 7 * 60 + 15;
-}
+// Stiltevenster 05:00–07:15: één definitie in ./stiltevenster.
+export { inStiltevenster };
 
 // ── Baseline ────────────────────────────────────────────────────────────────
 
@@ -615,6 +613,18 @@ export const KANARIES: Kanarie[] = [
         "apps/template/src/kanarie-ds.mdx",
         "Zo niet: `rounded-3xl` of `<Card>` als sectie.\n\n```tsx\n<Card className=\"rounded-3xl\" />\n```\n\n<Card>kanarie</Card>\n",
       ),
+  },
+  {
+    stap: "ds-regels",
+    wat: "een Tailwind-paletkleur met variant in apps/template (R8)",
+    verwacht: /FOUT ds-regels .*1 nieuw/,
+    zet: (m) => schrijf(m, "apps/template/src/kanarie-ds-palet.tsx", 'export const Kanarie = () => <p className="hover:text-red-500/80">kanarie</p>;\n'),
+  },
+  {
+    stap: "ds-regels",
+    wat: "een hex-kleur in de opmaak van apps/template (R9)",
+    verwacht: /FOUT ds-regels .*1 nieuw/,
+    zet: (m) => schrijf(m, "apps/template/src/kanarie-ds-hex.tsx", 'export const Kanarie = () => <p style={{ color: "#1B2A4E" }}>kanarie</p>;\n'),
   },
   {
     stap: "ds-regels",

@@ -5,6 +5,7 @@
 // integratie-PR. Zie scripts/lead/README.md.
 import { existsSync, readFileSync } from "node:fs";
 import path from "node:path";
+import { amsterdam, inStiltevenster, vanAmsterdam } from "../stiltevenster.ts";
 import { schoneEnv } from "../test-integriteit.ts";
 
 /** Workflownaam van de CI: één bron in lead.conf (ook door merge.sh gelezen); override met env LAB_MERGE_CI_WORKFLOW. */
@@ -163,20 +164,18 @@ export function bouwBody(opts: { gemerged: Pr[]; afgevallen: Afgevallen[]; head:
 
 // ── Stiltevenster (zelfde venster als scripts/poort.ts) ──────────────────────
 
-export function inStiltevenster(nu: Date): boolean {
-  const m = nu.getHours() * 60 + nu.getMinutes();
-  return m >= 5 * 60 && m < 7 * 60 + 15;
-}
+export { inStiltevenster };
 
-/** "20261006-1430" → Date (lokale tijd). */
+/** "20261006-1430" → Date (Amsterdamse tijd). */
 export function leesStempel(s: string): Date | null {
   const m = s.match(/^(\d{4})(\d{2})(\d{2})-(\d{2})(\d{2})$/);
-  return m ? new Date(+m[1], +m[2] - 1, +m[3], +m[4], +m[5]) : null;
+  return m ? vanAmsterdam(+m[1], +m[2], +m[3], +m[4], +m[5]) : null;
 }
 
 export function stempelVan(d: Date): string {
   const p = (n: number) => String(n).padStart(2, "0");
-  return `${d.getFullYear()}${p(d.getMonth() + 1)}${p(d.getDate())}-${p(d.getHours())}${p(d.getMinutes())}`;
+  const a = amsterdam(d);
+  return `${a.jaar}${p(a.maand)}${p(a.dag)}-${p(a.uur)}${p(a.minuut)}`;
 }
 
 // ── Uitvoering ───────────────────────────────────────────────────────────────
@@ -255,6 +254,33 @@ function ghJson<T>(args: string[]): T {
   return JSON.parse(r.uit) as T;
 }
 
+/**
+ * Zet elke open PR die `tak` als base heeft op main, vóór de tak verwijderd wordt (anders sluit
+ * GitHub die PR's automatisch: #245 en #247). Geeft null bij succes (ook zonder afhankelijke
+ * PR's) of een melding: dan mag de tak NIET weg. merge.sh doet hetzelfde met gh in bash.
+ */
+export const PR_LIMIET = 1000;
+
+export function zetAfhankelijkeOpMain(tak: string, gh: (args: string[]) => { code: number; uit: string; fout: string }): string | null {
+  const lijst = gh(["pr", "list", "--base", tak, "--state", "open", "--limit", String(PR_LIMIET), "--json", "number"]);
+  if (lijst.code !== 0) return `afhankelijke PR's van ${tak} niet op te halen (${lijst.fout}); tak blijft staan`;
+  let nummers: number[];
+  try {
+    nummers = (JSON.parse(lijst.uit || "[]") as { number: number }[]).map((p) => p.number);
+  } catch {
+    return `onleesbaar antwoord van gh bij de afhankelijke PR's van ${tak}; tak blijft staan`;
+  }
+  if (nummers.length >= PR_LIMIET) return `${nummers.length} PR's met base ${tak}: de lijst kan afgekapt zijn (limiet ${PR_LIMIET}); tak blijft staan`;
+  const verplaatst: number[] = [];
+  for (const n of nummers) {
+    const r = gh(["pr", "edit", String(n), "--base", "main"]);
+    if (r.code !== 0) return `PR #${n} heeft ${tak} als base en kon niet naar main (${r.fout}); al op main gezet: ${verplaatst.length ? verplaatst.map((v) => `#${v}`).join(" ") : "geen"}; tak blijft staan`;
+    verplaatst.push(n);
+    console.log(`wachtrij: PR #${n} had ${tak} als base, nu main`);
+  }
+  return null;
+}
+
 function ruimTakken(o: Opties, root: string): never {
   let pr = o.pr;
   if (!pr) {
@@ -300,6 +326,12 @@ function ruimTakken(o: Opties, root: string): never {
     }
     if (o.droog) {
       console.log(`droog: zou remote tak ${d.tak} (#${d.nummer}) verwijderen`);
+      continue;
+    }
+    const hang = zetAfhankelijkeOpMain(d.tak, (a) => run(["gh", ...a]));
+    if (hang) {
+      console.error(`wachtrij: #${d.nummer} (${d.tak}): ${hang}`);
+      fouten++;
       continue;
     }
     // met lease: een commit die tussen controle en verwijderen is gepusht, blokkeert het verwijderen

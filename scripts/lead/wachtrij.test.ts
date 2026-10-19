@@ -1,8 +1,9 @@
-import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, setDefaultTimeout, test } from "bun:test";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { schoneEnv } from "../test-integriteit.ts";
+import { metStartHerstel, stopReden } from "./spawn-crash.ts";
 import { STANDAARD_POORT, bouwBody, ciWorkflow, geenCiMelding, gevaarScore, onschadelijk, standaardPoort, inStiltevenster, kiesPrs, leesMarker, leesOpties, leesStempel, okRegels, stempelVan, zwaarsteGevaar, type Pr } from "./wachtrij.ts";
 
 // Alle CLI-tests draaien met een nep-gh vooraan op PATH en een wegwerp-git-repo met een
@@ -212,6 +213,10 @@ describe("tijd en opties", () => {
   });
 });
 
+// echte-klok: elke CLI-test bouwt een wegwerprepo en draait tientallen git- en bun-subprocessen (~1s zonder belasting,
+// tot >5s onder load). Alleen een bovengrens op de testduur; er wordt nergens op de klok gewacht.
+setDefaultTimeout(60_000);
+
 // ── CLI in een wegwerprepo ───────────────────────────────────────────────────
 
 let dir: string;
@@ -242,8 +247,10 @@ const maakTak = (naam: string, bestand: string, inhoud: string) => {
 // LAB_WACHTRIJ_KLOK: vaste klok voor het stiltevenster, zodat de tests niet van het uur afhangen.
 const omgeving = (extra: Record<string, string> = {}) => ({ ...schoneEnv(), PATH: `${bin}:${process.env.PATH}`, FAKE_DIR: dir, TMUX: "", TMUX_PANE: "", LAB_WACHTRIJ_KLOK: "20261006-1200", LAB_WACHTRIJ_CI_WACHT: "0", ...extra });
 const draaiWachtrij = (args: string[], extra: Record<string, string> = {}) => {
-  const r = Bun.spawnSync(["bun", WACHTRIJ, ...args], { cwd: repo, env: omgeving(extra) });
-  return { code: r.exitCode, uit: r.stdout.toString(), fout: r.stderr.toString() };
+  // Een bun-start-crash (SIGTRAP zonder uitvoer) wordt eenmaal herhaald; zie spawn-crash.ts.
+  const { r } = metStartHerstel(() => Bun.spawnSync(["bun", WACHTRIJ, ...args], { cwd: repo, env: omgeving(extra) }));
+  // code blijft null bij een signaal; `reden` zegt welk, zodat een rode test de oorzaak toont.
+  return { code: r.exitCode, uit: r.stdout.toString(), fout: r.stderr.toString(), reden: stopReden(r) };
 };
 const log = (naam: string) => (existsSync(join(dir, naam)) ? readFileSync(join(dir, naam), "utf8") : "");
 const zetPrs = (prs: Pr[]) => writeFileSync(join(dir, "prlist.json"), JSON.stringify(prs));
@@ -262,9 +269,11 @@ beforeEach(() => {
     `#!/usr/bin/env bash
 echo "gh $*" >> "$FAKE_DIR/gh.log"
 case "$1 $2" in
-  "pr list") cat "$FAKE_DIR/prlist.json"; exit 0 ;;
+  "pr list") if [ "$3" = --base ]; then if [ -f "$FAKE_DIR/lijst-faalt" ]; then echo "nep: list mislukt" >&2; exit 1; fi; cat "$FAKE_DIR/base-$4.json" 2>/dev/null || echo "[]"; else cat "$FAKE_DIR/prlist.json"; fi; exit 0 ;;
+  "pr edit") [ -f "$FAKE_DIR/edit-faalt" ] && { [ ! -s "$FAKE_DIR/edit-faalt" ] || [ "$(cat "$FAKE_DIR/edit-faalt")" = "$3" ]; } && { echo "nep: edit mislukt" >&2; exit 1; }; git --git-dir "$FAKE_DIR/origin.git" for-each-ref --format="$3 %(refname)" refs/heads >> "$FAKE_DIR/edit-zag.txt"; exit 0 ;;
   "pr view") if [ "$3" = "https://github.com/nep/nep/pull/99" ] && [ -f "$FAKE_DIR/ci.json" ]; then cat "$FAKE_DIR/ci.json"; exit 0; elif [ -f "$FAKE_DIR/prview-$3.json" ]; then cat "$FAKE_DIR/prview-$3.json"; else cat "$FAKE_DIR/prview.json"; fi; exit 0 ;;
   "pr merge") printf "%s\\n" "$@" > "$FAKE_DIR/merge.txt"; sed -i.bak 's/"state":"OPEN"/"state":"MERGED"/' "$FAKE_DIR/prview.json"; exit 0 ;;
+  "api -X") [ "$3" = DELETE ] && { git --git-dir "$FAKE_DIR/origin.git" update-ref -d "refs/heads/\${4#repos/*/*/git/refs/heads/}"; exit $?; } ;;
   "pr create") [ -f "$FAKE_DIR/create-faalt" ] && { echo "nep: create mislukt" >&2; exit 1; }; printf "%s\n" "$@" > "$FAKE_DIR/create.txt"; echo "https://github.com/nep/nep/pull/99"; exit 0 ;;
 esac
 echo "nep-gh: onverwacht commando $*" >&2; exit 2
@@ -293,6 +302,7 @@ describe("wachtrij.ts", () => {
   test("lege wachtrij: meldt dat en doet niets", () => {
     zetPrs([]);
     const r = draaiWachtrij(["--nu", "20261006-1200", "--map", wt]);
+    expect(r.reden).toBe("exit 0");
     expect(r.code).toBe(0);
     expect(r.uit).toMatch(/leeg/);
     expect(existsSync(wt)).toBe(false);
@@ -630,6 +640,93 @@ describe("wachtrij.ts --ruim-takken", () => {
     expect(remoteTakken()).toContain("refs/heads/foo/tak-1");
   });
 
+  test("zet open PR's met een op te ruimen tak als base eerst op main, pas daarna gaat de tak weg", () => {
+    maakTak("tak-1", "b.txt", "een\n");
+    mergeNaarMain(["tak-1"]);
+    writeFileSync(join(dir, "base-tak-1.json"), JSON.stringify([{ number: 245 }, { number: 247 }]));
+    const r = draaiWachtrij(["--ruim-takken", "50"]);
+    expect(r.code).toBe(0);
+    const gh = log("gh.log");
+    expect(gh).toContain("gh pr list --base tak-1 --state open --limit 1000 --json number");
+    expect(gh).toContain("gh pr edit 245 --base main");
+    expect(gh).toContain("gh pr edit 247 --base main");
+    // op het moment van de wijziging stond de tak er nog; daarna is hij weg
+    expect(log("edit-zag.txt")).toContain("refs/heads/tak-1");
+    expect(remoteTakken()).not.toContain("refs/heads/tak-1");
+  });
+
+  test("laat de tak staan met een melding als een afhankelijke PR niet naar main kan", () => {
+    maakTak("tak-1", "b.txt", "een\n");
+    mergeNaarMain(["tak-1"]);
+    writeFileSync(join(dir, "base-tak-1.json"), JSON.stringify([{ number: 245 }]));
+    writeFileSync(join(dir, "edit-faalt"), "");
+    const r = draaiWachtrij(["--ruim-takken", "50"]);
+    expect(r.code).toBe(1);
+    expect(r.fout).toMatch(/PR #245 heeft tak-1 als base en kon niet naar main.*tak blijft staan/);
+    expect(remoteTakken()).toContain("refs/heads/tak-1");
+  });
+
+  test("een lijst van precies de limiet kan afgekapt zijn: tak blijft staan met melding", () => {
+    maakTak("tak-1", "b.txt", "een\n");
+    mergeNaarMain(["tak-1"]);
+    writeFileSync(join(dir, "base-tak-1.json"), JSON.stringify(Array.from({ length: 1000 }, (_, i) => ({ number: i + 1 }))));
+    const r = draaiWachtrij(["--ruim-takken", "50"]);
+    expect(r.code).toBe(1);
+    expect(r.fout).toMatch(/1000 PR's met base tak-1.*afgekapt.*tak blijft staan/);
+    expect(log("gh.log")).not.toContain("gh pr edit");
+    expect(remoteTakken()).toContain("refs/heads/tak-1");
+  });
+
+  test("tweede edit faalt: tak blijft en de melding noemt wat al op main staat", () => {
+    maakTak("tak-1", "b.txt", "een\n");
+    mergeNaarMain(["tak-1"]);
+    writeFileSync(join(dir, "base-tak-1.json"), JSON.stringify([{ number: 245 }, { number: 247 }]));
+    writeFileSync(join(dir, "edit-faalt"), "247");
+    const r = draaiWachtrij(["--ruim-takken", "50"]);
+    expect(r.code).toBe(1);
+    expect(r.fout).toMatch(/PR #247 .*kon niet naar main.*al op main gezet: #245; tak blijft staan/);
+    expect(remoteTakken()).toContain("refs/heads/tak-1");
+  });
+
+  test.each(["null", "5", "{}"])("antwoord %s is geen lijst: tak blijft staan", (antwoord) => {
+    maakTak("tak-1", "b.txt", "een\n");
+    mergeNaarMain(["tak-1"]);
+    writeFileSync(join(dir, "base-tak-1.json"), antwoord);
+    const r = draaiWachtrij(["--ruim-takken", "50"]);
+    expect(r.code).toBe(1);
+    expect(r.fout).toMatch(/onleesbaar antwoord.*tak blijft staan/);
+    expect(log("gh.log")).not.toContain("gh pr edit");
+    expect(remoteTakken()).toContain("refs/heads/tak-1");
+  });
+
+  test("onleesbare JSON over de afhankelijke PR's: tak blijft staan", () => {
+    maakTak("tak-1", "b.txt", "een\n");
+    mergeNaarMain(["tak-1"]);
+    writeFileSync(join(dir, "base-tak-1.json"), "geen json");
+    const r = draaiWachtrij(["--ruim-takken", "50"]);
+    expect(r.code).toBe(1);
+    expect(r.fout).toMatch(/onleesbaar antwoord.*tak blijft staan/);
+    expect(remoteTakken()).toContain("refs/heads/tak-1");
+  });
+
+  test("laat de tak staan als de afhankelijke PR's niet op te halen zijn", () => {
+    maakTak("tak-1", "b.txt", "een\n");
+    mergeNaarMain(["tak-1"]);
+    writeFileSync(join(dir, "lijst-faalt"), "");
+    const r = draaiWachtrij(["--ruim-takken", "50"]);
+    expect(r.code).toBe(1);
+    expect(r.fout).toMatch(/niet op te halen.*tak blijft staan/);
+    expect(remoteTakken()).toContain("refs/heads/tak-1");
+  });
+
+  test("zonder afhankelijke PR's wordt niets gewijzigd en gaat de tak weg", () => {
+    maakTak("tak-1", "b.txt", "een\n");
+    mergeNaarMain(["tak-1"]);
+    expect(draaiWachtrij(["--ruim-takken", "50"]).code).toBe(0);
+    expect(log("gh.log")).not.toContain("gh pr edit");
+    expect(remoteTakken()).not.toContain("refs/heads/tak-1");
+  });
+
   test("--droog verwijdert niets", () => {
     maakTak("tak-1", "b.txt", "een\n");
     mergeNaarMain(["tak-1"]);
@@ -667,7 +764,8 @@ describe("merge.sh bezitscheck", () => {
       }),
     );
   const merge = (args: string[]) => {
-    const r = Bun.spawnSync(["bash", MERGE, ...args], { cwd: repo, env: omgeving() });
+    // merge.sh merget alleen als lead (LAB_AGENT_ROL=lead)
+    const r = Bun.spawnSync(["/bin/bash", "-p", MERGE, ...args], { cwd: repo, env: { ...omgeving(), LAB_AGENT_ROL: "lead" } });
     return { code: r.exitCode, uit: r.stdout.toString(), fout: r.stderr.toString() };
   };
 
@@ -722,7 +820,7 @@ describe("merge.sh bezitscheck", () => {
     expect(droog.uit).toContain("--match-head-commit abc1234def5678abc1234def5678abc1234def56");
     const r = merge(["50"]);
     expect(r.code).toBe(0);
-    expect(log("merge.txt")).toBe("pr\nmerge\n50\n--merge\n--match-head-commit\nabc1234def5678abc1234def5678abc1234def56\n");
+    expect(log("merge.txt")).toBe("pr\nmerge\n50\n--merge\n--match-head-commit\nabc1234def5678abc1234def5678abc1234def56\n--repo\nbbawuah/LAB-BAWUAH\n");
     expect(remoteTakken()).not.toContain("lead/test-tak");
   });
 
@@ -745,14 +843,14 @@ describe("merge.sh bezitscheck", () => {
   test("CI-workflownaam komt uit lead.conf; LAB_MERGE_CI_WORKFLOW past hem aan", () => {
     prJson(["scripts/lead/wachtrij.ts"]);
     expect(merge(["1", "--droog"]).code).toBe(0);
-    const r = Bun.spawnSync(["bash", MERGE, "1", "--droog"], { cwd: repo, env: omgeving({ LAB_MERGE_CI_WORKFLOW: "Andere" }) });
+    const r = Bun.spawnSync(["/bin/bash", "-p", MERGE, "1", "--droog"], { cwd: repo, env: omgeving({ LAB_MERGE_CI_WORKFLOW: "Andere" }) });
     expect(r.exitCode).toBe(1);
     expect(r.stderr.toString()).toContain("geen CI-run voor");
   });
 
   test("merge.sh vindt lead.conf ook vanaf een ander cwd", () => {
     prJson(["scripts/lead/wachtrij.ts"]);
-    const r = Bun.spawnSync(["bash", MERGE, "1", "--droog"], { cwd: dir, env: omgeving() });
+    const r = Bun.spawnSync(["/bin/bash", "-p", MERGE, "1", "--droog"], { cwd: dir, env: omgeving() });
     expect(r.stderr.toString()).not.toContain("lead.conf");
     expect(r.exitCode).toBe(0);
   });

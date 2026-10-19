@@ -47,9 +47,22 @@ if [ "$1 $2" = "pr view" ]; then
   [ -f "$FAKE_DIR/gh-faalt" ] && exit 1
   cat "$FAKE_DIR/pr.json"; exit 0
 fi
+if [ "$1 $2" = "pr list" ]; then
+  [ -f "$FAKE_DIR/lijst-faalt" ] && { echo "nep: list mislukt" >&2; exit 1; }
+  cat "$FAKE_DIR/base-lijst.json" 2>/dev/null || echo "[]"; exit 0
+fi
+if [ "$1 $2" = "pr edit" ]; then
+  # edit-faalt leeg: elke edit faalt; met een PR-nummer erin: alleen die
+  [ -f "$FAKE_DIR/edit-faalt" ] && { [ ! -s "$FAKE_DIR/edit-faalt" ] || [ "$(cat "$FAKE_DIR/edit-faalt")" = "$3" ]; } && { echo "nep: edit mislukt" >&2; exit 1; }
+  git --git-dir "$FAKE_DIR/origin.git" for-each-ref --format="$3 %(refname)" refs/heads >> "$FAKE_DIR/edit-zag.txt"; exit 0
+fi
 if [ "$1 $2" = "pr merge" ]; then
   [ -f "$FAKE_DIR/merge-werkt" ] && sed -i.bak 's/"state":"OPEN"/"state":"MERGED"/' "$FAKE_DIR/pr.json"
   exit 0
+fi
+# api -X DELETE repos/<o>/<r>/git/refs/heads/<tak>: verwijder de tak uit de lokale bare origin
+if [ "$1 $2 $3" = "api -X DELETE" ]; then
+  git --git-dir "$FAKE_DIR/origin.git" update-ref -d "refs/heads/\${4#repos/*/*/git/refs/heads/}"; exit $?
 fi
 echo "nep-gh: onverwacht commando $*" >&2; exit 2
 `,
@@ -98,7 +111,8 @@ const omgeving = (extra: Record<string, string> = {}) => ({
 });
 
 const draai = (script: string, args: string[], extra: Record<string, string> = {}, cwd = repo) => {
-  const r = Bun.spawnSync(["bash", script, ...args], { cwd, env: omgeving(extra) });
+  // merge.sh merget alleen als lead; de rol-tests zetten LAB_AGENT_ROL zelf via extra.
+  const r = Bun.spawnSync([...(script.endsWith("merge.sh") ? ["/bin/bash", "-p"] : ["bash"]), script, ...args], { cwd, env: omgeving(script === MERGE ? { LAB_AGENT_ROL: "lead", ...extra } : extra) });
   return { code: r.exitCode, uit: r.stdout.toString(), fout: r.stderr.toString() };
 };
 
@@ -253,6 +267,57 @@ describe("merge.sh", () => {
     expect(remoteTakken()).toContain("lead/test-tak");
   });
 
+  test("alleen de lead merget: zonder LAB_AGENT_ROL=lead geweigerd, --droog mag wel", () => {
+    pr();
+    writeFileSync(join(dir, "merge-werkt"), "");
+    for (const rol of ["", "agent", "sublead", "vervolg", "Lead"]) {
+      const r = draai(MERGE, ["71"], { LAB_AGENT_ROL: rol });
+      expect(r.code).toBe(1);
+      expect(r.fout).toContain("merge: geweigerd: alleen de lead merget (LAB_AGENT_ROL=lead)");
+    }
+    expect(log("gh.log")).toBe("");
+    expect(draai(MERGE, ["71", "--droog"], { LAB_AGENT_ROL: "agent" }).code).toBe(0);
+    expect(log("gh.log")).not.toContain("pr merge");
+    expect(remoteTakken()).toContain("lead/test-tak");
+  });
+
+  test("lead.conf wordt niet ge-sourcet: alleen CI_WORKFLOW= en GH_REPO= worden gelezen", () => {
+    pr();
+    const kopie = join(dir, "kopie");
+    mkdirSync(kopie);
+    writeFileSync(join(kopie, "merge.sh"), readFileSync(MERGE, "utf8"));
+    writeFileSync(join(kopie, "lead.conf"), `touch "${dir}/uitgevoerd"\nCI_WORKFLOW=CI\nGH_REPO=bbawuah/LAB-BAWUAH\nCHECK=nep\n`);
+    const r = draai(join(kopie, "merge.sh"), ["71", "--droog"]);
+    expect(r.code).toBe(0);
+    expect(existsSync(join(dir, "uitgevoerd"))).toBe(false);
+    writeFileSync(join(kopie, "lead.conf"), "CI_WORKFLOW=CI\nGH_REPO=$(id)\n");
+    expect(draai(join(kopie, "merge.sh"), ["71", "--droog"]).fout).toMatch(/GH_REPO ontbreekt of is ongeldig/);
+  });
+
+  test("elke gh-aanroep gebruikt de vaste repo uit lead.conf", () => {
+    pr();
+    writeFileSync(join(dir, "merge-werkt"), "");
+    expect(draai(MERGE, ["71"]).code).toBe(0);
+    const regels = log("gh.log").trim().split("\n");
+    expect(regels.length).toBeGreaterThan(1);
+    for (const r of regels) {
+      if (r.startsWith("gh api")) expect(r).toBe("gh api -X DELETE repos/bbawuah/LAB-BAWUAH/git/refs/heads/lead/test-tak --silent");
+      else expect(r).toEndWith("--repo bbawuah/LAB-BAWUAH");
+    }
+    // de remote tak gaat weg via de API, niet via een lokale git push
+    expect(regels.some((r) => r.startsWith("gh api -X DELETE"))).toBe(true);
+  });
+
+  test("als root-kopie: geen LAB_MERGE_CHECK/LAB_MERGE_CI_WORKFLOW uit de env (vanuit de repo wel)", () => {
+    const bron = readFileSync(MERGE, "utf8");
+    expect(bron.split("\n")[0]).toBe("#!/bin/bash -p");
+    expect(bron).toContain('[ "$(cd "$(dirname "$0")" && pwd -P)" = /usr/local/lib/lab-lead ] && geinstalleerd=1');
+    expect(bron).toMatch(/PATH=\/usr\/bin:\/bin:\/opt\/homebrew\/bin\n\s+export PATH\n\s+unset LAB_MERGE_CHECK LAB_MERGE_CI_WORKFLOW/);
+    // vanuit de repo telt de override nog: een check die niet bestaat, weigert
+    pr();
+    expect(draai(MERGE, ["71", "--droog"], { LAB_MERGE_CHECK: "bestaat-niet" }).fout).toMatch(/'bestaat-niet' staat niet/);
+  });
+
   test("merget met --merge en verwijdert pas daarna de remote tak", () => {
     pr();
     writeFileSync(join(dir, "merge-werkt"), "");
@@ -261,6 +326,89 @@ describe("merge.sh", () => {
     expect(log("gh.log")).toContain("gh pr merge 71 --merge");
     expect(remoteTakken()).not.toContain("lead/test-tak");
     expect(remoteTakken()).toContain("refs/heads/main");
+  });
+
+  test("zet open PR's met de gemergede tak als base eerst op main, pas daarna gaat de tak weg", () => {
+    pr();
+    writeFileSync(join(dir, "merge-werkt"), "");
+    writeFileSync(join(dir, "base-lijst.json"), JSON.stringify([{ number: 245 }, { number: 247 }]));
+    const r = draai(MERGE, ["71"]);
+    expect(r.code).toBe(0);
+    const regels = log("gh.log").trim().split("\n");
+    expect(regels).toContain("gh pr list --base lead/test-tak --state open --limit 1000 --json number --repo bbawuah/LAB-BAWUAH");
+    expect(regels).toContain("gh pr edit 245 --base main --repo bbawuah/LAB-BAWUAH");
+    expect(regels).toContain("gh pr edit 247 --base main --repo bbawuah/LAB-BAWUAH");
+    expect(regels.findIndex((l) => l.startsWith("gh pr edit"))).toBeLessThan(regels.findIndex((l) => l.startsWith("gh api -X DELETE")));
+    // op het moment van de wijziging stond de tak er nog
+    expect(log("edit-zag.txt")).toContain("refs/heads/lead/test-tak");
+    expect(remoteTakken()).not.toContain("lead/test-tak");
+  });
+
+  test("verwijdert de tak niet als een afhankelijke PR niet naar main kan", () => {
+    pr();
+    writeFileSync(join(dir, "merge-werkt"), "");
+    writeFileSync(join(dir, "base-lijst.json"), JSON.stringify([{ number: 245 }]));
+    writeFileSync(join(dir, "edit-faalt"), "");
+    const r = draai(MERGE, ["71"]);
+    expect(r.code).toBe(1);
+    expect(r.fout).toMatch(/PR 245 \(base lead\/test-tak\) kon niet naar main; al op main gezet: geen; remote tak lead\/test-tak blijft staan/);
+    expect(log("gh.log")).not.toContain("gh api -X DELETE");
+    expect(remoteTakken()).toContain("lead/test-tak");
+  });
+
+  test("een lijst van precies de limiet kan afgekapt zijn: tak blijft staan met melding", () => {
+    pr();
+    writeFileSync(join(dir, "merge-werkt"), "");
+    writeFileSync(join(dir, "base-lijst.json"), JSON.stringify(Array.from({ length: 1000 }, (_, i) => ({ number: i + 1 }))));
+    const r = draai(MERGE, ["71"]);
+    expect(r.code).toBe(1);
+    expect(r.fout).toMatch(/1000 PR's met base lead\/test-tak is de limiet.*remote tak lead\/test-tak blijft staan/);
+    expect(log("gh.log")).not.toContain("gh pr edit");
+    expect(log("gh.log")).not.toContain("gh api -X DELETE");
+    expect(remoteTakken()).toContain("lead/test-tak");
+  });
+
+  test("tweede edit faalt: tak blijft en de melding noemt wat al op main staat", () => {
+    pr();
+    writeFileSync(join(dir, "merge-werkt"), "");
+    writeFileSync(join(dir, "base-lijst.json"), JSON.stringify([{ number: 245 }, { number: 247 }]));
+    writeFileSync(join(dir, "edit-faalt"), "247");
+    const r = draai(MERGE, ["71"]);
+    expect(r.code).toBe(1);
+    expect(r.fout).toMatch(/PR 247 \(base lead\/test-tak\) kon niet naar main; al op main gezet: #245; remote tak/);
+    expect(remoteTakken()).toContain("lead/test-tak");
+  });
+
+  test.each(["null", "5", "{}"])("antwoord %s is geen lijst: fail-closed, tak blijft staan", (antwoord) => {
+    pr();
+    writeFileSync(join(dir, "merge-werkt"), "");
+    writeFileSync(join(dir, "base-lijst.json"), antwoord);
+    const r = draai(MERGE, ["71"]);
+    expect(r.code).not.toBe(0);
+    expect(r.fout).toMatch(/geen lijst.*remote tak lead\/test-tak blijft staan/);
+    expect(log("gh.log")).not.toContain("gh pr edit");
+    expect(log("gh.log")).not.toContain("gh api -X DELETE");
+    expect(remoteTakken()).toContain("lead/test-tak");
+  });
+
+  test("onleesbaar antwoord over de afhankelijke PR's: tak blijft staan", () => {
+    pr();
+    writeFileSync(join(dir, "merge-werkt"), "");
+    writeFileSync(join(dir, "base-lijst.json"), "geen json");
+    const r = draai(MERGE, ["71"]);
+    expect(r.code).toBe(1);
+    expect(r.fout).toMatch(/onleesbaar\)?; remote tak lead\/test-tak blijft staan/);
+    expect(remoteTakken()).toContain("lead/test-tak");
+  });
+
+  test("verwijdert de tak niet als de lijst afhankelijke PR's niet op te halen is", () => {
+    pr();
+    writeFileSync(join(dir, "merge-werkt"), "");
+    writeFileSync(join(dir, "lijst-faalt"), "");
+    const r = draai(MERGE, ["71"]);
+    expect(r.code).toBe(1);
+    expect(r.fout).toMatch(/niet op te halen; remote tak lead\/test-tak blijft staan/);
+    expect(remoteTakken()).toContain("lead/test-tak");
   });
 
   test("laat de remote tak staan als de PR na het mergen niet MERGED is", () => {
