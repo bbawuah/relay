@@ -555,8 +555,91 @@ if tool == "Bash":
         extra = " Zet een uitsluiting met * of ? tussen quotes: zsh expandeert anders het patroon en de uitsluiting werkt niet." if onveilig else ""
         weiger(f"recursief zoeken moet sleutelbestanden uitsluiten (config.properties, config.json, .env*); ontbreekt: {', '.join(ontbreekt)}. "
                f"Gebruik: {goed}.{extra} Eén bestand zoeken mag ook: geef dat bestand als enige pad.")
+    # Tekst is geen zoekopdracht (19 okt 2026, twee valse alarmen: `echo "… grep/rg) …" >> notitie.md` en
+    # een heredoc-regel `Zoeken (grep/rg, …)`). Voor de zoekcontrole worden een gequote argument van een
+    # tekstcommando (echo, printf, git commit/tag/notes/stash, gh) en de body van een heredoc dat naar een
+    # datacommando gaat (cat, tee, git, gh, wc, sort, base64, curl, jq) leeggemaakt. Echte aanroepen blijven
+    # zichtbaar: na | && ; of in `bash -c '…'`, via xargs of ssh, en alles wat `$(…)` of backticks bevat
+    # (dat wordt uitgevoerd). Een heredoc naar sh/bash/python/node blijft ook gewoon zichtbaar.
+    TEKST_CMD = {"echo", "printf", "gh"}
+    TEKST_GIT = {"commit", "tag", "notes", "stash", "merge", "revert", "cherry-pick"}
+    DATA_CMD = {"cat", "tee", "git", "gh", "wc", "sort", "base64", "curl", "jq", "echo", "printf"}
+    def tekst_leeg(cmd):
+        try:
+            def kop(seg):
+                w = seg.split()
+                while w and (re.match(r"^[A-Za-z_][A-Za-z0-9_]*=", w[0]) or w[0] in ("sudo", "env", "command", "nohup", "time", "exec")):
+                    w = w[1:]
+                return w
+            def is_tekst(seg):
+                w = kop(seg)
+                if not w:
+                    return False
+                if w[0] in TEKST_CMD:
+                    return True
+                return w[0] == "git" and any(x in TEKST_GIT for x in w[1:4])
+            out, i, n, ss, hd = "", 0, len(cmd), 0, []
+            while i < n:
+                ch = cmd[i]
+                if ch == "\n":
+                    out += "\n"; i += 1
+                    for eind, streep, ongequote, data in hd:
+                        j, body = i, []
+                        while j < n:
+                            e = cmd.find("\n", j)
+                            e = n if e < 0 else e
+                            regel = cmd[j:e]
+                            if (regel.lstrip("\t") if streep else regel) == eind:
+                                break
+                            body.append(regel)
+                            j = e + 1
+                        tekst = "\n".join(body)
+                        behoud = (not data) or (ongequote and re.search(r"\$\(|`", tekst))
+                        if behoud and body:
+                            out += tekst + "\n"
+                        i = min(j, n)
+                        if j < n:
+                            e = cmd.find("\n", j)
+                            e = n if e < 0 else e
+                            out += cmd[j:e + 1]; i = e + 1
+                    hd = []
+                    ss = len(out)
+                elif cmd.startswith("<<", i) and not cmd.startswith("<<<", i):
+                    m = re.match(r"<<(-?)[ \t]*(['\"]?)([A-Za-z_][A-Za-z0-9_]*)\2", cmd[i:])
+                    if not m:
+                        out += ch; i += 1
+                        continue
+                    w = kop(out[ss:])
+                    hd.append((m.group(3), bool(m.group(1)), not m.group(2), bool(w) and w[0] in DATA_CMD))
+                    out += m.group(0); i += m.end()
+                elif ch in "'\"":
+                    j = i + 1
+                    while j < n and cmd[j] != ch:
+                        j += 2 if (ch == '"' and cmd[j] == "\\") else 1
+                    if j >= n:
+                        out += cmd[i:]; i = n
+                        continue
+                    inhoud = cmd[i + 1:j]
+                    if is_tekst(out[ss:]) and not (ch == '"' and re.search(r"\$\(|`", inhoud)):
+                        out += ch + ch
+                    else:
+                        out += cmd[i:j + 1]
+                    i = j + 1
+                elif ch == "\\":
+                    out += cmd[i:i + 2]; i += 2
+                else:
+                    m = re.match(r"&&|\|\||[;&|()`]|\$\(", cmd[i:])
+                    if m:
+                        out += m.group(0); i += m.end()
+                        ss = len(out)
+                    else:
+                        out += ch; i += 1
+            return out
+        except Exception:
+            return cmd
+    cz_zoek = tekst_leeg(cz)
     hier_zoek = basis
-    delen = re.split(r"(&&|\|\||[;&|()\n`]|\$\()", re.sub(r":\(([a-z,]+)\)", r":[\1]", cz))
+    delen = re.split(r"(&&|\|\||[;&|()\n`]|\$\()", re.sub(r":\(([a-z,]+)\)", r":[\1]", cz_zoek))
     for n_deel in range(0, len(delen), 2):
         seg = delen[n_deel]
         gepijpt = n_deel > 0 and delen[n_deel - 1] == "|"

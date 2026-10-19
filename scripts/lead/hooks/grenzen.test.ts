@@ -499,6 +499,20 @@ describe("grenzen.sh: recursief zoeken sluit sleutelbestanden uit", () => {
     "grep -r foo config.properties",
     "rg foo één-bestand.txt andere.txt",
     "rg -e foo -e bar",
+    // regressies van de tekstfix: echte aanroepen naast of na tekst blijven geweigerd
+    "echo a | xargs grep -r x",
+    "grep -r x .",
+    'echo "klaar" && grep -rn foo .',
+    'echo "klaar"; rg foo .',
+    "echo klaar | grep -r foo repo/",
+    'bash -c "echo x; grep -r foo ."',
+    "bash -c 'echo x | rg foo .'",
+    'echo "$(grep -r foo .)"',
+    'echo "`rg foo .`"',
+    'git commit -m "$(rg foo .)"',
+    "cat <<'EOF'\ntekst\nEOF\ngrep -r foo .",
+    "bash <<'EOF'\ngrep -r foo .\nEOF",
+    "cat <<EOF\n$(grep -r foo .)\nEOF",
   ];
   const DOOR_ZOEK = [
     `grep -rn ${GREP_UIT} foo .`,
@@ -526,6 +540,19 @@ describe("grenzen.sh: recursief zoeken sluit sleutelbestanden uit", () => {
     "ls -la && git status",
     "bun test scripts/lead/hooks/grenzen.test.ts",
     "git log --grep=foo",
+    // tekst met een zoekwoord is geen zoekopdracht (vals alarm 19 okt)
+    `echo "- 19 okt: Vals alarm grenzen.sh: heredoc-tekst 'grep/rg)' telt als zoekcommando → fix nodig" >> ~/x.md`,
+    `echo "- 19 okt; Vals alarm: grep -r x . | rg y (tekst)" >> ~/x.md`,
+    `printf '%s\\n' "grep -r foo . && rg foo" > f.txt`,
+    `git commit -m "grenzen: grep -r en rg; weiger | niet"`,
+    `git commit -m "fix: zoek met grep -r x ." -m "rg foo"`,
+    `gh pr create --title "x" --body "Zoeken (grep/rg, ook via subagents) sluit uit; rg foo ."`,
+    "cat > f.md <<'EOF'\n- Zoeken (grep/rg, ook via subagents) sluit sleutelbestanden uit\n- grep -r foo . en rg foo\nEOF",
+    "cat > f.md <<EOF\n- Zoeken (grep/rg) sluit uit\nEOF",
+    "cat >> f.md <<-'EOF'\n\tgrep -rn foo .\n\tEOF",
+    "cat <<'EOF' | tee f.md\nrg foo .\nEOF",
+    "cat > f.md <<'EOF'\n- grep -r foo .\nEOF\nls",
+    'echo "x" > f; ls',
   ];
   for (const c of WEIGER_ZOEK)
     test(`weigert ${JSON.stringify(c)}`, () => {
