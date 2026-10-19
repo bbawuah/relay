@@ -11,12 +11,14 @@
 //   ds-regels   designsysteem-regels R1–R9 (scripts/ds-regels.ts) (alle apps)
 //   werk-commentaar  TODO/HACK/FIXME/XXX/workaround alleen als TODO(JJJJ-MM-DD): reden; verlopen = FOUT
 //   echte-klok  unittests wachten niet op de echte klok: Bun.sleep/setTimeout ≥ 10 ms = FOUT (scripts/echte-klok.ts)
+//   test-tenant goldcoast-tests gebruiken geen vaste, gedeelde tenant-id: nieuweTestTenant() (scripts/test-tenant.ts)
 //   git-scrub   een testbestand dat git aanroept gebruikt een env zonder GIT_* (schoneEnv()); anders FOUT (scripts/git-scrub.ts)
 //   test-integriteit  geen verwijderd testbestand, minder test(/it( of nieuwe .skip/.only/.todo zonder "// test-weg: reden" (scripts/test-integriteit.ts)
 //   rood-op-basis  een fix (tak of PR-titel met "fix") brengt een unittest mee die op de basis faalt en op de tak slaagt (scripts/rood-op-basis.ts)
 //   scripts-tests  bun test ./scripts/ (de tests van poort en ds-regels; < 1 s, altijd)
+//   python-tests  python3 -m unittest per map onder tools/ met een test_*.py (tools/brein; < 1 s, altijd)
 //   biome       biome ci: lint (alleen foutregels), geen format  (hele repo)
-//   taken       turbo run lint typecheck test                    (affected)
+//   taken       turbo run lint typecheck test                    (affected; met POORT_DB_VERPLICHT=1 en docker als goldcoast-api/db affected, scripts/db-verplicht.ts)
 //   build       turbo run build, zonder de site (zie baseline)   (affected)
 //   e2e         turbo run e2e --concurrency=1                    (affected; tmux, watchparty, storybook-axe)
 //               met een machinebreed slot (scripts/e2e-slot.ts): standaard 2 runs tegelijk, POORT_E2E_SLOTS
@@ -38,7 +40,7 @@
 //   --base <ref>     vergelijk met deze ref in plaats van main
 //   --ci             voor .github/workflows/ci.yml: sla de taken over die in
 //                    uitzonderingen.ci van de baseline staan (alleen op de mini)
-//   --alleen <s,…>   alleen deze stappen (sherif,boundaries,ds-regels,werk-commentaar,echte-klok,git-scrub,test-integriteit,rood-op-basis,scripts-tests,biome,taken,build,e2e)
+//   --alleen <s,…>   alleen deze stappen (sherif,boundaries,ds-regels,werk-commentaar,echte-klok,git-scrub,test-tenant,test-integriteit,rood-op-basis,scripts-tests,python-tests,biome,taken,build,e2e)
 //   --zelftest       bewijs dat elke stap afkeurt: per stap een bewuste fout in een
 //                    tijdelijke kopie van de werkkopie; de poort moet daar rood worden
 //   --baseline       schrijf de huidige sherif-, boundaries- en ds-regels-schendingen naar de
@@ -57,8 +59,10 @@ import path from "node:path";
 import { aantalSlots, echteOmgeving, neemSlot } from "./e2e-slot";
 import { ongebruikt, sleutels as dsSleutels, zoek as dsZoek } from "./ds-regels";
 import { beschrijf as ekBeschrijf, nieuweTreffers as ekNieuw, OPLOSSING as EK_OPLOSSING, sleutel as ekSleutel, zoek as ekZoek } from "./echte-klok";
+import { beschrijf as ttBeschrijf, nieuweTreffers as ttNieuw, OPLOSSING as TT_OPLOSSING, sleutel as ttSleutel, zoek as ttZoek } from "./test-tenant";
 import { beoordeelBare, beschrijf as gsBeschrijf, nieuweTreffers as gsNieuw, OPLOSSING as GS_OPLOSSING, sleutel as gsSleutel, zoek as gsZoek } from "./git-scrub";
 import { leesPr } from "./bewijs-pr";
+import { dockerBereikbaar, dockerOntbreekt, omgevingVoor, pakkettenVanTaken } from "./db-verplicht";
 import { inStiltevenster } from "./stiltevenster";
 import { leesContext as roLees, stap as roStap } from "./rood-op-basis";
 import { analyseer as tiAnalyseer } from "./test-integriteit";
@@ -66,7 +70,7 @@ import { JUISTE_VORM, sleutel as wcSleutel, zoek as wcZoek } from "./werk-commen
 
 const ROOT = path.resolve(import.meta.dir, "..");
 const BASELINE_PAD = path.join(ROOT, "scripts/poort-baseline.json");
-const STAPPEN = ["sherif", "boundaries", "ds-regels", "werk-commentaar", "echte-klok", "git-scrub", "test-integriteit", "rood-op-basis", "scripts-tests", "biome", "taken", "build", "e2e"] as const;
+const STAPPEN = ["sherif", "boundaries", "ds-regels", "werk-commentaar", "echte-klok", "git-scrub", "test-tenant", "test-integriteit", "rood-op-basis", "scripts-tests", "python-tests", "biome", "taken", "build", "e2e"] as const;
 type Stap = (typeof STAPPEN)[number];
 
 // ── Opties ──────────────────────────────────────────────────────────────────
@@ -164,6 +168,8 @@ type Baseline = {
   "echte-klok"?: string[];
   /** "bestand | regeltekst" van git-aanroepen in tests zonder env zonder GIT_* (zie git-scrub.ts). */
   "git-scrub"?: string[];
+  /** "bestand | regeltekst" van vaste, gedeelde testtenant-id's in goldcoast-tests (zie test-tenant.ts). */
+  "test-tenant"?: string[];
   uitzonderingen: {
     build: { zonder: string[]; reden: string; weg_als: string };
     /** `<package>#<taak>` die CI (--ci) niet draait; lokaal draaien ze wel. */
@@ -225,7 +231,7 @@ export function boundarySleutels(uit: string, root = ROOT): string[] {
 
 export type Resultaat = { status: "OK" | "FOUT" | "SKIP"; detail?: string; uitleg?: string };
 
-type BaselineSoort = "sherif" | "boundaries" | "ds-regels" | "werk-commentaar" | "echte-klok" | "git-scrub";
+type BaselineSoort = "sherif" | "boundaries" | "ds-regels" | "werk-commentaar" | "echte-klok" | "git-scrub" | "test-tenant";
 
 function metBaseline(soort: BaselineSoort, r: Uitkomst, sleutels: string[], extra: string[] = [], extraLabel = "allowlist verouderd"): Resultaat {
   const bekend = leesBaseline()[soort] ?? [];
@@ -321,6 +327,19 @@ function stapGitScrub(): Resultaat {
 }
 
 /**
+ * Test-tenant draait in-process over de getrackte goldcoast-tests (< 1 s): een vaste, gedeelde
+ * testtenant-id is FOUT (bestaande in de baseline, mag alleen krimpen).
+ */
+function stapTestTenant(): Resultaat {
+  const treffers = ttZoek();
+  const r = metBaseline("test-tenant", { code: 0, uit: "" }, treffers.map(ttSleutel));
+  if (r.status !== "FOUT") return r;
+  const nieuw = ttNieuw(treffers, leesBaseline()["test-tenant"] ?? []).map((t) => `     ${ttBeschrijf(t)}`);
+  return { ...r, uitleg: `${r.uitleg}${nieuw.length ? `\n${nieuw.join("\n")}` : ""}
+     Oplossing: ${TT_OPLOSSING}` };
+}
+
+/**
  * Test-integriteit draait in-process op de diff met de basis (merge-base): een verwijderd
  * testbestand, minder test(/it( of een nieuwe skip/only/todo is FOUT, tenzij met reden.
  * Redenen ("// test-weg: …") worden apart getoond, ook bij OK, voor de reviewer.
@@ -348,6 +367,19 @@ function stapScriptsTests(): Resultaat {
   return { status: "FOUT", detail: fail ? `${fail} mislukt` : "bun test faalde", uitleg: staart(r.uit) };
 }
 
+/** Python buiten de workspaces (tools/brein): per map met een test_*.py (ook nog niet gecommit) één unittest-run, alleen stdlib. */
+function stapPythonTests(): Resultaat {
+  const mappen = [...new Set(git("ls-files", "--cached", "--others", "--exclude-standard", "tools/**/test_*.py").split("\n").filter(Boolean).map((f) => path.dirname(f)))];
+  if (!mappen.length) return { status: "SKIP", detail: "geen test_*.py onder tools/" };
+  let tests = 0;
+  for (const map of mappen) {
+    const r = draai(["python3", "-m", "unittest", "discover", "-s", map]);
+    if (r.code !== 0) return { status: "FOUT", detail: `${map}: unittest faalde`, uitleg: staart(r.uit) };
+    tests += Number(r.uit.match(/^Ran (\d+) tests?/m)?.[1] ?? 0);
+  }
+  return { status: "OK", detail: `${tests} tests in ${mappen.length} map(pen)` };
+}
+
 function stapBiome(): Resultaat {
   const r = draai([bin("biome"), "ci", "--colors=off", "--max-diagnostics=20", "."]);
   return r.code === 0 ? { status: "OK" } : { status: "FOUT", uitleg: staart(r.uit) };
@@ -372,7 +404,25 @@ function turboResultaat(r: Uitkomst): Resultaat {
 
 const TAKEN = ["lint", "typecheck", "test"];
 
-function stapTaken(ctx: Context, ci: boolean): Resultaat {
+/** `docker info` met tijdsgrens: bij een timeout killt Bun het proces en is de exitcode null. */
+const dockerInfo = (timeout: number) => {
+  const p = Bun.spawnSync(["docker", "info", "--format", "{{.ServerVersion}}"], { stdout: "ignore", stderr: "ignore", timeout });
+  return { code: p.exitCode };
+};
+
+/** De packages met een (affected) test-taak; null als dat niet te bepalen is of alles draait. */
+function testPakketten(ctx: Context): string[] | null {
+  if (!ctx.affected) return null;
+  const dry = turbo(ctx, ["test"], ["--dry=json"]);
+  return pakkettenVanTaken(dry.code === 0 ? leesDryTaken(dry.stdout) : null, "test");
+}
+
+function stapTaken(basis: Context, ci: boolean): Resultaat {
+  // DB-integratietests mogen niet stil overslaan (scripts/db-verplicht.ts): affected goldcoast-api/db eist docker.
+  const { env, verplicht } = omgevingVoor(basis.env, testPakketten(basis), new Date());
+  const geenDocker = dockerOntbreekt(verplicht, !verplicht || dockerBereikbaar(dockerInfo));
+  if (geenDocker) return { status: "FOUT", detail: "geen docker", uitleg: `     ${geenDocker}` };
+  const ctx: Context = { ...basis, env };
   const zonder = ci ? (leesBaseline().uitzonderingen.ci?.zonder ?? []) : [];
   if (!zonder.length) return turboResultaat(turbo(ctx, TAKEN));
   // Een package met een uitgezonderde taak gaat uit de gewone run en krijgt een
@@ -402,6 +452,7 @@ export type E2eAfhankelijk = {
   nu?: () => Date;
   turbo?: (ctx: Context, taken: string[], extra?: string[]) => Uitkomst;
   neemSlot?: () => Promise<{ vrij(): void }>;
+  dockerInfo?: (timeout: number) => { code: number | null };
 };
 
 // Stiltevenster en cache: de venstercheck staat hier VÓÓR de `turbo run e2e` (alleen de --dry=json
@@ -435,8 +486,12 @@ export async function stapE2e(ctx: Context, dep: E2eAfhankelijk = {}): Promise<R
     // Het slot kan lang wachten: het venster kan intussen begonnen zijn. Opnieuw toetsen vóór de run,
     // en na de run (begon het venster tijdens de run, dan geldt de uitslag niet).
     if (inStiltevenster(nu())) return venster("(begonnen tijdens het wachten op een slot)");
+    // cross-tenant (goldcoast-api) draait in de e2e-taak: ook daar eist de poort docker (scripts/db-verplicht.ts).
+    const { env, verplicht } = omgevingVoor(ctx.env, e2e, nu());
+    const geenDocker = dockerOntbreekt(verplicht, !verplicht || dockerBereikbaar(dep.dockerInfo ?? dockerInfo));
+    if (geenDocker) return { status: "FOUT", detail: "geen docker", uitleg: `     ${geenDocker}` };
     // --cache=local:rw: e2e-uitslagen gaan nooit via de remote cache (remoteCache in turbo.json) naar of van een andere machine.
-    const r = turboResultaat(draaiTurbo(ctx, ["e2e"], ["--concurrency=1", "--cache=local:rw"]));
+    const r = turboResultaat(draaiTurbo({ ...ctx, env }, ["e2e"], ["--concurrency=1", "--cache=local:rw"]));
     if (inStiltevenster(nu())) return venster("(begonnen tijdens de run)");
     return { ...r, detail: `${e2e.join(", ")}: ${r.detail}` };
   } finally {
@@ -500,9 +555,11 @@ async function poort(o: Opties): Promise<number> {
       : s === "werk-commentaar" ? stapWerkCommentaar()
       : s === "echte-klok" ? stapEchteKlok()
       : s === "git-scrub" ? stapGitScrub()
+      : s === "test-tenant" ? stapTestTenant()
       : s === "test-integriteit" ? stapTestIntegriteit(stapBase())
       : s === "rood-op-basis" ? stapRoodOpBasis(stapBase(), o.ci)
       : s === "scripts-tests" ? stapScriptsTests()
+      : s === "python-tests" ? stapPythonTests()
       : s === "biome" ? stapBiome()
       : s === "taken" ? stapTaken(ctx, o.ci)
       : s === "build" ? stapBuild(ctx)
@@ -540,9 +597,10 @@ function schrijfBaseline(): void {
     .sort();
   b["echte-klok"] = ekZoek().map(ekSleutel).sort();
   b["git-scrub"] = gsZoek().map(gsSleutel).sort();
+  b["test-tenant"] = ttZoek().map(ttSleutel).sort();
   writeFileSync(BASELINE_PAD, JSON.stringify(b, null, 2) + "\n");
   console.log(
-    `baseline: ${b.sherif.length} sherif, ${b.boundaries.length} boundaries, ${b["ds-regels"].length} ds-regels, ${b["werk-commentaar"].length} werk-commentaar, ${b["echte-klok"].length} echte-klok, ${b["git-scrub"].length} git-scrub → scripts/poort-baseline.json`,
+    `baseline: ${b.sherif.length} sherif, ${b.boundaries.length} boundaries, ${b["ds-regels"].length} ds-regels, ${b["werk-commentaar"].length} werk-commentaar, ${b["echte-klok"].length} echte-klok, ${b["git-scrub"].length} git-scrub, ${b["test-tenant"].length} test-tenant → scripts/poort-baseline.json`,
   );
 }
 
@@ -664,6 +722,17 @@ export const KANARIES: Kanarie[] = [
     zet: (m) => schrijf(m, "apps/watchparty/src/ui/paneel.test.tsx", git("show", "9fe29d5^:apps/watchparty/src/ui/paneel.test.tsx") + "\n"),
   },
   {
+    stap: "test-tenant",
+    wat: "een goldcoast-test met een vaste tenant-id (fixture) in apps/goldcoast-api",
+    verwacht: /FOUT test-tenant .*1 nieuw/,
+    zet: (m) =>
+      schrijf(
+        m,
+        "apps/goldcoast-api/src/kanarie-tenant.test.ts",
+        'import { expect, test } from "bun:test";\nconst TENANT = "11111111-1111-4111-8111-111111111111";\ntest("kanarie", () => {\n  expect(TENANT).toBeString();\n});\n',
+      ),
+  },
+  {
     stap: "git-scrub",
     wat: "een test die git aanroept met env: process.env in apps/template",
     verwacht: /FOUT git-scrub .*1 nieuw/,
@@ -726,6 +795,13 @@ export const KANARIES: Kanarie[] = [
     wat: "falende test in scripts/",
     verwacht: /FOUT scripts-tests .*1 mislukt/,
     zet: (m) => schrijf(m, "scripts/kanarie.test.ts", 'import { expect, test } from "bun:test";\ntest("kanarie", () => expect(1).toBe(2));\n'),
+  },
+  {
+    stap: "python-tests",
+    wat: "falende test in tools/brein",
+    verwacht: /FOUT python-tests .*unittest faalde/,
+    zet: (m) =>
+      schrijf(m, "tools/brein/test_kanarie.py", "import unittest\n\nclass T(unittest.TestCase):\n    def test_kanarie(self):\n        self.assertEqual(1, 2)\n"),
   },
   {
     stap: "biome",
