@@ -1,5 +1,5 @@
 import { afterAll, describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { schoneEnv } from "../../test-integriteit";
@@ -21,7 +21,8 @@ const EIGEN_TAK = (() => {
 afterAll(() => rmSync(EIGEN_TAK, { recursive: true, force: true }));
 
 function draai(invoer: unknown, hook = HOOK) {
-  const env = { ...schoneEnv(), HOME: "/nonexistent-grenzen-test", LAB_GRENS_MERGE: "" };
+  // Zonder rol: de hoofdcheckout-regel geldt alleen voor een sessie met LAB_AGENT_ROL (ook als deze test in zo'n sessie draait).
+  const env = { ...schoneEnv(), HOME: "/nonexistent-grenzen-test", LAB_GRENS_MERGE: "", LAB_AGENT_ROL: "" };
   const metCwd = typeof invoer === "object" && invoer !== null && !("cwd" in invoer) ? { cwd: EIGEN_TAK, ...invoer } : invoer;
   const p = Bun.spawnSync(["bash", hook], { stdin: new TextEncoder().encode(JSON.stringify(metCwd)), env, stdout: "pipe", stderr: "pipe" });
   return { code: p.exitCode, stderr: p.stderr.toString() };
@@ -543,5 +544,180 @@ describe("grenzen.sh: recursief zoeken sluit sleutelbestanden uit", () => {
     expect(zoek("grep -rn foo .").stderr).toContain("grep -rn --exclude=config.properties --exclude=config.json --exclude='.env*'");
     expect(zoek("git grep foo").stderr).toContain("':!*config.properties'");
     expect(zoek("grep -rn --exclude=.env* foo .").stderr).toContain("tussen quotes");
+  });
+});
+
+describe("grenzen.sh: geen schrijvende commando's in de hoofdcheckout", () => {
+  // Nep-repo's in een tijdelijke map: een hoofdcheckout, een linked worktree en een aparte clone.
+  const BASIS = mkdtempSync(join(tmpdir(), "grenzen-hoofd-"));
+  const HOOFD = join(BASIS, "hoofd");
+  const WORKTREE = join(BASIS, "eigen-worktree");
+  const CLONE = join(BASIS, "eigen-clone");
+  const git = (cwd: string, ...args: string[]) => {
+    const env = { ...schoneEnv(), GIT_AUTHOR_NAME: "t", GIT_AUTHOR_EMAIL: "t@t", GIT_COMMITTER_NAME: "t", GIT_COMMITTER_EMAIL: "t@t" };
+    const p = Bun.spawnSync(["git", "-C", cwd, ...args], { env, stdout: "pipe", stderr: "pipe" });
+    if (p.exitCode !== 0) throw new Error(`git ${args.join(" ")}: ${p.stderr.toString()}`);
+  };
+  mkdirSync(HOOFD, { recursive: true });
+  git(HOOFD, "init", "-q", "-b", "main");
+  mkdirSync(join(HOOFD, "sub"));
+  writeFileSync(join(HOOFD, "sub", "b.txt"), "b\n");
+  writeFileSync(join(HOOFD, "a.txt"), "a\n");
+  git(HOOFD, "add", ".");
+  git(HOOFD, "commit", "-q", "-m", "init");
+  git(HOOFD, "worktree", "add", "-q", "-b", "eigen", WORKTREE);
+  git(BASIS, "clone", "-q", HOOFD, CLONE);
+  afterAll(() => rmSync(BASIS, { recursive: true, force: true }));
+
+  // extra: subagent-velden; cwd: de werkmap uit de hook-invoer; rol: LAB_AGENT_ROL (null = niet gezet)
+  const run = (command: string, cwd: string, extra: Record<string, unknown> = {}, rol: string | null = "agent") => {
+    const env = { ...schoneEnv(), HOME: "/nonexistent-grenzen-test", LAB_GRENS_MERGE: "", LAB_AGENT_ROL: rol ?? "", LAB_HOOFDCHECKOUT: realpathSync(HOOFD) };
+    const invoer = { tool_name: "Bash", tool_input: { command }, cwd, ...extra };
+    const p = Bun.spawnSync(["bash", HOOK], { stdin: new TextEncoder().encode(JSON.stringify(invoer)), env, stdout: "pipe", stderr: "pipe" });
+    return { code: p.exitCode, stderr: p.stderr.toString() };
+  };
+
+  const SCHRIJVEND = [
+    "git fetch",
+    "git fetch origin main",
+    "git checkout main",
+    "git switch -c nieuw",
+    "git reset --hard origin/main",
+    "git restore a.txt",
+    "git stash",
+    "git stash push -u -m x",
+    "git stash pop",
+    "git clean -fd",
+    "git pull",
+    "git push origin eigen",
+    "git commit -m x",
+    "git merge origin/main",
+    "git rebase origin/main",
+    "git cherry-pick abc123",
+    "git am x.patch",
+    "git apply x.patch",
+    "git worktree add ../x",
+    "git worktree remove ../x",
+    "git branch -D oud",
+    "git branch -d oud",
+    "pre-commit run --all-files",
+    "pre-commit",
+    "prettier --write .",
+    "bunx prettier --write .",
+    "oxfmt .",
+    "npx oxfmt src",
+    "biome format --write .",
+    "biome check --write .",
+    "black .",
+    "isort .",
+    "ruff format .",
+    "ruff check --fix .",
+    "eslint --fix .",
+    "bun run format",
+    "bun run lint --fix",
+    "bun format",
+    "bun install",
+    "bun i",
+    "FOO=1 git fetch",
+    "git fetch && git status",
+    "bash -c 'pre-commit run --all-files'",
+    "echo klaar; pre-commit run",
+    "cd sub && git fetch",
+    "git -C . fetch",
+    "git -C sub checkout main",
+    `git -C ${HOOFD} fetch`,
+    `cd ${HOOFD}/sub && bun install`,
+  ];
+  for (const c of SCHRIJVEND)
+    test(`agent in de hoofdcheckout: weigert ${JSON.stringify(c)}`, () => {
+      const r = run(c, HOOFD);
+      expect(r.code).toBe(2);
+      expect(r.stderr).toContain("schrijft in de gedeelde hoofdcheckout");
+      expect(r.stderr).toContain("git -C <eigen pad>");
+    });
+
+  const DOOR = [
+    "git status",
+    "git log --oneline -5",
+    "git show origin/main:a.txt",
+    "git diff",
+    "git diff --stat origin/main",
+    "git stash list",
+    "git branch",
+    "git branch --list",
+    "git worktree list",
+    "cat a.txt",
+    "ls -la",
+    "rg --glob '!config.properties' --glob '!config.json' --glob '!.env*' foo .",
+    "prettier --check .",
+    "prettier a.txt",
+    "oxfmt --check .",
+    "black --check .",
+    "ruff check .",
+    "ruff format --check .",
+    "eslint .",
+    "biome check .",
+    "bun run lint",
+    "bun run format --check",
+    "bun test scripts/lead/hooks/grenzen.test.ts",
+    "pre-commit --version",
+    "echo git fetch",
+    "echo 'git fetch en pre-commit'",
+    // een eigen map: -C of cd naar een clone of linked worktree
+    `git -C ${CLONE} fetch`,
+    `git -C ${WORKTREE} checkout -b x`,
+    `cd ${CLONE} && pre-commit run --all-files`,
+    `cd ${WORKTREE} && bun install`,
+    `cd ${CLONE}/ && git fetch && bunx prettier --write .`,
+    // niet te bepalen: toestaan
+    "cd $EIGEN && pre-commit",
+    "git -C $EIGEN fetch",
+  ];
+  for (const c of DOOR)
+    test(`agent in de hoofdcheckout: laat door ${JSON.stringify(c)}`, () => {
+      expect(run(c, HOOFD).code).toBe(0);
+    });
+
+  test("een cd weg en terug telt per segment", () => {
+    expect(run(`cd ${CLONE} && cd ${HOOFD} && git fetch`, WORKTREE).code).toBe(2);
+    expect(run(`cd ${HOOFD} && cd ${CLONE} && git fetch`, WORKTREE).code).toBe(0);
+  });
+  test("een linked worktree als cwd mag alles", () => {
+    for (const c of ["git fetch", "git checkout -b x", "pre-commit run --all-files", "bun install", "prettier --write ."])
+      expect(run(c, WORKTREE).code).toBe(0);
+  });
+  test("een clone als cwd mag alles", () => {
+    for (const c of ["git fetch", "pre-commit run --all-files", "bun install"]) expect(run(c, CLONE).code).toBe(0);
+  });
+  test("een submap van een linked worktree mag", () => {
+    expect(run("git fetch", join(WORKTREE, "sub")).code).toBe(0);
+  });
+  test("een submap van de hoofdcheckout telt als hoofdcheckout", () => {
+    expect(run("pre-commit run", join(HOOFD, "sub")).code).toBe(2);
+  });
+  test("buiten een repo geen bezwaar", () => {
+    expect(run("pre-commit run", BASIS).code).toBe(0);
+  });
+  test("de lead mag wel in de hoofdcheckout", () => {
+    expect(run("git fetch", HOOFD, {}, "lead").code).toBe(0);
+    expect(run("pre-commit run --all-files", HOOFD, {}, "lead").code).toBe(0);
+  });
+  test("zonder LAB_AGENT_ROL en zonder subagent-velden (Brian) mag het", () => {
+    expect(run("git fetch", HOOFD, {}, null).code).toBe(0);
+  });
+  test("elke andere rol (sublead, vervolg, agent) wordt geweigerd", () => {
+    for (const rol of ["sublead", "vervolg", "agent"]) expect(run("git fetch", HOOFD, {}, rol).code).toBe(2);
+  });
+  test("een subagent of fork wordt geweigerd, ook als de rol lead erft of ontbreekt", () => {
+    expect(run("git fetch", HOOFD, { agent_id: "a1" }, "lead").code).toBe(2);
+    expect(run("git fetch", HOOFD, { agent_type: "general-purpose" }, null).code).toBe(2);
+    expect(run("git fetch", WORKTREE, { agent_id: "a1" }, "lead").code).toBe(0);
+  });
+  test("de melding noemt het commando, de map en wat te doen", () => {
+    const m = run("pre-commit run --all-files", HOOFD).stderr;
+    expect(m).toContain("`pre-commit`");
+    expect(m).toContain(HOOFD);
+    expect(m).toContain("eigen worktree of clone");
+    expect(m).toContain("absoluut pad");
   });
 });
