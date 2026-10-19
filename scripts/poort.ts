@@ -15,6 +15,7 @@
 //   test-integriteit  geen verwijderd testbestand, minder test(/it( of nieuwe .skip/.only/.todo zonder "// test-weg: reden" (scripts/test-integriteit.ts)
 //   rood-op-basis  een fix (tak of PR-titel met "fix") brengt een unittest mee die op de basis faalt en op de tak slaagt (scripts/rood-op-basis.ts)
 //   scripts-tests  bun test ./scripts/ (de tests van poort en ds-regels; < 1 s, altijd)
+//   python-tests  python3 -m unittest per map onder tools/ met een test_*.py (tools/brein; < 1 s, altijd)
 //   biome       biome ci: lint (alleen foutregels), geen format  (hele repo)
 //   taken       turbo run lint typecheck test                    (affected)
 //   build       turbo run build, zonder de site (zie baseline)   (affected)
@@ -38,7 +39,7 @@
 //   --base <ref>     vergelijk met deze ref in plaats van main
 //   --ci             voor .github/workflows/ci.yml: sla de taken over die in
 //                    uitzonderingen.ci van de baseline staan (alleen op de mini)
-//   --alleen <s,…>   alleen deze stappen (sherif,boundaries,ds-regels,werk-commentaar,echte-klok,git-scrub,test-integriteit,rood-op-basis,scripts-tests,biome,taken,build,e2e)
+//   --alleen <s,…>   alleen deze stappen (sherif,boundaries,ds-regels,werk-commentaar,echte-klok,git-scrub,test-integriteit,rood-op-basis,scripts-tests,python-tests,biome,taken,build,e2e)
 //   --zelftest       bewijs dat elke stap afkeurt: per stap een bewuste fout in een
 //                    tijdelijke kopie van de werkkopie; de poort moet daar rood worden
 //   --baseline       schrijf de huidige sherif-, boundaries- en ds-regels-schendingen naar de
@@ -66,7 +67,7 @@ import { JUISTE_VORM, sleutel as wcSleutel, zoek as wcZoek } from "./werk-commen
 
 const ROOT = path.resolve(import.meta.dir, "..");
 const BASELINE_PAD = path.join(ROOT, "scripts/poort-baseline.json");
-const STAPPEN = ["sherif", "boundaries", "ds-regels", "werk-commentaar", "echte-klok", "git-scrub", "test-integriteit", "rood-op-basis", "scripts-tests", "biome", "taken", "build", "e2e"] as const;
+const STAPPEN = ["sherif", "boundaries", "ds-regels", "werk-commentaar", "echte-klok", "git-scrub", "test-integriteit", "rood-op-basis", "scripts-tests", "python-tests", "biome", "taken", "build", "e2e"] as const;
 type Stap = (typeof STAPPEN)[number];
 
 // ── Opties ──────────────────────────────────────────────────────────────────
@@ -348,6 +349,19 @@ function stapScriptsTests(): Resultaat {
   return { status: "FOUT", detail: fail ? `${fail} mislukt` : "bun test faalde", uitleg: staart(r.uit) };
 }
 
+/** Python buiten de workspaces (tools/brein): per map met een test_*.py (ook nog niet gecommit) één unittest-run, alleen stdlib. */
+function stapPythonTests(): Resultaat {
+  const mappen = [...new Set(git("ls-files", "--cached", "--others", "--exclude-standard", "tools/**/test_*.py").split("\n").filter(Boolean).map((f) => path.dirname(f)))];
+  if (!mappen.length) return { status: "SKIP", detail: "geen test_*.py onder tools/" };
+  let tests = 0;
+  for (const map of mappen) {
+    const r = draai(["python3", "-m", "unittest", "discover", "-s", map]);
+    if (r.code !== 0) return { status: "FOUT", detail: `${map}: unittest faalde`, uitleg: staart(r.uit) };
+    tests += Number(r.uit.match(/^Ran (\d+) tests?/m)?.[1] ?? 0);
+  }
+  return { status: "OK", detail: `${tests} tests in ${mappen.length} map(pen)` };
+}
+
 function stapBiome(): Resultaat {
   const r = draai([bin("biome"), "ci", "--colors=off", "--max-diagnostics=20", "."]);
   return r.code === 0 ? { status: "OK" } : { status: "FOUT", uitleg: staart(r.uit) };
@@ -487,6 +501,7 @@ async function poort(o: Opties): Promise<number> {
       : s === "test-integriteit" ? stapTestIntegriteit(stapBase())
       : s === "rood-op-basis" ? stapRoodOpBasis(stapBase(), o.ci)
       : s === "scripts-tests" ? stapScriptsTests()
+      : s === "python-tests" ? stapPythonTests()
       : s === "biome" ? stapBiome()
       : s === "taken" ? stapTaken(ctx, o.ci)
       : s === "build" ? stapBuild(ctx)
@@ -710,6 +725,13 @@ export const KANARIES: Kanarie[] = [
     wat: "falende test in scripts/",
     verwacht: /FOUT scripts-tests .*1 mislukt/,
     zet: (m) => schrijf(m, "scripts/kanarie.test.ts", 'import { expect, test } from "bun:test";\ntest("kanarie", () => expect(1).toBe(2));\n'),
+  },
+  {
+    stap: "python-tests",
+    wat: "falende test in tools/brein",
+    verwacht: /FOUT python-tests .*unittest faalde/,
+    zet: (m) =>
+      schrijf(m, "tools/brein/test_kanarie.py", "import unittest\n\nclass T(unittest.TestCase):\n    def test_kanarie(self):\n        self.assertEqual(1, 2)\n"),
   },
   {
     stap: "biome",
