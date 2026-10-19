@@ -574,6 +574,106 @@ describe("grenzen.sh: recursief zoeken sluit sleutelbestanden uit", () => {
   });
 });
 
+describe("grenzen.sh: kustomize-render van sleutelbestanden", () => {
+  // Nep-kustomization-mappen: alleen de kustomization.yaml staat er, nooit een echt sleutelbestand.
+  const K = realpathSync(mkdtempSync(join(tmpdir(), "grenzen-kustomize-")));
+  afterAll(() => rmSync(K, { recursive: true, force: true }));
+  const maak = (naam: string, yaml: string) => {
+    mkdirSync(join(K, naam), { recursive: true });
+    writeFileSync(join(K, naam, "kustomization.yaml"), yaml);
+    return join(K, naam);
+  };
+  const MET = maak("met", "configMapGenerator:\n  - name: app\n    files:\n      - config.properties\n");
+  const MET_JSON = maak("met-json", "configMapGenerator:\n- name: a\n  files: [x=config.json]\n");
+  const MET_ENV = maak("met-env", "secretGenerator:\n- name: a\n  envs:\n  - .env.prod\n");
+  const ZONDER = maak("zonder", "resources:\n  - deployment.yaml\nconfigMapGenerator:\n  - name: a\n    literals:\n      - A=1\n");
+  const GECOMMENTARIEERD = maak("commentaar", "resources:\n  - deployment.yaml\n# files:\n#   - config.properties\n");
+  const BASIS = maak("basis", "configMapGenerator:\n  - name: app\n    files:\n      - ./conf/config.properties\n");
+  const OVERLAY = maak("overlay", "resources:\n  - ../basis\n");
+  const OVERLAY_BASES = maak("overlay-bases", "bases: [../basis]\n");
+  const OVERLAY_ZONDER = maak("overlay-zonder", "resources:\n  - ../zonder\n  - https://example.com/x//base?ref=v1\n");
+  const KRING = maak("kring", "resources:\n  - ../kring\n");
+
+  const WEIGER_K = [
+    `kustomize build ${MET}`,
+    `kustomize build --load-restrictor LoadRestrictionsNone ${MET}`,
+    `kustomize build ${MET_JSON}`,
+    `kustomize build ${MET_ENV}`,
+    `oc kustomize ${MET}`,
+    `kubectl kustomize ${MET}`,
+    `kubectl -n x kustomize ${MET}`,
+    `kubectl apply -k ${MET} --dry-run=client -o yaml`,
+    `oc apply --dry-run=server -k ${MET}`,
+    `kubectl apply --kustomize=${MET} --dry-run=client`,
+    `kubectl diff -k ${MET}`,
+    `oc diff --kustomize=${MET}`,
+    `kustomize build ${OVERLAY}`,
+    `kustomize build ${OVERLAY_BASES}`,
+    `cd ${K} && kustomize build met`,
+    `kustomize build ${MET} | grep x`,
+    `echo klaar && kustomize build ${MET}`,
+    `ls; kustomize build ${MET}`,
+    `bash -c 'kustomize build ${MET}'`,
+    `bash -c "cd ${K} && oc kustomize overlay"`,
+    `sudo -u x bash -c 'kubectl kustomize ${MET} | head'`,
+    `timeout 5 kustomize build ${MET}`,
+    `ssh host 'kustomize build ${MET}'`,
+    // doel niet te bepalen: dicht
+    "kustomize build",
+    `kustomize build ${join(K, "bestaat-niet")}`,
+    "kustomize build $DIR",
+    "oc kustomize `pwd`",
+    "kubectl apply -k --dry-run=client",
+    "kustomize build https://github.com/x/y//base",
+  ];
+  for (const c of WEIGER_K)
+    test(`kustomize: weigert ${JSON.stringify(c)}`, () => {
+      const r = bash(c);
+      expect(r.code).toBe(2);
+      expect(r.stderr).toContain("git diff");
+    });
+
+  const DOOR_K = [
+    `kustomize build ${ZONDER}`,
+    `kustomize build ${GECOMMENTARIEERD}`,
+    `oc kustomize ${ZONDER}`,
+    `kubectl apply -k ${MET}`, // geen --dry-run: niet gedekt (staat in de kop van het blok)
+    `kubectl apply -f x.yaml --dry-run=client`,
+    `kustomize build ${OVERLAY_ZONDER}`,
+    `kustomize build ${KRING}`,
+    `cd ${K} && kustomize build zonder`,
+    "kustomize version",
+    "kustomize --help",
+    "kustomize edit set image a=b",
+    "kubectl get configmap kustomize -n x",
+    // tekst is geen commando
+    `echo "kustomize build ${MET}"`,
+    `git commit -m "kustomize build ${MET} weigeren"`,
+    `gh pr create --title "kustomize build ${MET}" --body "oc kustomize ${MET}"`,
+    `cat <<'EINDE' > notitie.md\nkustomize build ${MET}\nEINDE`,
+    `grep -n "kustomize build" notitie.md`,
+  ];
+  for (const c of DOOR_K)
+    test(`kustomize: laat door ${JSON.stringify(c)}`, () => {
+      expect(bash(c).code).toBe(0);
+    });
+
+  test("het woord in een commit-bericht met heredoc geeft geen vals alarm", () => {
+    const c = `git commit -m "$(cat <<'EINDE'\nlead: kustomize build ${MET} en oc kustomize ${MET}\nEINDE\n)"`;
+    expect(bash(c).code).toBe(0);
+  });
+  test("een relatieve map volgt de cwd uit de invoer", () => {
+    expect(draai({ tool_name: "Bash", tool_input: { command: "kustomize build met" }, cwd: K }).code).toBe(2);
+    expect(draai({ tool_name: "Bash", tool_input: { command: "kustomize build zonder" }, cwd: K }).code).toBe(0);
+  });
+  test("de melding noemt het doel, de kustomization-map en het alternatief", () => {
+    const m = bash(`kustomize build ${OVERLAY}`).stderr;
+    expect(m).toContain(OVERLAY);
+    expect(m).toContain(BASIS);
+    expect(m).toContain("CI-poort");
+  });
+});
+
 describe("grenzen.sh: geen schrijvende commando's in de hoofdcheckout", () => {
   // Nep-repo's in een tijdelijke map: een hoofdcheckout, een linked worktree en een aparte clone.
   const BASIS = mkdtempSync(join(tmpdir(), "grenzen-hoofd-"));
