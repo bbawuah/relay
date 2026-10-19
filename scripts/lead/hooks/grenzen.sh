@@ -675,7 +675,7 @@ if tool == "Bash":
     # niet te bepalen is (pad ontbreekt, bevat $ of backtick, bestaat niet) wordt geweigerd. Alleen de
     # kustomization-bestanden worden gelezen, nooit de sleutelbestanden zelf. Tekst (echo, commitbericht,
     # heredoc) is leeggemaakt door tekst_leeg, dus geen vals alarm.
-    # Niet gedekt: `kubectl diff -k`, apply -k zonder --dry-run, remote bases (github.com/…, https://), een
+    # Niet gedekt: apply -k zonder --dry-run, remote bases (github.com/…, https://), een
     # Helm-chart of plugin die intern leest, `.env`-namen die niet met .env beginnen (bv. db.env), een script of
     # alias dat kustomize intern draait, en patches/replacements die een sleutelbestand noemen.
     KUST_BEST = ("kustomization.yaml", "kustomization.yml", "Kustomization")
@@ -774,9 +774,9 @@ if tool == "Bash":
                             pos.append(rest[k])
                         k += 1
                     uit.append(pos[0] if pos else None)
-                elif sub == "apply":
+                elif sub in ("apply", "diff"):
                     rest = a[k + 1:]
-                    if not any(y == "--dry-run" or y.startswith("--dry-run=") for y in rest):
+                    if sub == "apply" and not any(y == "--dry-run" or y.startswith("--dry-run=") for y in rest):
                         continue
                     for q, y in enumerate(rest):
                         if y in ("-k", "--kustomize"):

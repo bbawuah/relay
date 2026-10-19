@@ -605,6 +605,8 @@ describe("grenzen.sh: kustomize-render van sleutelbestanden", () => {
     `kubectl apply -k ${MET} --dry-run=client -o yaml`,
     `oc apply --dry-run=server -k ${MET}`,
     `kubectl apply --kustomize=${MET} --dry-run=client`,
+    `kubectl diff -k ${MET}`,
+    `oc diff --kustomize=${MET}`,
     `kustomize build ${OVERLAY}`,
     `kustomize build ${OVERLAY_BASES}`,
     `cd ${K} && kustomize build met`,
