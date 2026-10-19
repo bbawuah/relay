@@ -11,6 +11,7 @@
 #     expliciete GET), `gh api graphql` met een mutation, en `gh alias set|import`
 #   - een rauwe `git push` met force, verwijderen, naar main, --no-verify of POORT_OVERSLAAN
 #     (alleen via scripts/lead/push.sh), en een rauwe `ssh jump … oc` (alleen via scripts/lead/lab-lees.sh)
+#   - recursief zoeken (grep -r, rg, git grep) zonder uitsluiting van config.properties, config.json en .env*
 #   - elke aanroep van merge.sh (elk pad) vanuit een subagent of fork (`agent_id`/`agent_type` in de invoer)
 # Faalt dicht (17 okt 2026): bij een eigen fout (invoer geen JSON of van de verkeerde vorm, een
 # python-status anders dan 0 of 2) exit 2 met een melding: weigeren. 0 = toestaan.
@@ -440,6 +441,144 @@ if tool == "Bash":
             jump = True
     if jump and re.search(r"(^|[\s'\"/;&|(`])oc($|[\s'\";&|)])", cz):
         weiger(f"het lab lees je alleen via {LAB_SH} <get|describe|logs|events|top|auth can-i> … (alleen-lezen, geen secrets).{BUITEN}")
+    # Recursief zoeken sluit sleutelbestanden uit (19 okt 2026, twee keer op één dag: een recursieve grep/rg
+    # in gitops-clones gaf regels uit config.properties in de uitvoer). Een `grep -r/-R/--recursive`, elke
+    # `rg` en elke `git grep` moet config.properties, config.json én .env* uitsluiten (grep:
+    # --exclude=NAAM; rg: --glob '!NAAM'; git grep: pathspec ':!*NAAM'), of het doel is één bestaand
+    # bestand dat zelf geen sleutelbestand is, of de zoekopdracht staat achter een pipe en heeft geen pad
+    # (`cmd | rg x` zoekt in stdin). Een uitsluiting met * ? [ telt alleen tussen quotes: zsh expandeert
+    # anders het patroon. Herkend op de woorden (ook in `bash -c "…"`, na sudo/xargs/timeout); alleen
+    # een segment dat met echo/printf/man/which/type/command/brew/cat/ls begint telt niet.
+    # Niet gedekt: andere zoekers (ag, ack, ugrep), een niet-recursieve grep over een lijst bestanden
+    # (find … | xargs grep x), een alias of script dat intern recursief zoekt.
+    ZOEK = {"grep", "egrep", "fgrep", "zgrep", "ggrep", "rg"}
+    ZOEK_NIET = ("echo", "printf", "man", "which", "type", "whereis", "command", "brew", "cat", "ls", "head", "tail", "wc", "stat", "file", "open")
+    ZOEK_ZONDER_BRON = ("--version", "-V", "--help", "-h", "--files", "--type-list")
+    ZOEK_WAARDE = {
+        "grep": ("-e", "-f", "-m", "-A", "-B", "-C", "-d", "-D", "--include", "--exclude", "--exclude-dir", "--exclude-from", "--label", "--regexp", "--file", "--max-count", "--context", "--after-context", "--before-context"),
+        "rg": ("-e", "-f", "-g", "-t", "-T", "-A", "-B", "-C", "-m", "-M", "-j", "-d", "-E", "-r", "--glob", "--iglob", "--type", "--type-not", "--type-add", "--max-count", "--max-depth", "--replace", "--context", "--after-context", "--before-context", "--file", "--regexp", "--threads", "--max-filesize", "--encoding", "--pre", "--pre-glob", "--sort", "--sortr", "--engine", "--colors", "--path-separator", "--ignore-file", "--max-columns"),
+        "git grep": ("-e", "-f", "-A", "-B", "-C", "-m", "-O", "--max-depth", "--threads", "--max-count", "--context", "--after-context", "--before-context", "--open-files-in-pager"),
+    }
+    ZOEK_NAMEN = ("config.properties", "config.json", ".env*")
+    # `:(exclude)` wordt vóór het splitsen `:[exclude]` (anders knipt de haakjes-splitsing het pathspec stuk)
+    PATHSPEC_UIT = re.compile(r"^:(?:[!^]|\[(?:[a-z,]*,)?exclude(?:,[a-z]*)?\])(.*)$")
+    SLEUTELNAAM = re.compile(r"config\.properties|config\.json|\.env(\..*)?")
+    def zoek_uitsluitingen(soort, ruw, w):
+        gedekt, onveilig, waarden = set(), False, []
+        for k, x in enumerate(w):
+            r = ruw[k]
+            nxt = (w[k + 1], ruw[k + 1]) if k + 1 < len(w) else None
+            if soort == "grep":
+                if x.startswith("--exclude="):
+                    waarden.append((x[10:], r))
+                elif x == "--exclude" and nxt:
+                    waarden.append(nxt)
+            elif soort == "rg":
+                if x in ("-g", "--glob", "--iglob") and nxt:
+                    v = nxt
+                elif x.startswith(("--glob=", "--iglob=")):
+                    v = (x.split("=", 1)[1], r)
+                elif x.startswith("-g") and len(x) > 2 and not x.startswith("--"):
+                    v = (x[2:], r)
+                else:
+                    continue
+                if v[0].startswith("!"):
+                    waarden.append((v[0][1:], v[1]))
+            else:
+                m = PATHSPEC_UIT.match(x)
+                if m:
+                    waarden.append((m.group(1), r))
+        for v, r in waarden:
+            v = v.replace("\\", "")
+            n = re.sub(r"^(\*\*/|\*/|\*)", "", v)
+            naam = "config.properties" if n == "config.properties" else "config.json" if n == "config.json" else ".env*" if n in (".env*", ".env.*") else None
+            if not naam:
+                continue
+            if re.search(r"[*?\[]", v) and not re.search(r"['\"\\]", r):
+                onveilig = True
+            else:
+                gedekt.add(naam)
+        return gedekt, onveilig
+    def zoek_paden(soort, a):
+        pos, heeft_e, k = [], False, 0
+        while k < len(a):
+            x = a[k]
+            if x == "--":
+                pos += a[k + 1:]
+                break
+            if x in ZOEK_WAARDE[soort]:
+                heeft_e = heeft_e or x in ("-e", "-f", "--regexp", "--file")
+                k += 2
+                continue
+            if x.startswith("-") and len(x) > 1:
+                heeft_e = heeft_e or x.startswith(("--regexp=", "--file="))
+            else:
+                pos.append(x)
+            k += 1
+        return pos if heeft_e else pos[1:]
+    def zoek_recursief(soort, a):
+        if soort != "grep":
+            return True
+        for k, x in enumerate(a):
+            if x == "--":
+                break
+            if x in ("--recursive", "--dereference-recursive") or x == "--directories=recurse":
+                return True
+            if x == "-d" and a[k + 1:k + 2] == ["recurse"]:
+                return True
+            if re.fullmatch(r"-[A-Za-z0-9]+", x) and re.search(r"[rR]", x):
+                return True
+        return False
+    def zoek_controle(soort, ruw, w, i, gepijpt, map_):
+        a = w[i + 1:]
+        if any(x in ZOEK_ZONDER_BRON for x in a) or not zoek_recursief(soort, a):
+            return
+        paden = zoek_paden(soort, a)
+        if soort != "git grep":
+            if not paden and gepijpt and i == 0:
+                return  # `cmd | rg x` zoekt in stdin
+            if len(paden) == 1:
+                p = os.path.join(map_, os.path.expanduser(paden[0]))
+                if os.path.isfile(p) and not SLEUTELNAAM.fullmatch(os.path.basename(p)):
+                    return  # één expliciet bestand, geen recursie
+        gedekt, onveilig = zoek_uitsluitingen(soort, ruw[i + 1:], a)
+        ontbreekt = [n for n in ZOEK_NAMEN if n not in gedekt]
+        if not ontbreekt:
+            return
+        goed = {
+            "grep": "grep -rn --exclude=config.properties --exclude=config.json --exclude='.env*' <patroon> <pad>",
+            "rg": "rg --glob '!config.properties' --glob '!config.json' --glob '!.env*' <patroon> <pad>",
+            "git grep": "git grep <patroon> -- . ':!*config.properties' ':!*config.json' ':!*.env*'",
+        }[soort]
+        extra = " Zet een uitsluiting met * of ? tussen quotes: zsh expandeert anders het patroon en de uitsluiting werkt niet." if onveilig else ""
+        weiger(f"recursief zoeken moet sleutelbestanden uitsluiten (config.properties, config.json, .env*); ontbreekt: {', '.join(ontbreekt)}. "
+               f"Gebruik: {goed}.{extra} Eén bestand zoeken mag ook: geef dat bestand als enige pad.")
+    hier_zoek = basis
+    delen = re.split(r"(&&|\|\||[;&|()\n`]|\$\()", re.sub(r":\(([a-z,]+)\)", r":[\1]", cz))
+    for n_deel in range(0, len(delen), 2):
+        seg = delen[n_deel]
+        gepijpt = n_deel > 0 and delen[n_deel - 1] == "|"
+        ruw = [x for x in seg.split() if not re.match(r"^\d*[<>]", x)]
+        w = [re.sub(r"['\"]", "", x) for x in ruw]
+        while w and re.match(r"^[A-Za-z_][A-Za-z0-9_]*=", w[0]):
+            w, ruw = w[1:], ruw[1:]
+        if not w:
+            continue
+        if w[0] == "cd":
+            rest = [x for x in w[1:] if not x.startswith("-")]
+            hier_zoek = os.path.join(hier_zoek, os.path.expanduser(rest[0])) if rest else os.path.expanduser("~")
+            continue
+        if w[0] in ZOEK_NIET:
+            continue
+        git_grep = set()
+        for glob, sub, args in git_aanroepen(w):
+            if sub == "grep":
+                j = w.index("grep")
+                git_grep.add(j)
+                zoek_controle("git grep", ruw, w, j, False, hier_zoek)
+        for i, x in enumerate(w):
+            if i not in git_grep and os.path.basename(x) in ZOEK:
+                zoek_controle("rg" if os.path.basename(x) == "rg" else "grep", ruw, w, i, gepijpt, hier_zoek)
     nu = datetime.datetime.now().time()
     if datetime.time(5, 0) <= nu < datetime.time(7, 15):
         if re.search(r"bun run (poort|bekijk|test:tmux|test:e2e)|playwright", c):
