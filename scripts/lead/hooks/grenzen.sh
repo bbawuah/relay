@@ -14,6 +14,8 @@
 #   - schrijvende commando's (git checkout/fetch/commit, pre-commit, formatters, bun install) van een agent in de
 #     gedeelde hoofdcheckout (geen linked worktree); de lead en een eigen worktree mogen wel
 #   - recursief zoeken (grep -r, rg, git grep) zonder uitsluiting van config.properties, config.json en .env*
+#   - een kustomize-render (kustomize build, oc|kubectl kustomize, apply -k --dry-run) van een map waarvan de
+#     kustomization config.properties, config.json of .env* inleest (directe en via resources:/bases:)
 #   - elke aanroep van merge.sh (elk pad) vanuit een subagent of fork (`agent_id`/`agent_type` in de invoer)
 # Faalt dicht (17 okt 2026): bij een eigen fout (invoer geen JSON of van de verkeerde vorm, een
 # python-status anders dan 0 of 2) exit 2 met een melding: weigeren. 0 = toestaan.
@@ -664,6 +666,155 @@ if tool == "Bash":
         for i, x in enumerate(w):
             if i not in git_grep and os.path.basename(x) in ZOEK:
                 zoek_controle("rg" if os.path.basename(x) == "rg" else "grep", ruw, w, i, gepijpt, hier_zoek)
+    # Een kustomize-render van een map met sleutelbestanden (19 okt 2026: `kustomize build` over een map
+    # waarvan de configMapGenerator config.properties las, bracht de inhoud in de context van een agent
+    # zonder dat het bestand geopend werd). Geweigerd: `kustomize build <pad>`, `oc|kubectl kustomize <pad>`
+    # en `oc|kubectl apply -k <pad>` met --dry-run (ook in `bash -c '…'`, na | && ; of sudo/xargs/timeout),
+    # maar alleen als de kustomization in het doelpad, of in een map die daaruit via resources:/bases:/
+    # components: volgt, config.properties, config.json of .env* noemt (files: of envs:). Dicht: een doel dat
+    # niet te bepalen is (pad ontbreekt, bevat $ of backtick, bestaat niet) wordt geweigerd. Alleen de
+    # kustomization-bestanden worden gelezen, nooit de sleutelbestanden zelf. Tekst (echo, commitbericht,
+    # heredoc) is leeggemaakt door tekst_leeg, dus geen vals alarm.
+    # Niet gedekt: `kubectl diff -k`, apply -k zonder --dry-run, remote bases (github.com/…, https://), een
+    # Helm-chart of plugin die intern leest, `.env`-namen die niet met .env beginnen (bv. db.env), een script of
+    # alias dat kustomize intern draait, en patches/replacements die een sleutelbestand noemen.
+    KUST_BEST = ("kustomization.yaml", "kustomization.yml", "Kustomization")
+    KUST_WAARDE = ("-o", "--output", "--load-restrictor", "--reorder", "--helm-command", "--mount", "--network-name",
+                   "--stack-trace-limit", "--enable-alpha-plugins")
+    KUBE_WAARDE = ("-n", "--namespace", "--context", "--kubeconfig", "-s", "--server", "--cluster", "--user", "-v",
+                   "--as", "--as-group", "--token", "--request-timeout", "--cache-dir", "--certificate-authority")
+    KUST_SLEUTEL = re.compile(r"(^|[\s\"'/=:\[,-])(config\.properties|config\.json|\.env[A-Za-z0-9._-]*)($|[\s\"',\]])")
+    def kust_lijst(tekst):
+        # entries van resources:/bases:/components: (blok- of flowlijst)
+        uit, regels, k = [], tekst.split("\n"), 0
+        while k < len(regels):
+            m = re.match(r"^(\s*)(resources|bases|components):\s*(.*?)\s*$", regels[k])
+            k += 1
+            if not m:
+                continue
+            rest = re.sub(r"\s+#.*$", "", m.group(3))
+            if rest.startswith("["):
+                uit += [x.strip().strip("'\"") for x in rest.strip("[]").split(",") if x.strip()]
+                continue
+            while k < len(regels):
+                r = regels[k]
+                if not r.strip() or r.strip().startswith("#"):
+                    k += 1
+                    continue
+                e = re.match(r"^\s*-\s*(.+?)\s*$", r)
+                if not e:
+                    break
+                uit.append(re.sub(r"\s+#.*$", "", e.group(1)).strip().strip("'\""))
+                k += 1
+        return uit
+    def kust_sleutel(map_, gezien, diepte=0):
+        # geeft de map waarvan de kustomization een sleutelbestand noemt, of None
+        map_ = os.path.realpath(map_)
+        if map_ in gezien or diepte > 20:
+            return None
+        gezien.add(map_)
+        for naam in KUST_BEST:
+            f = os.path.join(map_, naam)
+            if not os.path.isfile(f):
+                continue
+            try:
+                with open(f, "r", encoding="utf-8", errors="replace") as fh:
+                    tekst = fh.read()
+            except OSError:
+                return map_  # onleesbaar: dicht
+            zonder = "\n".join(re.sub(r"(^|\s)#.*$", "", r) for r in tekst.split("\n"))
+            if KUST_SLEUTEL.search(zonder):
+                return map_
+            for e in kust_lijst(zonder):
+                if "://" in e or e.startswith(("github.com/", "git@")) or "$" in e:
+                    continue
+                sub = os.path.join(map_, os.path.expanduser(e))
+                if os.path.isdir(sub):
+                    hit = kust_sleutel(sub, gezien, diepte + 1)
+                    if hit:
+                        return hit
+            break
+        return None
+    def kust_render(w):
+        # per kustomize-render in het segment: lijst van doelpaden (None = niet te bepalen)
+        uit = []
+        for i, x in enumerate(w):
+            n = os.path.basename(x)
+            a = w[i + 1:]
+            if n == "kustomize":
+                if a[:1] != ["build"]:
+                    continue
+                pos, k, a = [], 0, a[1:]
+                while k < len(a):
+                    if a[k] in KUST_WAARDE:
+                        k += 2
+                        continue
+                    if not a[k].startswith("-"):
+                        pos.append(a[k])
+                    k += 1
+                uit.append(pos[0] if pos else None)
+            elif n in ("oc", "kubectl"):
+                k, sub = 0, None
+                while k < len(a):
+                    if a[k] in KUBE_WAARDE:
+                        k += 2
+                        continue
+                    if a[k].startswith("-"):
+                        k += 1
+                        continue
+                    sub = a[k]
+                    break
+                if sub == "kustomize":
+                    pos, rest, k = [], a[k + 1:], 0
+                    while k < len(rest):
+                        if rest[k] in KUST_WAARDE:
+                            k += 2
+                            continue
+                        if not rest[k].startswith("-"):
+                            pos.append(rest[k])
+                        k += 1
+                    uit.append(pos[0] if pos else None)
+                elif sub == "apply":
+                    rest = a[k + 1:]
+                    if not any(y == "--dry-run" or y.startswith("--dry-run=") for y in rest):
+                        continue
+                    for q, y in enumerate(rest):
+                        if y in ("-k", "--kustomize"):
+                            uit.append(rest[q + 1] if q + 1 < len(rest) else None)
+                        elif y.startswith(("--kustomize=", "-k=")):
+                            uit.append(y.split("=", 1)[1] or None)
+                        elif re.fullmatch(r"-k.+", y) and not y.startswith("--"):
+                            uit.append(y[2:])
+        return uit
+    hier_k = basis
+    for n_deel in range(0, len(delen), 2):
+        w = [re.sub(r"['\"]", "", x) for x in delen[n_deel].split() if not re.match(r"^\d*[<>]", x)]
+        while w and re.match(r"^[A-Za-z_][A-Za-z0-9_]*=", w[0]):
+            w = w[1:]
+        if not w:
+            continue
+        if w[0] in ("cd", "pushd"):
+            rest = [x for x in w[1:] if not x.startswith("-")]
+            hier_k = os.path.join(hier_k, os.path.expanduser(rest[0])) if rest and "$" not in rest[0] and "`" not in rest[0] else None
+            continue
+        if w[0] in ZOEK_NIET or w[0] in TEKST:
+            continue
+        for doel in kust_render(w):
+            if hier_k is None or doel is None or "$" in doel or "`" in doel or "://" in doel or doel.startswith(("github.com/", "git@")):
+                weiger("een kustomize-render (kustomize build, oc|kubectl kustomize, apply -k --dry-run) met een doel dat niet te bepalen is "
+                       "(pad ontbreekt of is een variabele/URL) mag niet: de uitvoer kan sleutelbestanden (config.properties, config.json, .env*) bevatten. "
+                       "Geef een bestaand pad; bekijk de wijziging met `git diff` en laat de CI-poort de render controleren.")
+            pad = os.path.join(hier_k, os.path.expanduser(doel))
+            if os.path.isfile(pad):
+                pad = os.path.dirname(pad)
+            if not os.path.isdir(pad):
+                weiger(f"een kustomize-render van {doel} mag niet: het pad bestaat niet, dus ik kan niet nagaan of de kustomization sleutelbestanden "
+                       "(config.properties, config.json, .env*) inleest. Bekijk de wijziging met `git diff` en laat de CI-poort de render controleren.")
+            hit = kust_sleutel(pad, set())
+            if hit:
+                weiger(f"een kustomize-render van {doel} mag niet: de kustomization in {hit} leest een sleutelbestand (config.properties, config.json of .env*) "
+                       "en de uitvoer brengt de inhoud in je context, ook zonder dat je het bestand opent. "
+                       "Bekijk de wijziging met `git diff` en laat de CI-poort de render controleren.")
     # Geen schrijvende commando's in de gedeelde hoofdcheckout (19 okt 2026, twee keer op één dag: een
     # reviewer deed daar een `git fetch`, daarna draaide een sessie `pre-commit run --all-files` en wijzigden
     # de fixer-hooks 43 getrackte bestanden). Geldt voor een sessie met LAB_AGENT_ROL gezet en ongelijk aan
