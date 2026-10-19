@@ -18,7 +18,7 @@
 //   scripts-tests  bun test ./scripts/ (de tests van poort en ds-regels; < 1 s, altijd)
 //   python-tests  python3 -m unittest per map onder tools/ met een test_*.py (tools/brein; < 1 s, altijd)
 //   biome       biome ci: lint (alleen foutregels), geen format  (hele repo)
-//   taken       turbo run lint typecheck test                    (affected)
+//   taken       turbo run lint typecheck test                    (affected; met POORT_DB_VERPLICHT=1 en docker als goldcoast-api/db affected, scripts/db-verplicht.ts)
 //   build       turbo run build, zonder de site (zie baseline)   (affected)
 //   e2e         turbo run e2e --concurrency=1                    (affected; tmux, watchparty, storybook-axe)
 //               met een machinebreed slot (scripts/e2e-slot.ts): standaard 2 runs tegelijk, POORT_E2E_SLOTS
@@ -62,6 +62,7 @@ import { beschrijf as ekBeschrijf, nieuweTreffers as ekNieuw, OPLOSSING as EK_OP
 import { beschrijf as ttBeschrijf, nieuweTreffers as ttNieuw, OPLOSSING as TT_OPLOSSING, sleutel as ttSleutel, zoek as ttZoek } from "./test-tenant";
 import { beoordeelBare, beschrijf as gsBeschrijf, nieuweTreffers as gsNieuw, OPLOSSING as GS_OPLOSSING, sleutel as gsSleutel, zoek as gsZoek } from "./git-scrub";
 import { leesPr } from "./bewijs-pr";
+import { dockerBereikbaar, dockerOntbreekt, omgevingVoor, pakkettenVanTaken } from "./db-verplicht";
 import { inStiltevenster } from "./stiltevenster";
 import { leesContext as roLees, stap as roStap } from "./rood-op-basis";
 import { analyseer as tiAnalyseer } from "./test-integriteit";
@@ -403,7 +404,25 @@ function turboResultaat(r: Uitkomst): Resultaat {
 
 const TAKEN = ["lint", "typecheck", "test"];
 
-function stapTaken(ctx: Context, ci: boolean): Resultaat {
+/** `docker info` met tijdsgrens: bij een timeout killt Bun het proces en is de exitcode null. */
+const dockerInfo = (timeout: number) => {
+  const p = Bun.spawnSync(["docker", "info", "--format", "{{.ServerVersion}}"], { stdout: "ignore", stderr: "ignore", timeout });
+  return { code: p.exitCode };
+};
+
+/** De packages met een (affected) test-taak; null als dat niet te bepalen is of alles draait. */
+function testPakketten(ctx: Context): string[] | null {
+  if (!ctx.affected) return null;
+  const dry = turbo(ctx, ["test"], ["--dry=json"]);
+  return pakkettenVanTaken(dry.code === 0 ? leesDryTaken(dry.stdout) : null, "test");
+}
+
+function stapTaken(basis: Context, ci: boolean): Resultaat {
+  // DB-integratietests mogen niet stil overslaan (scripts/db-verplicht.ts): affected goldcoast-api/db eist docker.
+  const { env, verplicht } = omgevingVoor(basis.env, testPakketten(basis), new Date());
+  const geenDocker = dockerOntbreekt(verplicht, !verplicht || dockerBereikbaar(dockerInfo));
+  if (geenDocker) return { status: "FOUT", detail: "geen docker", uitleg: `     ${geenDocker}` };
+  const ctx: Context = { ...basis, env };
   const zonder = ci ? (leesBaseline().uitzonderingen.ci?.zonder ?? []) : [];
   if (!zonder.length) return turboResultaat(turbo(ctx, TAKEN));
   // Een package met een uitgezonderde taak gaat uit de gewone run en krijgt een
@@ -452,7 +471,11 @@ async function stapE2e(ctx: Context): Promise<Resultaat> {
   const vrij = () => slot.vrij();
   process.on("exit", vrij);
   try {
-    const r = turboResultaat(turbo(ctx, ["e2e"], ["--concurrency=1"]));
+    // cross-tenant (goldcoast-api) draait in de e2e-taak: ook daar eist de poort docker (scripts/db-verplicht.ts).
+    const { env, verplicht } = omgevingVoor(ctx.env, e2e, new Date());
+    const geenDocker = dockerOntbreekt(verplicht, !verplicht || dockerBereikbaar(dockerInfo));
+    if (geenDocker) return { status: "FOUT", detail: "geen docker", uitleg: `     ${geenDocker}` };
+    const r = turboResultaat(turbo({ ...ctx, env }, ["e2e"], ["--concurrency=1"]));
     return { ...r, detail: `${e2e.join(", ")}: ${r.detail}` };
   } finally {
     vrij();
