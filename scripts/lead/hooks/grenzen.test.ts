@@ -455,3 +455,93 @@ describe("grenzen.sh: grootte van vaultnotities", () => {
     expect(hook("Write", { file_path: join(VAULT, "a.md"), content: KLEIN }, { LAB_VAULT_MAX_KB: "0.5" }).code).toBe(2);
   });
 });
+
+describe("grenzen.sh: recursief zoeken sluit sleutelbestanden uit", () => {
+  // Nepbestanden in een tijdelijke map; er wordt nooit een echt sleutelbestand gelezen.
+  const MAP = mkdtempSync(join(tmpdir(), "grenzen-zoek-"));
+  writeFileSync(join(MAP, "één-bestand.txt"), "foo\n");
+  writeFileSync(join(MAP, "config.properties"), "nep\n");
+  afterAll(() => rmSync(MAP, { recursive: true, force: true }));
+  const zoek = (command: string) => draai({ tool_name: "Bash", tool_input: { command }, cwd: MAP });
+
+  const GREP_UIT = "--exclude=config.properties --exclude=config.json --exclude='.env*'";
+  const RG_UIT = "--glob '!config.properties' --glob '!config.json' --glob '!.env*'";
+  const GIT_UIT = "':!*config.properties' ':!*config.json' ':!*.env*'";
+
+  const WEIGER_ZOEK = [
+    "grep -rn foo .",
+    "grep -R foo repo/",
+    "grep --recursive foo .",
+    "grep -nri foo .",
+    "egrep -r foo .",
+    "rg foo",
+    "rg foo repo/",
+    "git grep foo",
+    "git -C repo grep -n foo",
+    "rg --glob '!config.properties' foo .",
+    "rg -g '!config.properties' foo .",
+    "grep -rn --exclude=config.properties foo .",
+    "grep -rn --exclude=config.properties --exclude=config.json foo .",
+    "git grep foo -- . ':!*config.properties'",
+    // zsh expandeert een ongequote .env*, dus de uitsluiting telt niet
+    "grep -rn --exclude=config.properties --exclude=config.json --exclude=.env* foo .",
+    // een uitsluiting op de verkeerde naam
+    "rg --glob '!config.properties' --glob '!config.json' --glob '!.env.example' foo .",
+    // in een omhulsel of na een wrapper
+    'bash -c "rg foo ."',
+    "timeout 5 rg foo .",
+    "find . -type f -exec grep -r foo {} +",
+    "cd repo && rg foo",
+    "cat x | rg foo .",
+    // het enige pad is zelf een sleutelbestand, of er zijn meer paden
+    "rg foo config.properties",
+    "grep -r foo config.properties",
+    "rg foo één-bestand.txt andere.txt",
+    "rg -e foo -e bar",
+  ];
+  const DOOR_ZOEK = [
+    `grep -rn ${GREP_UIT} foo .`,
+    `grep -R ${GREP_UIT} foo repo/`,
+    `rg ${RG_UIT} foo .`,
+    "rg -g '!config.properties' -g '!config.json' -g '!.env*' foo .",
+    "rg --glob='!**/config.properties' --glob='!*config.json' --glob '!.env.*' foo",
+    `git grep foo -- . ${GIT_UIT}`,
+    "git grep -n foo -- ':(exclude)config.properties' ':(exclude,glob)**/config.json' ':^.env*'",
+    "grep -rn --exclude config.properties --exclude config.json --exclude '.env*' foo .",
+    // één expliciet bestand, geen recursie
+    "grep foo één-bestand.txt",
+    "grep -n foo één-bestand.txt andere.txt",
+    "rg foo één-bestand.txt",
+    "grep -r foo één-bestand.txt",
+    // stdin of geen zoekopdracht
+    "git log | rg foo",
+    "git diff | grep -n foo",
+    "ls | grep foo",
+    "rg --version",
+    "rg --files",
+    "which rg",
+    "echo rg foo",
+    "man grep",
+    "ls -la && git status",
+    "bun test scripts/lead/hooks/grenzen.test.ts",
+    "git log --grep=foo",
+  ];
+  for (const c of WEIGER_ZOEK)
+    test(`weigert ${JSON.stringify(c)}`, () => {
+      const r = zoek(c);
+      expect(r.code).toBe(2);
+      expect(r.stderr).toContain("Geweigerd door grenzen.sh: recursief zoeken moet sleutelbestanden uitsluiten");
+    });
+  for (const c of DOOR_ZOEK)
+    test(`laat door ${JSON.stringify(c)}`, () => {
+      expect(zoek(c).code).toBe(0);
+    });
+  test("de melding noemt het juiste commando en wat ontbreekt", () => {
+    const rg = zoek("rg --glob '!config.properties' foo .").stderr;
+    expect(rg).toContain("ontbreekt: config.json, .env*");
+    expect(rg).toContain("rg --glob '!config.properties' --glob '!config.json' --glob '!.env*' <patroon> <pad>");
+    expect(zoek("grep -rn foo .").stderr).toContain("grep -rn --exclude=config.properties --exclude=config.json --exclude='.env*'");
+    expect(zoek("git grep foo").stderr).toContain("':!*config.properties'");
+    expect(zoek("grep -rn --exclude=.env* foo .").stderr).toContain("tussen quotes");
+  });
+});
