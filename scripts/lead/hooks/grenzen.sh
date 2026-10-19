@@ -11,6 +11,11 @@
 #     expliciete GET), `gh api graphql` met een mutation, en `gh alias set|import`
 #   - een rauwe `git push` met force, verwijderen, naar main, --no-verify of POORT_OVERSLAAN
 #     (alleen via scripts/lead/push.sh), en een rauwe `ssh jump … oc` (alleen via scripts/lead/lab-lees.sh)
+#   - schrijvende commando's (git checkout/fetch/commit, pre-commit, formatters, bun install) van een agent in de
+#     gedeelde hoofdcheckout (geen linked worktree); de lead en een eigen worktree mogen wel
+#   - recursief zoeken (grep -r, rg, git grep) zonder uitsluiting van config.properties, config.json en .env*
+#   - een kustomize-render (kustomize build, oc|kubectl kustomize, apply -k --dry-run) van een map waarvan de
+#     kustomization config.properties, config.json of .env* inleest (directe en via resources:/bases:)
 #   - elke aanroep van merge.sh (elk pad) vanuit een subagent of fork (`agent_id`/`agent_type` in de invoer)
 # Faalt dicht (17 okt 2026): bij een eigen fout (invoer geen JSON of van de verkeerde vorm, een
 # python-status anders dan 0 of 2) exit 2 met een melding: weigeren. 0 = toestaan.
@@ -45,6 +50,49 @@ if tool in ("Grep", "Glob"):
     p = " ".join(str(ti.get(k, "")) for k in ("path", "pattern", "glob"))
     if re.search(r"\.config/(klaarover|douane|agentwerkbank)", p):
         weiger("zoeken in een sleutelmap mag niet.")
+
+# Grootte van vaultnotities (19 okt 2026): een Write of Edit (ook MultiEdit) op een .md onder
+# ~/vault-b-status geeft geen resultaat > 40 KB (LAB_VAULT_MAX_KB) als het bestand nieuw is of groeit;
+# een Edit die een te groot bestand gelijk houdt of kleiner maakt mag. Uitgezonderd: lead.md in de
+# vault-root (eigen rotatie) en alles onder archief/ en emb-gemma/. Alleen dat ene bestand wordt gelezen.
+# Niet afgedwongen: Bash-appends (`cat >> notitie.md`) en elke andere schrijfroute.
+if tool in ("Write", "Edit", "MultiEdit"):
+    vault = os.path.join(os.path.expanduser("~"), "vault-b-status")
+    pad = os.path.normpath(os.path.join(vault, os.path.expanduser(str(ti.get("file_path", "")))))
+    rel = os.path.relpath(pad, vault)
+    if pad.endswith(".md") and not rel.startswith("..") and rel != "lead.md" and rel.split(os.sep)[0] not in ("archief", "emb-gemma"):
+        try:
+            grens = int(float(os.environ.get("LAB_VAULT_MAX_KB", "40")) * 1024)
+        except ValueError:
+            sys.exit(5)
+        huidig = None
+        try:
+            with open(pad, "rb") as f:
+                huidig = f.read().decode("utf-8", "replace")
+        except OSError:
+            huidig = None  # ontbrekend of onleesbaar: geen eigen fout
+        if tool == "Write":
+            na = len(str(ti.get("content", "")).encode("utf-8"))
+        else:
+            edits = ti.get("edits") if tool == "MultiEdit" else [ti]
+            if not isinstance(edits, list):
+                sys.exit(4)
+            if huidig is None:
+                na = sum(len(str(e.get("new_string", "")).encode("utf-8")) for e in edits if isinstance(e, dict))
+            else:
+                tekst = huidig
+                for e in edits:
+                    if not isinstance(e, dict):
+                        sys.exit(4)
+                    oud, nieuw = str(e.get("old_string", "")), str(e.get("new_string", ""))
+                    if oud:
+                        tekst = tekst.replace(oud, nieuw) if e.get("replace_all") else tekst.replace(oud, nieuw, 1)
+                na = len(tekst.encode("utf-8"))
+        voor = len(huidig.encode("utf-8")) if huidig is not None else None
+        if na > grens and (voor is None or na > voor):
+            weiger(f"deze notitie wordt {na / 1024:.0f} KB; de limiet voor een vaultnotitie is {grens / 1024:.0f} KB (LAB_VAULT_MAX_KB). "
+                   "Agents lezen een heel bestand terug, dus splits per spoor (bv. CONTRACT-<spoor>.md, PLAN-<deel>.md) "
+                   "en laat het hoofdbestand naar de delen verwijzen; afgerond werk naar archief/.")
 
 if tool == "Bash":
     c = str(ti.get("command", ""))
@@ -397,6 +445,514 @@ if tool == "Bash":
             jump = True
     if jump and re.search(r"(^|[\s'\"/;&|(`])oc($|[\s'\";&|)])", cz):
         weiger(f"het lab lees je alleen via {LAB_SH} <get|describe|logs|events|top|auth can-i> … (alleen-lezen, geen secrets).{BUITEN}")
+    # Recursief zoeken sluit sleutelbestanden uit (19 okt 2026, twee keer op één dag: een recursieve grep/rg
+    # in gitops-clones gaf regels uit config.properties in de uitvoer). Een `grep -r/-R/--recursive`, elke
+    # `rg` en elke `git grep` moet config.properties, config.json én .env* uitsluiten (grep:
+    # --exclude=NAAM; rg: --glob '!NAAM'; git grep: pathspec ':!*NAAM'), of het doel is één bestaand
+    # bestand dat zelf geen sleutelbestand is, of de zoekopdracht staat achter een pipe en heeft geen pad
+    # (`cmd | rg x` zoekt in stdin). Een uitsluiting met * ? [ telt alleen tussen quotes: zsh expandeert
+    # anders het patroon. Herkend op de woorden (ook in `bash -c "…"`, na sudo/xargs/timeout); alleen
+    # een segment dat met echo/printf/man/which/type/command/brew/cat/ls begint telt niet.
+    # Niet gedekt: andere zoekers (ag, ack, ugrep), een niet-recursieve grep over een lijst bestanden
+    # (find … | xargs grep x), een alias of script dat intern recursief zoekt.
+    ZOEK = {"grep", "egrep", "fgrep", "zgrep", "ggrep", "rg"}
+    ZOEK_NIET = ("echo", "printf", "man", "which", "type", "whereis", "command", "brew", "cat", "ls", "head", "tail", "wc", "stat", "file", "open")
+    ZOEK_ZONDER_BRON = ("--version", "-V", "--help", "-h", "--files", "--type-list")
+    ZOEK_WAARDE = {
+        "grep": ("-e", "-f", "-m", "-A", "-B", "-C", "-d", "-D", "--include", "--exclude", "--exclude-dir", "--exclude-from", "--label", "--regexp", "--file", "--max-count", "--context", "--after-context", "--before-context"),
+        "rg": ("-e", "-f", "-g", "-t", "-T", "-A", "-B", "-C", "-m", "-M", "-j", "-d", "-E", "-r", "--glob", "--iglob", "--type", "--type-not", "--type-add", "--max-count", "--max-depth", "--replace", "--context", "--after-context", "--before-context", "--file", "--regexp", "--threads", "--max-filesize", "--encoding", "--pre", "--pre-glob", "--sort", "--sortr", "--engine", "--colors", "--path-separator", "--ignore-file", "--max-columns"),
+        "git grep": ("-e", "-f", "-A", "-B", "-C", "-m", "-O", "--max-depth", "--threads", "--max-count", "--context", "--after-context", "--before-context", "--open-files-in-pager"),
+    }
+    ZOEK_NAMEN = ("config.properties", "config.json", ".env*")
+    # `:(exclude)` wordt vóór het splitsen `:[exclude]` (anders knipt de haakjes-splitsing het pathspec stuk)
+    PATHSPEC_UIT = re.compile(r"^:(?:[!^]|\[(?:[a-z,]*,)?exclude(?:,[a-z]*)?\])(.*)$")
+    SLEUTELNAAM = re.compile(r"config\.properties|config\.json|\.env(\..*)?")
+    def zoek_uitsluitingen(soort, ruw, w):
+        gedekt, onveilig, waarden = set(), False, []
+        for k, x in enumerate(w):
+            r = ruw[k]
+            nxt = (w[k + 1], ruw[k + 1]) if k + 1 < len(w) else None
+            if soort == "grep":
+                if x.startswith("--exclude="):
+                    waarden.append((x[10:], r))
+                elif x == "--exclude" and nxt:
+                    waarden.append(nxt)
+            elif soort == "rg":
+                if x in ("-g", "--glob", "--iglob") and nxt:
+                    v = nxt
+                elif x.startswith(("--glob=", "--iglob=")):
+                    v = (x.split("=", 1)[1], r)
+                elif x.startswith("-g") and len(x) > 2 and not x.startswith("--"):
+                    v = (x[2:], r)
+                else:
+                    continue
+                if v[0].startswith("!"):
+                    waarden.append((v[0][1:], v[1]))
+            else:
+                m = PATHSPEC_UIT.match(x)
+                if m:
+                    waarden.append((m.group(1), r))
+        for v, r in waarden:
+            v = v.replace("\\", "")
+            n = re.sub(r"^(\*\*/|\*/|\*)", "", v)
+            naam = "config.properties" if n == "config.properties" else "config.json" if n == "config.json" else ".env*" if n in (".env*", ".env.*") else None
+            if not naam:
+                continue
+            if re.search(r"[*?\[]", v) and not re.search(r"['\"\\]", r):
+                onveilig = True
+            else:
+                gedekt.add(naam)
+        return gedekt, onveilig
+    def zoek_paden(soort, a):
+        pos, heeft_e, k = [], False, 0
+        while k < len(a):
+            x = a[k]
+            if x == "--":
+                pos += a[k + 1:]
+                break
+            if x in ZOEK_WAARDE[soort]:
+                heeft_e = heeft_e or x in ("-e", "-f", "--regexp", "--file")
+                k += 2
+                continue
+            if x.startswith("-") and len(x) > 1:
+                heeft_e = heeft_e or x.startswith(("--regexp=", "--file="))
+            else:
+                pos.append(x)
+            k += 1
+        return pos if heeft_e else pos[1:]
+    def zoek_recursief(soort, a):
+        if soort != "grep":
+            return True
+        for k, x in enumerate(a):
+            if x == "--":
+                break
+            if x in ("--recursive", "--dereference-recursive") or x == "--directories=recurse":
+                return True
+            if x == "-d" and a[k + 1:k + 2] == ["recurse"]:
+                return True
+            if re.fullmatch(r"-[A-Za-z0-9]+", x) and re.search(r"[rR]", x):
+                return True
+        return False
+    def zoek_controle(soort, ruw, w, i, gepijpt, map_):
+        a = w[i + 1:]
+        if any(x in ZOEK_ZONDER_BRON for x in a) or not zoek_recursief(soort, a):
+            return
+        paden = zoek_paden(soort, a)
+        if soort != "git grep":
+            if not paden and gepijpt and i == 0:
+                return  # `cmd | rg x` zoekt in stdin
+            if len(paden) == 1:
+                p = os.path.join(map_, os.path.expanduser(paden[0]))
+                if os.path.isfile(p) and not SLEUTELNAAM.fullmatch(os.path.basename(p)):
+                    return  # één expliciet bestand, geen recursie
+        gedekt, onveilig = zoek_uitsluitingen(soort, ruw[i + 1:], a)
+        ontbreekt = [n for n in ZOEK_NAMEN if n not in gedekt]
+        if not ontbreekt:
+            return
+        goed = {
+            "grep": "grep -rn --exclude=config.properties --exclude=config.json --exclude='.env*' <patroon> <pad>",
+            "rg": "rg --glob '!config.properties' --glob '!config.json' --glob '!.env*' <patroon> <pad>",
+            "git grep": "git grep <patroon> -- . ':!*config.properties' ':!*config.json' ':!*.env*'",
+        }[soort]
+        extra = " Zet een uitsluiting met * of ? tussen quotes: zsh expandeert anders het patroon en de uitsluiting werkt niet." if onveilig else ""
+        weiger(f"recursief zoeken moet sleutelbestanden uitsluiten (config.properties, config.json, .env*); ontbreekt: {', '.join(ontbreekt)}. "
+               f"Gebruik: {goed}.{extra} Eén bestand zoeken mag ook: geef dat bestand als enige pad.")
+    # Tekst is geen zoekopdracht (19 okt 2026, twee valse alarmen: `echo "… grep/rg) …" >> notitie.md` en
+    # een heredoc-regel `Zoeken (grep/rg, …)`). Voor de zoekcontrole worden een gequote argument van een
+    # tekstcommando (echo, printf, git commit/tag/notes/stash, gh) en de body van een heredoc dat naar een
+    # datacommando gaat (cat, tee, git, gh, wc, sort, base64, curl, jq) leeggemaakt. Echte aanroepen blijven
+    # zichtbaar: na | && ; of in `bash -c '…'`, via xargs of ssh, en alles wat `$(…)` of backticks bevat
+    # (dat wordt uitgevoerd). Een heredoc naar sh/bash/python/node blijft ook gewoon zichtbaar.
+    TEKST_CMD = {"echo", "printf", "gh"}
+    TEKST_GIT = {"commit", "tag", "notes", "stash", "merge", "revert", "cherry-pick"}
+    DATA_CMD = {"cat", "tee", "git", "gh", "wc", "sort", "base64", "curl", "jq", "echo", "printf"}
+    def tekst_leeg(cmd):
+        try:
+            def kop(seg):
+                w = seg.split()
+                while w and (re.match(r"^[A-Za-z_][A-Za-z0-9_]*=", w[0]) or w[0] in ("sudo", "env", "command", "nohup", "time", "exec")):
+                    w = w[1:]
+                return w
+            def is_tekst(seg):
+                w = kop(seg)
+                if not w:
+                    return False
+                if w[0] in TEKST_CMD:
+                    return True
+                return w[0] == "git" and any(x in TEKST_GIT for x in w[1:4])
+            out, i, n, ss, hd = "", 0, len(cmd), 0, []
+            while i < n:
+                ch = cmd[i]
+                if ch == "\n":
+                    out += "\n"; i += 1
+                    for eind, streep, ongequote, data in hd:
+                        j, body = i, []
+                        while j < n:
+                            e = cmd.find("\n", j)
+                            e = n if e < 0 else e
+                            regel = cmd[j:e]
+                            if (regel.lstrip("\t") if streep else regel) == eind:
+                                break
+                            body.append(regel)
+                            j = e + 1
+                        tekst = "\n".join(body)
+                        behoud = (not data) or (ongequote and re.search(r"\$\(|`", tekst))
+                        if behoud and body:
+                            out += tekst + "\n"
+                        i = min(j, n)
+                        if j < n:
+                            e = cmd.find("\n", j)
+                            e = n if e < 0 else e
+                            out += cmd[j:e + 1]; i = e + 1
+                    hd = []
+                    ss = len(out)
+                elif cmd.startswith("<<", i) and not cmd.startswith("<<<", i):
+                    m = re.match(r"<<(-?)[ \t]*(['\"]?)([A-Za-z_][A-Za-z0-9_]*)\2", cmd[i:])
+                    if not m:
+                        out += ch; i += 1
+                        continue
+                    w = kop(out[ss:])
+                    hd.append((m.group(3), bool(m.group(1)), not m.group(2), bool(w) and w[0] in DATA_CMD))
+                    out += m.group(0); i += m.end()
+                elif ch in "'\"":
+                    j = i + 1
+                    while j < n and cmd[j] != ch:
+                        j += 2 if (ch == '"' and cmd[j] == "\\") else 1
+                    if j >= n:
+                        out += cmd[i:]; i = n
+                        continue
+                    inhoud = cmd[i + 1:j]
+                    if is_tekst(out[ss:]) and not (ch == '"' and re.search(r"\$\(|`", inhoud)):
+                        out += ch + ch
+                    else:
+                        out += cmd[i:j + 1]
+                    i = j + 1
+                elif ch == "\\":
+                    out += cmd[i:i + 2]; i += 2
+                else:
+                    m = re.match(r"&&|\|\||[;&|()`]|\$\(", cmd[i:])
+                    if m:
+                        out += m.group(0); i += m.end()
+                        ss = len(out)
+                    else:
+                        out += ch; i += 1
+            return out
+        except Exception:
+            return cmd
+    cz_zoek = tekst_leeg(cz)
+    hier_zoek = basis
+    delen = re.split(r"(&&|\|\||[;&|()\n`]|\$\()", re.sub(r":\(([a-z,]+)\)", r":[\1]", cz_zoek))
+    for n_deel in range(0, len(delen), 2):
+        seg = delen[n_deel]
+        gepijpt = n_deel > 0 and delen[n_deel - 1] == "|"
+        ruw = [x for x in seg.split() if not re.match(r"^\d*[<>]", x)]
+        w = [re.sub(r"['\"]", "", x) for x in ruw]
+        while w and re.match(r"^[A-Za-z_][A-Za-z0-9_]*=", w[0]):
+            w, ruw = w[1:], ruw[1:]
+        if not w:
+            continue
+        if w[0] == "cd":
+            rest = [x for x in w[1:] if not x.startswith("-")]
+            hier_zoek = os.path.join(hier_zoek, os.path.expanduser(rest[0])) if rest else os.path.expanduser("~")
+            continue
+        if w[0] in ZOEK_NIET:
+            continue
+        git_grep = set()
+        for glob, sub, args in git_aanroepen(w):
+            if sub == "grep":
+                j = w.index("grep")
+                git_grep.add(j)
+                zoek_controle("git grep", ruw, w, j, False, hier_zoek)
+        for i, x in enumerate(w):
+            if i not in git_grep and os.path.basename(x) in ZOEK:
+                zoek_controle("rg" if os.path.basename(x) == "rg" else "grep", ruw, w, i, gepijpt, hier_zoek)
+    # Een kustomize-render van een map met sleutelbestanden (19 okt 2026: `kustomize build` over een map
+    # waarvan de configMapGenerator config.properties las, bracht de inhoud in de context van een agent
+    # zonder dat het bestand geopend werd). Geweigerd: `kustomize build <pad>`, `oc|kubectl kustomize <pad>`
+    # en `oc|kubectl apply -k <pad>` met --dry-run (ook in `bash -c '…'`, na | && ; of sudo/xargs/timeout),
+    # maar alleen als de kustomization in het doelpad, of in een map die daaruit via resources:/bases:/
+    # components: volgt, config.properties, config.json of .env* noemt (files: of envs:). Dicht: een doel dat
+    # niet te bepalen is (pad ontbreekt, bevat $ of backtick, bestaat niet) wordt geweigerd. Alleen de
+    # kustomization-bestanden worden gelezen, nooit de sleutelbestanden zelf. Tekst (echo, commitbericht,
+    # heredoc) is leeggemaakt door tekst_leeg, dus geen vals alarm.
+    # Niet gedekt: apply -k zonder --dry-run, remote bases (github.com/…, https://), een
+    # Helm-chart of plugin die intern leest, `.env`-namen die niet met .env beginnen (bv. db.env), een script of
+    # alias dat kustomize intern draait, en patches/replacements die een sleutelbestand noemen.
+    KUST_BEST = ("kustomization.yaml", "kustomization.yml", "Kustomization")
+    KUST_WAARDE = ("-o", "--output", "--load-restrictor", "--reorder", "--helm-command", "--mount", "--network-name",
+                   "--stack-trace-limit", "--enable-alpha-plugins")
+    KUBE_WAARDE = ("-n", "--namespace", "--context", "--kubeconfig", "-s", "--server", "--cluster", "--user", "-v",
+                   "--as", "--as-group", "--token", "--request-timeout", "--cache-dir", "--certificate-authority")
+    KUST_SLEUTEL = re.compile(r"(^|[\s\"'/=:\[,-])(config\.properties|config\.json|\.env[A-Za-z0-9._-]*)($|[\s\"',\]])")
+    def kust_lijst(tekst):
+        # entries van resources:/bases:/components: (blok- of flowlijst)
+        uit, regels, k = [], tekst.split("\n"), 0
+        while k < len(regels):
+            m = re.match(r"^(\s*)(resources|bases|components):\s*(.*?)\s*$", regels[k])
+            k += 1
+            if not m:
+                continue
+            rest = re.sub(r"\s+#.*$", "", m.group(3))
+            if rest.startswith("["):
+                uit += [x.strip().strip("'\"") for x in rest.strip("[]").split(",") if x.strip()]
+                continue
+            while k < len(regels):
+                r = regels[k]
+                if not r.strip() or r.strip().startswith("#"):
+                    k += 1
+                    continue
+                e = re.match(r"^\s*-\s*(.+?)\s*$", r)
+                if not e:
+                    break
+                uit.append(re.sub(r"\s+#.*$", "", e.group(1)).strip().strip("'\""))
+                k += 1
+        return uit
+    def kust_sleutel(map_, gezien, diepte=0):
+        # geeft de map waarvan de kustomization een sleutelbestand noemt, of None
+        map_ = os.path.realpath(map_)
+        if map_ in gezien or diepte > 20:
+            return None
+        gezien.add(map_)
+        for naam in KUST_BEST:
+            f = os.path.join(map_, naam)
+            if not os.path.isfile(f):
+                continue
+            try:
+                with open(f, "r", encoding="utf-8", errors="replace") as fh:
+                    tekst = fh.read()
+            except OSError:
+                return map_  # onleesbaar: dicht
+            zonder = "\n".join(re.sub(r"(^|\s)#.*$", "", r) for r in tekst.split("\n"))
+            if KUST_SLEUTEL.search(zonder):
+                return map_
+            for e in kust_lijst(zonder):
+                if "://" in e or e.startswith(("github.com/", "git@")) or "$" in e:
+                    continue
+                sub = os.path.join(map_, os.path.expanduser(e))
+                if os.path.isdir(sub):
+                    hit = kust_sleutel(sub, gezien, diepte + 1)
+                    if hit:
+                        return hit
+            break
+        return None
+    def kust_render(w):
+        # per kustomize-render in het segment: lijst van doelpaden (None = niet te bepalen)
+        uit = []
+        for i, x in enumerate(w):
+            n = os.path.basename(x)
+            a = w[i + 1:]
+            if n == "kustomize":
+                if a[:1] != ["build"]:
+                    continue
+                pos, k, a = [], 0, a[1:]
+                while k < len(a):
+                    if a[k] in KUST_WAARDE:
+                        k += 2
+                        continue
+                    if not a[k].startswith("-"):
+                        pos.append(a[k])
+                    k += 1
+                uit.append(pos[0] if pos else None)
+            elif n in ("oc", "kubectl"):
+                k, sub = 0, None
+                while k < len(a):
+                    if a[k] in KUBE_WAARDE:
+                        k += 2
+                        continue
+                    if a[k].startswith("-"):
+                        k += 1
+                        continue
+                    sub = a[k]
+                    break
+                if sub == "kustomize":
+                    pos, rest, k = [], a[k + 1:], 0
+                    while k < len(rest):
+                        if rest[k] in KUST_WAARDE:
+                            k += 2
+                            continue
+                        if not rest[k].startswith("-"):
+                            pos.append(rest[k])
+                        k += 1
+                    uit.append(pos[0] if pos else None)
+                elif sub in ("apply", "diff"):
+                    rest = a[k + 1:]
+                    if sub == "apply" and not any(y == "--dry-run" or y.startswith("--dry-run=") for y in rest):
+                        continue
+                    for q, y in enumerate(rest):
+                        if y in ("-k", "--kustomize"):
+                            uit.append(rest[q + 1] if q + 1 < len(rest) else None)
+                        elif y.startswith(("--kustomize=", "-k=")):
+                            uit.append(y.split("=", 1)[1] or None)
+                        elif re.fullmatch(r"-k.+", y) and not y.startswith("--"):
+                            uit.append(y[2:])
+        return uit
+    hier_k = basis
+    for n_deel in range(0, len(delen), 2):
+        w = [re.sub(r"['\"]", "", x) for x in delen[n_deel].split() if not re.match(r"^\d*[<>]", x)]
+        while w and re.match(r"^[A-Za-z_][A-Za-z0-9_]*=", w[0]):
+            w = w[1:]
+        if not w:
+            continue
+        if w[0] in ("cd", "pushd"):
+            rest = [x for x in w[1:] if not x.startswith("-")]
+            hier_k = os.path.join(hier_k, os.path.expanduser(rest[0])) if rest and "$" not in rest[0] and "`" not in rest[0] else None
+            continue
+        if w[0] in ZOEK_NIET or w[0] in TEKST:
+            continue
+        for doel in kust_render(w):
+            if hier_k is None or doel is None or "$" in doel or "`" in doel or "://" in doel or doel.startswith(("github.com/", "git@")):
+                weiger("een kustomize-render (kustomize build, oc|kubectl kustomize, apply -k --dry-run) met een doel dat niet te bepalen is "
+                       "(pad ontbreekt of is een variabele/URL) mag niet: de uitvoer kan sleutelbestanden (config.properties, config.json, .env*) bevatten. "
+                       "Geef een bestaand pad; bekijk de wijziging met `git diff` en laat de CI-poort de render controleren.")
+            pad = os.path.join(hier_k, os.path.expanduser(doel))
+            if os.path.isfile(pad):
+                pad = os.path.dirname(pad)
+            if not os.path.isdir(pad):
+                weiger(f"een kustomize-render van {doel} mag niet: het pad bestaat niet, dus ik kan niet nagaan of de kustomization sleutelbestanden "
+                       "(config.properties, config.json, .env*) inleest. Bekijk de wijziging met `git diff` en laat de CI-poort de render controleren.")
+            hit = kust_sleutel(pad, set())
+            if hit:
+                weiger(f"een kustomize-render van {doel} mag niet: de kustomization in {hit} leest een sleutelbestand (config.properties, config.json of .env*) "
+                       "en de uitvoer brengt de inhoud in je context, ook zonder dat je het bestand opent. "
+                       "Bekijk de wijziging met `git diff` en laat de CI-poort de render controleren.")
+    # Geen schrijvende commando's in de gedeelde hoofdcheckout (19 okt 2026, twee keer op één dag: een
+    # reviewer deed daar een `git fetch`, daarna draaide een sessie `pre-commit run --all-files` en wijzigden
+    # de fixer-hooks 43 getrackte bestanden). Geldt voor een sessie met LAB_AGENT_ROL gezet en ongelijk aan
+    # `lead`, en voor elke subagent of fork (`agent_id`/`agent_type`). Werkmap = de `cwd` uit de invoer, een
+    # `cd`/`pushd` in het commando en `git -C <pad>`. Hoofdcheckout = een map waarvan `git rev-parse
+    # --git-dir` gelijk is aan `--git-common-dir` (dus geen linked worktree) en waarvan de werkboom de
+    # hoofdcheckout van Brian is (LAB_HOOFDCHECKOUT, standaard ~/Desktop/LAB-BAWUAH/lab-bawuah; een eigen
+    # clone heeft dezelfde vorm en mag wel). Schrijvend: zie hieronder.
+    # Een werkmap die niet te bepalen is (`cd $VAR`, `cd -`) wordt toegestaan. Niet gedekt: schrijven via
+    # redirects of andere programma's (sed -i, mv, rm, een script dat intern schrijft), `git --git-dir`
+    # en `--work-tree`.
+    rol = os.environ.get("LAB_AGENT_ROL", "")
+    if (rol and rol != "lead") or is_subagent:
+        import subprocess
+        GIT_SCHRIJF = {"checkout", "switch", "reset", "restore", "clean", "fetch", "pull", "push", "commit", "merge",
+                       "rebase", "cherry-pick", "am", "apply", "revert", "add", "rm", "mv"}
+        PAKKET = ("bun", "npm", "pnpm", "yarn")
+        PAKKET_INSTALL = ("install", "i", "ci", "add", "remove", "rm", "update", "upgrade", "link", "unlink")
+        SCRIPT_SCHRIJF = re.compile(r"(format|fmt|fix)([:_-].*)?")
+        # De gedeelde hoofdcheckout: git-dir gelijk aan git-common-dir (geen linked worktree) én de werkboom is
+        # een van de paden in LAB_HOOFDCHECKOUT (dubbele punt als scheiding; standaard de checkout van Brian).
+        # Zonder dat tweede kenmerk zou ook een eigen clone (zelfde vorm) als hoofdcheckout tellen.
+        hoofd_paden = {os.path.realpath(os.path.expanduser(x)) for x in
+                       os.environ.get("LAB_HOOFDCHECKOUT", "~/Desktop/LAB-BAWUAH/lab-bawuah").split(":") if x}
+        hoofd_cache = {}
+        def is_hoofd(pad):
+            while pad and not os.path.isdir(pad) and os.path.dirname(pad) != pad:
+                pad = os.path.dirname(pad)
+            if pad in hoofd_cache:
+                return hoofd_cache[pad]
+            uit = False
+            try:
+                env = {k: v for k, v in os.environ.items() if not k.startswith("GIT_")}
+                r = subprocess.run(["git", "-C", pad, "rev-parse", "--git-dir", "--git-common-dir", "--show-toplevel"], capture_output=True, text=True, timeout=5, env=env)
+                regels = r.stdout.split("\n")
+                if r.returncode == 0 and len(regels) >= 3 and regels[0] and regels[1] and regels[2]:
+                    gd, cd, top = (os.path.realpath(os.path.join(pad, x)) for x in regels[:3])
+                    uit = gd == cd and top in hoofd_paden
+            except Exception:
+                uit = False
+            hoofd_cache[pad] = uit
+            return uit
+        def heeft(a, *vlaggen):
+            return any(x in vlaggen or any(x.startswith(v + "=") for v in vlaggen if v.startswith("--")) for x in a)
+        def tool_schrijft(w):
+            # geeft de naam van het schrijvende commando, of None
+            for _ in range(4):
+                while w and (re.match(r"^[A-Za-z_][A-Za-z0-9_]*=", w[0]) or w[0] in ("exec", "sudo", "env", "nohup", "time", "command", "nice", "xargs", "timeout")):
+                    w = w[1:]
+                if w and re.fullmatch(r"(/\S*/)?(ba|z)?sh", w[0]) and "-c" in w:
+                    w = w[w.index("-c") + 1:]
+                    continue
+                if not w:
+                    return None
+                n = os.path.basename(w[0])
+                r = [x for x in w[1:]]
+                if n in ("bunx", "npx", "pnpx", "uvx"):
+                    while r and r[0].startswith("-"):
+                        r = r[1:]
+                    w = r
+                elif n in ("bun", "pnpm", "npm", "yarn") and r[:1] in (["x"], ["dlx"], ["exec"]):
+                    w = r[1:]
+                elif n in ("uv", "poetry", "pipx") and r[:1] == ["run"]:
+                    w = r[1:]
+                elif re.fullmatch(r"python3?(\.\d+)?", n) and r[:1] == ["-m"]:
+                    w = r[1:]
+                else:
+                    break
+            if not w:
+                return None
+            n, a = os.path.basename(w[0]), w[1:]
+            if n == "pre-commit":
+                return None if heeft(a, "-h", "--help", "--version") else "pre-commit"
+            if n in PAKKET:
+                if a[:1] and a[0] in PAKKET_INSTALL:
+                    return f"{n} {a[0]}"
+                script = a[1] if a[:1] == ["run"] and len(a) > 1 else (a[0] if a else "")
+                rest = a[2:] if a[:1] == ["run"] else a[1:]
+                if SCRIPT_SCHRIJF.fullmatch(script) and not heeft(rest, "--check", "-c", "--list-different"):
+                    return f"{n} run {script}"
+                if script.startswith("lint") and heeft(rest, "--fix"):
+                    return f"{n} run {script} --fix"
+                return None
+            if n == "prettier":
+                return "prettier --write" if heeft(a, "--write", "-w") else None
+            if n in ("oxfmt", "black", "isort"):
+                return None if heeft(a, "--check", "--list-different", "--diff", "--check-only", "-c", "-l", "--help", "-h", "--version") else n
+            if n == "biome":
+                return "biome --write" if heeft(a, "--write", "--fix", "--apply", "--apply-unsafe") else None
+            if n == "ruff":
+                if a[:1] == ["format"]:
+                    return None if heeft(a[1:], "--check", "--diff", "--help", "-h") else "ruff format"
+                return "ruff --fix" if heeft(a, "--fix", "--unsafe-fixes") else None
+            if n == "eslint":
+                return "eslint --fix" if heeft(a, "--fix", "--fix-type") else None
+            return None
+        def git_schrijft(sub, args):
+            if sub in GIT_SCHRIJF:
+                return True
+            if sub == "stash":
+                return not args or args[0] not in ("list", "show")
+            if sub == "worktree":
+                return bool(args) and args[0] in ("add", "remove", "move", "prune", "lock", "unlock", "repair")
+            if sub == "branch":
+                return any(re.fullmatch(r"-[A-Za-z]*[dDmM][A-Za-z]*|--delete|--move", x) for x in args)
+            return False
+        def los(p, hier_):
+            # None = niet te bepalen (variabele, backtick, `-`): toestaan
+            if hier_ is None or "$" in p or "`" in p or p == "-":
+                return None
+            return os.path.join(hier_, os.path.expanduser(p))
+        hier_h = basis
+        for seg in re.split(r"&&|\|\||[;&|()\n`]|\$\(", cz):
+            w = woorden(seg)
+            e = eerste(w)
+            if e in ("cd", "pushd"):
+                rest = [x for x in w[w.index(e) + 1:] if not x.startswith("-")]
+                hier_h = los(rest[0], hier_h) if rest else os.path.expanduser("~")
+                continue
+            if e in TEKST or e == "" or hier_h is None:
+                continue
+            gevonden = None
+            for glob, sub, args in git_aanroepen(w):
+                map_ = hier_h
+                for o, v in glob:
+                    if o == "-C":
+                        map_ = los(v, map_)
+                if map_ is not None and git_schrijft(sub, args) and is_hoofd(map_):
+                    gevonden = (f"git {sub}", map_)
+                    break
+            if not gevonden:
+                naam = tool_schrijft(w)
+                if naam and is_hoofd(hier_h):
+                    gevonden = (naam, hier_h)
+            if gevonden:
+                weiger(f"`{gevonden[0]}` schrijft in de gedeelde hoofdcheckout ({gevonden[1]}); agents werken daar nooit. "
+                       "Werk in je eigen worktree of clone: ga daarheen met `cd <eigen pad>`, gebruik `git -C <eigen pad> …` of een absoluut pad. "
+                       "Lezen (git status/log/show/diff, cat) mag hier wel.")
     nu = datetime.datetime.now().time()
     if datetime.time(5, 0) <= nu < datetime.time(7, 15):
         if re.search(r"bun run (poort|bekijk|test:tmux|test:e2e)|playwright", c):
