@@ -111,7 +111,7 @@ export function leesOpties(args: string[]): Opties {
 // ── Hulp ────────────────────────────────────────────────────────────────────
 
 /** `uit` = stdout en stderr samen (voor meldingen); `stdout` alleen stdout (voor JSON: turbo meldt waarschuwingen op stderr). */
-type Uitkomst = { code: number; uit: string; stdout: string };
+export type Uitkomst = { code: number; uit: string; stdout: string };
 
 export function draai(cmd: string[], env: Record<string, string> = {}, cwd = ROOT): Uitkomst {
   const p = Bun.spawnSync(cmd, {
@@ -229,7 +229,7 @@ export function boundarySleutels(uit: string, root = ROOT): string[] {
 
 // ── Stappen ─────────────────────────────────────────────────────────────────
 
-type Resultaat = { status: "OK" | "FOUT" | "SKIP"; detail?: string; uitleg?: string };
+export type Resultaat = { status: "OK" | "FOUT" | "SKIP"; detail?: string; uitleg?: string };
 
 type BaselineSoort = "sherif" | "boundaries" | "ds-regels" | "werk-commentaar" | "echte-klok" | "git-scrub" | "test-tenant";
 
@@ -385,7 +385,7 @@ function stapBiome(): Resultaat {
   return r.code === 0 ? { status: "OK" } : { status: "FOUT", uitleg: staart(r.uit) };
 }
 
-type Context = { affected: boolean; base: string | null; env: Record<string, string> };
+export type Context = { affected: boolean; base: string | null; env: Record<string, string> };
 
 function turbo(ctx: Context, taken: string[], extra: string[] = []): Uitkomst {
   const args = [bin("turbo"), "run", ...taken, "--output-logs=errors-only", "--ui=stream", ...extra];
@@ -447,8 +447,20 @@ function stapBuild(ctx: Context): Resultaat {
   return turboResultaat(turbo(ctx, ["build"], zonder.map((p) => `--filter=!${p}`)));
 }
 
-async function stapE2e(ctx: Context): Promise<Resultaat> {
-  const dry = turbo(ctx, ["e2e"], ["--dry=json"]);
+/** Wat stapE2e van buiten haalt; de test vervangt ze (nep-klok, nep-turbo, nep-slot). */
+export type E2eAfhankelijk = {
+  nu?: () => Date;
+  turbo?: (ctx: Context, taken: string[], extra?: string[]) => Uitkomst;
+  neemSlot?: () => Promise<{ vrij(): void }>;
+  dockerInfo?: (timeout: number) => { code: number | null };
+};
+
+// Stiltevenster en cache: de venstercheck staat hier VÓÓR de `turbo run e2e` (alleen de --dry=json
+// ervoor, die niets draait). Zo geeft een cachehit in het venster nooit een groene e2e-stap, en een
+// e2e die in het venster wél draait en weigert, faalt en wordt door turbo niet gecachet.
+export async function stapE2e(ctx: Context, dep: E2eAfhankelijk = {}): Promise<Resultaat> {
+  const draaiTurbo = dep.turbo ?? turbo;
+  const dry = draaiTurbo(ctx, ["e2e"], ["--dry=json"]);
   if (dry.code !== 0) return { status: "FOUT", detail: "turbo --dry faalde", uitleg: staart(dry.uit) };
   // Alleen stdout: turbo meldt waarschuwingen (remote cache niet beschikbaar, 403) op stderr.
   const taken = leesDryTaken(dry.stdout);
@@ -457,25 +469,30 @@ async function stapE2e(ctx: Context): Promise<Resultaat> {
     .filter((t) => t.task === "e2e" && t.command !== "<NONEXISTENT>")
     .map((t) => t.package);
   if (!e2e.length) return { status: "SKIP", detail: "geen e2e geraakt" };
-  if (inStiltevenster()) {
-    return { status: "FOUT", detail: `stiltevenster 05:00–07:15, e2e van ${e2e.join(", ")} niet gedraaid; na 07:15 opnieuw, of --zonder-e2e` };
-  }
+  const nu = dep.nu ?? (() => new Date());
+  const venster = (wanneer: string): Resultaat => ({ status: "FOUT", detail: `stiltevenster 05:00–07:15 ${wanneer}, e2e van ${e2e.join(", ")} niet gedraaid of niet geldig; na 07:15 opnieuw, of --zonder-e2e` });
+  if (inStiltevenster(nu())) return venster("(voor het slot)");
   // Maximaal POORT_E2E_SLOTS (standaard 2) volledige e2e-runs tegelijk op de machine;
   // binnen een run blijft turbo op --concurrency=1.
   let slot: Awaited<ReturnType<typeof neemSlot>>;
   try {
-    slot = await neemSlot(echteOmgeving(process.cwd()), aantalSlots());
+    slot = await (dep.neemSlot ?? (() => neemSlot(echteOmgeving(process.cwd()), aantalSlots())))();
   } catch (e) {
     return { status: "FOUT", detail: (e as Error).message };
   }
   const vrij = () => slot.vrij();
   process.on("exit", vrij);
   try {
+    // Het slot kan lang wachten: het venster kan intussen begonnen zijn. Opnieuw toetsen vóór de run,
+    // en na de run (begon het venster tijdens de run, dan geldt de uitslag niet).
+    if (inStiltevenster(nu())) return venster("(begonnen tijdens het wachten op een slot)");
     // cross-tenant (goldcoast-api) draait in de e2e-taak: ook daar eist de poort docker (scripts/db-verplicht.ts).
-    const { env, verplicht } = omgevingVoor(ctx.env, e2e, new Date());
-    const geenDocker = dockerOntbreekt(verplicht, !verplicht || dockerBereikbaar(dockerInfo));
+    const { env, verplicht } = omgevingVoor(ctx.env, e2e, nu());
+    const geenDocker = dockerOntbreekt(verplicht, !verplicht || dockerBereikbaar(dep.dockerInfo ?? dockerInfo));
     if (geenDocker) return { status: "FOUT", detail: "geen docker", uitleg: `     ${geenDocker}` };
-    const r = turboResultaat(turbo({ ...ctx, env }, ["e2e"], ["--concurrency=1"]));
+    // --cache=local:rw: e2e-uitslagen gaan nooit via de remote cache (remoteCache in turbo.json) naar of van een andere machine.
+    const r = turboResultaat(draaiTurbo({ ...ctx, env }, ["e2e"], ["--concurrency=1", "--cache=local:rw"]));
+    if (inStiltevenster(nu())) return venster("(begonnen tijdens de run)");
     return { ...r, detail: `${e2e.join(", ")}: ${r.detail}` };
   } finally {
     vrij();
