@@ -1,5 +1,5 @@
 import { afterAll, describe, expect, test } from "bun:test";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { schoneEnv } from "../../test-integriteit";
@@ -21,7 +21,8 @@ const EIGEN_TAK = (() => {
 afterAll(() => rmSync(EIGEN_TAK, { recursive: true, force: true }));
 
 function draai(invoer: unknown, hook = HOOK) {
-  const env = { ...schoneEnv(), HOME: "/nonexistent-grenzen-test", LAB_GRENS_MERGE: "" };
+  // Zonder rol: de hoofdcheckout-regel geldt alleen voor een sessie met LAB_AGENT_ROL (ook als deze test in zo'n sessie draait).
+  const env = { ...schoneEnv(), HOME: "/nonexistent-grenzen-test", LAB_GRENS_MERGE: "", LAB_AGENT_ROL: "" };
   const metCwd = typeof invoer === "object" && invoer !== null && !("cwd" in invoer) ? { cwd: EIGEN_TAK, ...invoer } : invoer;
   const p = Bun.spawnSync(["bash", hook], { stdin: new TextEncoder().encode(JSON.stringify(metCwd)), env, stdout: "pipe", stderr: "pipe" });
   return { code: p.exitCode, stderr: p.stderr.toString() };
@@ -383,5 +384,467 @@ describe("grenzen.sh: here-doc-berichten", () => {
     // iets onduidelijks vóór de here-doc
     expect(bash(`echo $(./uitrollen.sh) | gh pr create --body "$(cat <<'EOF'\na\nEOF\n)"`).code).toBe(2);
     expect(bash(`./uitrollen.sh; gh pr create --body "$(cat <<'EOF'\na\nEOF\n)"`).code).toBe(2);
+  });
+});
+
+describe("grenzen.sh: grootte van vaultnotities", () => {
+  const HOME = mkdtempSync(join(tmpdir(), "grenzen-vault-"));
+  const VAULT = join(HOME, "vault-b-status");
+  mkdirSync(join(VAULT, "archief"), { recursive: true });
+  mkdirSync(join(VAULT, "emb-gemma"), { recursive: true });
+  mkdirSync(join(VAULT, "spoor"), { recursive: true });
+  afterAll(() => rmSync(HOME, { recursive: true, force: true }));
+  const GROOT = "x".repeat(50 * 1024);
+  const KLEIN = "y".repeat(1024);
+  const hook = (tool: string, tool_input: unknown, extra: Record<string, string> = {}) => {
+    const env = { ...schoneEnv(), HOME, LAB_GRENS_MERGE: "", ...extra };
+    const p = Bun.spawnSync(["bash", HOOK], { stdin: new TextEncoder().encode(JSON.stringify({ tool_name: tool, tool_input, cwd: EIGEN_TAK })), env, stdout: "pipe", stderr: "pipe" });
+    return { code: p.exitCode, stderr: p.stderr.toString() };
+  };
+  const schrijf = (naam: string, tekst: string) => writeFileSync(join(VAULT, naam), tekst);
+
+  test("een nieuw te groot bestand wordt geweigerd, met grootte, limiet en oplossing", () => {
+    const r = hook("Write", { file_path: join(VAULT, "PLAN-nieuw.md"), content: GROOT });
+    expect(r.code).toBe(2);
+    expect(r.stderr).toContain("50 KB");
+    expect(r.stderr).toContain("40 KB");
+    expect(r.stderr).toContain("splits per spoor");
+    expect(r.stderr).toContain("archief/");
+  });
+  test("een klein bestand en een bestand precies op de limiet mogen", () => {
+    expect(hook("Write", { file_path: join(VAULT, "klein.md"), content: KLEIN }).code).toBe(0);
+    expect(hook("Write", { file_path: join(VAULT, "grens.md"), content: "z".repeat(40960) }).code).toBe(0);
+    expect(hook("Write", { file_path: join(VAULT, "grens.md"), content: "z".repeat(40961) }).code).toBe(2);
+  });
+  test("bytes tellen, geen tekens", () => {
+    expect(hook("Write", { file_path: join(VAULT, "u.md"), content: "é".repeat(25000) }).code).toBe(2);
+  });
+  test("een Edit die een groot bestand laat groeien wordt geweigerd; krimpen of gelijk blijven mag", () => {
+    schrijf("groot.md", `kop\n${GROOT}`);
+    expect(hook("Edit", { file_path: join(VAULT, "groot.md"), old_string: "kop", new_string: "een langere kop" }).code).toBe(2);
+    expect(hook("Edit", { file_path: join(VAULT, "groot.md"), old_string: "kop", new_string: "kop2" }).code).toBe(2);
+    expect(hook("Edit", { file_path: join(VAULT, "groot.md"), old_string: "kop", new_string: "kop" }).code).toBe(0);
+    expect(hook("Edit", { file_path: join(VAULT, "groot.md"), old_string: "kop\n", new_string: "" }).code).toBe(0);
+    expect(hook("Write", { file_path: join(VAULT, "groot.md"), content: KLEIN }).code).toBe(0);
+  });
+  test("replace_all telt elk voorkomen; MultiEdit telt alle edits", () => {
+    schrijf("midden.md", "a ".repeat(15000));
+    expect(hook("Edit", { file_path: join(VAULT, "midden.md"), old_string: "a", new_string: "aa", replace_all: true }).code).toBe(2);
+    expect(hook("Edit", { file_path: join(VAULT, "midden.md"), old_string: "a", new_string: "aa" }).code).toBe(0);
+    expect(hook("MultiEdit", { file_path: join(VAULT, "midden.md"), edits: [{ old_string: "a a", new_string: "a" }, { old_string: "a", new_string: "aaaaaaaa", replace_all: true }] }).code).toBe(2);
+  });
+  test("een Edit op een ontbrekend bestand is geen eigen fout: alleen de nieuwe tekst telt", () => {
+    expect(hook("Edit", { file_path: join(VAULT, "bestaat-niet.md"), old_string: "a", new_string: KLEIN }).code).toBe(0);
+    expect(hook("Edit", { file_path: join(VAULT, "bestaat-niet.md"), old_string: "a", new_string: GROOT }).code).toBe(2);
+  });
+  test("uitzonderingen: lead.md in de root, archief/ en emb-gemma/", () => {
+    expect(hook("Write", { file_path: join(VAULT, "lead.md"), content: GROOT }).code).toBe(0);
+    expect(hook("Write", { file_path: join(VAULT, "archief", "oud.md"), content: GROOT }).code).toBe(0);
+    expect(hook("Write", { file_path: join(VAULT, "emb-gemma", "x.md"), content: GROOT }).code).toBe(0);
+    // lead.md in een submap is geen uitzondering
+    expect(hook("Write", { file_path: join(VAULT, "spoor", "lead.md"), content: GROOT }).code).toBe(2);
+    // een pad met .. dat uit archief/ naar de root loopt telt als de root
+    expect(hook("Write", { file_path: join(VAULT, "archief", "..", "groot2.md"), content: GROOT }).code).toBe(2);
+  });
+  test("een .md buiten de vault en een niet-.md in de vault mogen", () => {
+    expect(hook("Write", { file_path: join(HOME, "elders", "plan.md"), content: GROOT }).code).toBe(0);
+    expect(hook("Write", { file_path: join(HOME, "vault-b-status-kopie", "plan.md"), content: GROOT }).code).toBe(0);
+    expect(hook("Write", { file_path: join(VAULT, "data.json"), content: GROOT }).code).toBe(0);
+  });
+  test("LAB_VAULT_MAX_KB verlegt de limiet", () => {
+    expect(hook("Write", { file_path: join(VAULT, "a.md"), content: GROOT }, { LAB_VAULT_MAX_KB: "100" }).code).toBe(0);
+    expect(hook("Write", { file_path: join(VAULT, "a.md"), content: KLEIN }, { LAB_VAULT_MAX_KB: "0.5" }).code).toBe(2);
+  });
+});
+
+describe("grenzen.sh: recursief zoeken sluit sleutelbestanden uit", () => {
+  // Nepbestanden in een tijdelijke map; er wordt nooit een echt sleutelbestand gelezen.
+  const MAP = mkdtempSync(join(tmpdir(), "grenzen-zoek-"));
+  writeFileSync(join(MAP, "één-bestand.txt"), "foo\n");
+  writeFileSync(join(MAP, "config.properties"), "nep\n");
+  afterAll(() => rmSync(MAP, { recursive: true, force: true }));
+  const zoek = (command: string) => draai({ tool_name: "Bash", tool_input: { command }, cwd: MAP });
+
+  const GREP_UIT = "--exclude=config.properties --exclude=config.json --exclude='.env*'";
+  const RG_UIT = "--glob '!config.properties' --glob '!config.json' --glob '!.env*'";
+  const GIT_UIT = "':!*config.properties' ':!*config.json' ':!*.env*'";
+
+  const WEIGER_ZOEK = [
+    "grep -rn foo .",
+    "grep -R foo repo/",
+    "grep --recursive foo .",
+    "grep -nri foo .",
+    "egrep -r foo .",
+    "rg foo",
+    "rg foo repo/",
+    "git grep foo",
+    "git -C repo grep -n foo",
+    "rg --glob '!config.properties' foo .",
+    "rg -g '!config.properties' foo .",
+    "grep -rn --exclude=config.properties foo .",
+    "grep -rn --exclude=config.properties --exclude=config.json foo .",
+    "git grep foo -- . ':!*config.properties'",
+    // zsh expandeert een ongequote .env*, dus de uitsluiting telt niet
+    "grep -rn --exclude=config.properties --exclude=config.json --exclude=.env* foo .",
+    // een uitsluiting op de verkeerde naam
+    "rg --glob '!config.properties' --glob '!config.json' --glob '!.env.example' foo .",
+    // in een omhulsel of na een wrapper
+    'bash -c "rg foo ."',
+    "timeout 5 rg foo .",
+    "find . -type f -exec grep -r foo {} +",
+    "cd repo && rg foo",
+    "cat x | rg foo .",
+    // het enige pad is zelf een sleutelbestand, of er zijn meer paden
+    "rg foo config.properties",
+    "grep -r foo config.properties",
+    "rg foo één-bestand.txt andere.txt",
+    "rg -e foo -e bar",
+    // regressies van de tekstfix: echte aanroepen naast of na tekst blijven geweigerd
+    "echo a | xargs grep -r x",
+    "grep -r x .",
+    'echo "klaar" && grep -rn foo .',
+    'echo "klaar"; rg foo .',
+    "echo klaar | grep -r foo repo/",
+    'bash -c "echo x; grep -r foo ."',
+    "bash -c 'echo x | rg foo .'",
+    'echo "$(grep -r foo .)"',
+    'echo "`rg foo .`"',
+    'git commit -m "$(rg foo .)"',
+    "cat <<'EOF'\ntekst\nEOF\ngrep -r foo .",
+    "bash <<'EOF'\ngrep -r foo .\nEOF",
+    "cat <<EOF\n$(grep -r foo .)\nEOF",
+  ];
+  const DOOR_ZOEK = [
+    `grep -rn ${GREP_UIT} foo .`,
+    `grep -R ${GREP_UIT} foo repo/`,
+    `rg ${RG_UIT} foo .`,
+    "rg -g '!config.properties' -g '!config.json' -g '!.env*' foo .",
+    "rg --glob='!**/config.properties' --glob='!*config.json' --glob '!.env.*' foo",
+    `git grep foo -- . ${GIT_UIT}`,
+    "git grep -n foo -- ':(exclude)config.properties' ':(exclude,glob)**/config.json' ':^.env*'",
+    "grep -rn --exclude config.properties --exclude config.json --exclude '.env*' foo .",
+    // één expliciet bestand, geen recursie
+    "grep foo één-bestand.txt",
+    "grep -n foo één-bestand.txt andere.txt",
+    "rg foo één-bestand.txt",
+    "grep -r foo één-bestand.txt",
+    // stdin of geen zoekopdracht
+    "git log | rg foo",
+    "git diff | grep -n foo",
+    "ls | grep foo",
+    "rg --version",
+    "rg --files",
+    "which rg",
+    "echo rg foo",
+    "man grep",
+    "ls -la && git status",
+    "bun test scripts/lead/hooks/grenzen.test.ts",
+    "git log --grep=foo",
+    // tekst met een zoekwoord is geen zoekopdracht (vals alarm 19 okt)
+    `echo "- 19 okt: Vals alarm grenzen.sh: heredoc-tekst 'grep/rg)' telt als zoekcommando → fix nodig" >> ~/x.md`,
+    `echo "- 19 okt; Vals alarm: grep -r x . | rg y (tekst)" >> ~/x.md`,
+    `printf '%s\\n' "grep -r foo . && rg foo" > f.txt`,
+    `git commit -m "grenzen: grep -r en rg; weiger | niet"`,
+    `git commit -m "fix: zoek met grep -r x ." -m "rg foo"`,
+    `gh pr create --title "x" --body "Zoeken (grep/rg, ook via subagents) sluit uit; rg foo ."`,
+    "cat > f.md <<'EOF'\n- Zoeken (grep/rg, ook via subagents) sluit sleutelbestanden uit\n- grep -r foo . en rg foo\nEOF",
+    "cat > f.md <<EOF\n- Zoeken (grep/rg) sluit uit\nEOF",
+    "cat >> f.md <<-'EOF'\n\tgrep -rn foo .\n\tEOF",
+    "cat <<'EOF' | tee f.md\nrg foo .\nEOF",
+    "cat > f.md <<'EOF'\n- grep -r foo .\nEOF\nls",
+    'echo "x" > f; ls',
+  ];
+  for (const c of WEIGER_ZOEK)
+    test(`weigert ${JSON.stringify(c)}`, () => {
+      const r = zoek(c);
+      expect(r.code).toBe(2);
+      expect(r.stderr).toContain("Geweigerd door grenzen.sh: recursief zoeken moet sleutelbestanden uitsluiten");
+    });
+  for (const c of DOOR_ZOEK)
+    test(`laat door ${JSON.stringify(c)}`, () => {
+      expect(zoek(c).code).toBe(0);
+    });
+  test("de melding noemt het juiste commando en wat ontbreekt", () => {
+    const rg = zoek("rg --glob '!config.properties' foo .").stderr;
+    expect(rg).toContain("ontbreekt: config.json, .env*");
+    expect(rg).toContain("rg --glob '!config.properties' --glob '!config.json' --glob '!.env*' <patroon> <pad>");
+    expect(zoek("grep -rn foo .").stderr).toContain("grep -rn --exclude=config.properties --exclude=config.json --exclude='.env*'");
+    expect(zoek("git grep foo").stderr).toContain("':!*config.properties'");
+    expect(zoek("grep -rn --exclude=.env* foo .").stderr).toContain("tussen quotes");
+  });
+});
+
+describe("grenzen.sh: kustomize-render van sleutelbestanden", () => {
+  // Nep-kustomization-mappen: alleen de kustomization.yaml staat er, nooit een echt sleutelbestand.
+  const K = realpathSync(mkdtempSync(join(tmpdir(), "grenzen-kustomize-")));
+  afterAll(() => rmSync(K, { recursive: true, force: true }));
+  const maak = (naam: string, yaml: string) => {
+    mkdirSync(join(K, naam), { recursive: true });
+    writeFileSync(join(K, naam, "kustomization.yaml"), yaml);
+    return join(K, naam);
+  };
+  const MET = maak("met", "configMapGenerator:\n  - name: app\n    files:\n      - config.properties\n");
+  const MET_JSON = maak("met-json", "configMapGenerator:\n- name: a\n  files: [x=config.json]\n");
+  const MET_ENV = maak("met-env", "secretGenerator:\n- name: a\n  envs:\n  - .env.prod\n");
+  const ZONDER = maak("zonder", "resources:\n  - deployment.yaml\nconfigMapGenerator:\n  - name: a\n    literals:\n      - A=1\n");
+  const GECOMMENTARIEERD = maak("commentaar", "resources:\n  - deployment.yaml\n# files:\n#   - config.properties\n");
+  const BASIS = maak("basis", "configMapGenerator:\n  - name: app\n    files:\n      - ./conf/config.properties\n");
+  const OVERLAY = maak("overlay", "resources:\n  - ../basis\n");
+  const OVERLAY_BASES = maak("overlay-bases", "bases: [../basis]\n");
+  const OVERLAY_ZONDER = maak("overlay-zonder", "resources:\n  - ../zonder\n  - https://example.com/x//base?ref=v1\n");
+  const KRING = maak("kring", "resources:\n  - ../kring\n");
+
+  const WEIGER_K = [
+    `kustomize build ${MET}`,
+    `kustomize build --load-restrictor LoadRestrictionsNone ${MET}`,
+    `kustomize build ${MET_JSON}`,
+    `kustomize build ${MET_ENV}`,
+    `oc kustomize ${MET}`,
+    `kubectl kustomize ${MET}`,
+    `kubectl -n x kustomize ${MET}`,
+    `kubectl apply -k ${MET} --dry-run=client -o yaml`,
+    `oc apply --dry-run=server -k ${MET}`,
+    `kubectl apply --kustomize=${MET} --dry-run=client`,
+    `kubectl diff -k ${MET}`,
+    `oc diff --kustomize=${MET}`,
+    `kustomize build ${OVERLAY}`,
+    `kustomize build ${OVERLAY_BASES}`,
+    `cd ${K} && kustomize build met`,
+    `kustomize build ${MET} | grep x`,
+    `echo klaar && kustomize build ${MET}`,
+    `ls; kustomize build ${MET}`,
+    `bash -c 'kustomize build ${MET}'`,
+    `bash -c "cd ${K} && oc kustomize overlay"`,
+    `sudo -u x bash -c 'kubectl kustomize ${MET} | head'`,
+    `timeout 5 kustomize build ${MET}`,
+    `ssh host 'kustomize build ${MET}'`,
+    // doel niet te bepalen: dicht
+    "kustomize build",
+    `kustomize build ${join(K, "bestaat-niet")}`,
+    "kustomize build $DIR",
+    "oc kustomize `pwd`",
+    "kubectl apply -k --dry-run=client",
+    "kustomize build https://github.com/x/y//base",
+  ];
+  for (const c of WEIGER_K)
+    test(`kustomize: weigert ${JSON.stringify(c)}`, () => {
+      const r = bash(c);
+      expect(r.code).toBe(2);
+      expect(r.stderr).toContain("git diff");
+    });
+
+  const DOOR_K = [
+    `kustomize build ${ZONDER}`,
+    `kustomize build ${GECOMMENTARIEERD}`,
+    `oc kustomize ${ZONDER}`,
+    `kubectl apply -k ${MET}`, // geen --dry-run: niet gedekt (staat in de kop van het blok)
+    `kubectl apply -f x.yaml --dry-run=client`,
+    `kustomize build ${OVERLAY_ZONDER}`,
+    `kustomize build ${KRING}`,
+    `cd ${K} && kustomize build zonder`,
+    "kustomize version",
+    "kustomize --help",
+    "kustomize edit set image a=b",
+    "kubectl get configmap kustomize -n x",
+    // tekst is geen commando
+    `echo "kustomize build ${MET}"`,
+    `git commit -m "kustomize build ${MET} weigeren"`,
+    `gh pr create --title "kustomize build ${MET}" --body "oc kustomize ${MET}"`,
+    `cat <<'EINDE' > notitie.md\nkustomize build ${MET}\nEINDE`,
+    `grep -n "kustomize build" notitie.md`,
+  ];
+  for (const c of DOOR_K)
+    test(`kustomize: laat door ${JSON.stringify(c)}`, () => {
+      expect(bash(c).code).toBe(0);
+    });
+
+  test("het woord in een commit-bericht met heredoc geeft geen vals alarm", () => {
+    const c = `git commit -m "$(cat <<'EINDE'\nlead: kustomize build ${MET} en oc kustomize ${MET}\nEINDE\n)"`;
+    expect(bash(c).code).toBe(0);
+  });
+  test("een relatieve map volgt de cwd uit de invoer", () => {
+    expect(draai({ tool_name: "Bash", tool_input: { command: "kustomize build met" }, cwd: K }).code).toBe(2);
+    expect(draai({ tool_name: "Bash", tool_input: { command: "kustomize build zonder" }, cwd: K }).code).toBe(0);
+  });
+  test("de melding noemt het doel, de kustomization-map en het alternatief", () => {
+    const m = bash(`kustomize build ${OVERLAY}`).stderr;
+    expect(m).toContain(OVERLAY);
+    expect(m).toContain(BASIS);
+    expect(m).toContain("CI-poort");
+  });
+});
+
+describe("grenzen.sh: geen schrijvende commando's in de hoofdcheckout", () => {
+  // Nep-repo's in een tijdelijke map: een hoofdcheckout, een linked worktree en een aparte clone.
+  const BASIS = mkdtempSync(join(tmpdir(), "grenzen-hoofd-"));
+  const HOOFD = join(BASIS, "hoofd");
+  const WORKTREE = join(BASIS, "eigen-worktree");
+  const CLONE = join(BASIS, "eigen-clone");
+  const git = (cwd: string, ...args: string[]) => {
+    const env = { ...schoneEnv(), GIT_AUTHOR_NAME: "t", GIT_AUTHOR_EMAIL: "t@t", GIT_COMMITTER_NAME: "t", GIT_COMMITTER_EMAIL: "t@t" };
+    const p = Bun.spawnSync(["git", "-C", cwd, ...args], { env, stdout: "pipe", stderr: "pipe" });
+    if (p.exitCode !== 0) throw new Error(`git ${args.join(" ")}: ${p.stderr.toString()}`);
+  };
+  mkdirSync(HOOFD, { recursive: true });
+  git(HOOFD, "init", "-q", "-b", "main");
+  mkdirSync(join(HOOFD, "sub"));
+  writeFileSync(join(HOOFD, "sub", "b.txt"), "b\n");
+  writeFileSync(join(HOOFD, "a.txt"), "a\n");
+  git(HOOFD, "add", ".");
+  git(HOOFD, "commit", "-q", "-m", "init");
+  git(HOOFD, "worktree", "add", "-q", "-b", "eigen", WORKTREE);
+  git(BASIS, "clone", "-q", HOOFD, CLONE);
+  afterAll(() => rmSync(BASIS, { recursive: true, force: true }));
+
+  // extra: subagent-velden; cwd: de werkmap uit de hook-invoer; rol: LAB_AGENT_ROL (null = niet gezet)
+  const run = (command: string, cwd: string, extra: Record<string, unknown> = {}, rol: string | null = "agent") => {
+    const env = { ...schoneEnv(), HOME: "/nonexistent-grenzen-test", LAB_GRENS_MERGE: "", LAB_AGENT_ROL: rol ?? "", LAB_HOOFDCHECKOUT: realpathSync(HOOFD) };
+    const invoer = { tool_name: "Bash", tool_input: { command }, cwd, ...extra };
+    const p = Bun.spawnSync(["bash", HOOK], { stdin: new TextEncoder().encode(JSON.stringify(invoer)), env, stdout: "pipe", stderr: "pipe" });
+    return { code: p.exitCode, stderr: p.stderr.toString() };
+  };
+
+  const SCHRIJVEND = [
+    "git fetch",
+    "git fetch origin main",
+    "git checkout main",
+    "git switch -c nieuw",
+    "git reset --hard origin/main",
+    "git restore a.txt",
+    "git stash",
+    "git stash push -u -m x",
+    "git stash pop",
+    "git clean -fd",
+    "git pull",
+    "git push origin eigen",
+    "git commit -m x",
+    "git merge origin/main",
+    "git rebase origin/main",
+    "git cherry-pick abc123",
+    "git am x.patch",
+    "git apply x.patch",
+    "git worktree add ../x",
+    "git worktree remove ../x",
+    "git branch -D oud",
+    "git branch -d oud",
+    "pre-commit run --all-files",
+    "pre-commit",
+    "prettier --write .",
+    "bunx prettier --write .",
+    "oxfmt .",
+    "npx oxfmt src",
+    "biome format --write .",
+    "biome check --write .",
+    "black .",
+    "isort .",
+    "ruff format .",
+    "ruff check --fix .",
+    "eslint --fix .",
+    "bun run format",
+    "bun run lint --fix",
+    "bun format",
+    "bun install",
+    "bun i",
+    "FOO=1 git fetch",
+    "git fetch && git status",
+    "bash -c 'pre-commit run --all-files'",
+    "echo klaar; pre-commit run",
+    "cd sub && git fetch",
+    "git -C . fetch",
+    "git -C sub checkout main",
+    `git -C ${HOOFD} fetch`,
+    `cd ${HOOFD}/sub && bun install`,
+  ];
+  for (const c of SCHRIJVEND)
+    test(`agent in de hoofdcheckout: weigert ${JSON.stringify(c)}`, () => {
+      const r = run(c, HOOFD);
+      expect(r.code).toBe(2);
+      expect(r.stderr).toContain("schrijft in de gedeelde hoofdcheckout");
+      expect(r.stderr).toContain("git -C <eigen pad>");
+    });
+
+  const DOOR = [
+    "git status",
+    "git log --oneline -5",
+    "git show origin/main:a.txt",
+    "git diff",
+    "git diff --stat origin/main",
+    "git stash list",
+    "git branch",
+    "git branch --list",
+    "git worktree list",
+    "cat a.txt",
+    "ls -la",
+    "rg --glob '!config.properties' --glob '!config.json' --glob '!.env*' foo .",
+    "prettier --check .",
+    "prettier a.txt",
+    "oxfmt --check .",
+    "black --check .",
+    "ruff check .",
+    "ruff format --check .",
+    "eslint .",
+    "biome check .",
+    "bun run lint",
+    "bun run format --check",
+    "bun test scripts/lead/hooks/grenzen.test.ts",
+    "pre-commit --version",
+    "echo git fetch",
+    "echo 'git fetch en pre-commit'",
+    // een eigen map: -C of cd naar een clone of linked worktree
+    `git -C ${CLONE} fetch`,
+    `git -C ${WORKTREE} checkout -b x`,
+    `cd ${CLONE} && pre-commit run --all-files`,
+    `cd ${WORKTREE} && bun install`,
+    `cd ${CLONE}/ && git fetch && bunx prettier --write .`,
+    // niet te bepalen: toestaan
+    "cd $EIGEN && pre-commit",
+    "git -C $EIGEN fetch",
+  ];
+  for (const c of DOOR)
+    test(`agent in de hoofdcheckout: laat door ${JSON.stringify(c)}`, () => {
+      expect(run(c, HOOFD).code).toBe(0);
+    });
+
+  test("een cd weg en terug telt per segment", () => {
+    expect(run(`cd ${CLONE} && cd ${HOOFD} && git fetch`, WORKTREE).code).toBe(2);
+    expect(run(`cd ${HOOFD} && cd ${CLONE} && git fetch`, WORKTREE).code).toBe(0);
+  });
+  test("een linked worktree als cwd mag alles", () => {
+    for (const c of ["git fetch", "git checkout -b x", "pre-commit run --all-files", "bun install", "prettier --write ."])
+      expect(run(c, WORKTREE).code).toBe(0);
+  });
+  test("een clone als cwd mag alles", () => {
+    for (const c of ["git fetch", "pre-commit run --all-files", "bun install"]) expect(run(c, CLONE).code).toBe(0);
+  });
+  test("een submap van een linked worktree mag", () => {
+    expect(run("git fetch", join(WORKTREE, "sub")).code).toBe(0);
+  });
+  test("een submap van de hoofdcheckout telt als hoofdcheckout", () => {
+    expect(run("pre-commit run", join(HOOFD, "sub")).code).toBe(2);
+  });
+  test("buiten een repo geen bezwaar", () => {
+    expect(run("pre-commit run", BASIS).code).toBe(0);
+  });
+  test("de lead mag wel in de hoofdcheckout", () => {
+    expect(run("git fetch", HOOFD, {}, "lead").code).toBe(0);
+    expect(run("pre-commit run --all-files", HOOFD, {}, "lead").code).toBe(0);
+  });
+  test("zonder LAB_AGENT_ROL en zonder subagent-velden (Brian) mag het", () => {
+    expect(run("git fetch", HOOFD, {}, null).code).toBe(0);
+  });
+  test("elke andere rol (sublead, vervolg, agent) wordt geweigerd", () => {
+    for (const rol of ["sublead", "vervolg", "agent"]) expect(run("git fetch", HOOFD, {}, rol).code).toBe(2);
+  });
+  test("een subagent of fork wordt geweigerd, ook als de rol lead erft of ontbreekt", () => {
+    expect(run("git fetch", HOOFD, { agent_id: "a1" }, "lead").code).toBe(2);
+    expect(run("git fetch", HOOFD, { agent_type: "general-purpose" }, null).code).toBe(2);
+    expect(run("git fetch", WORKTREE, { agent_id: "a1" }, "lead").code).toBe(0);
+  });
+  test("de melding noemt het commando, de map en wat te doen", () => {
+    const m = run("pre-commit run --all-files", HOOFD).stderr;
+    expect(m).toContain("`pre-commit`");
+    expect(m).toContain(HOOFD);
+    expect(m).toContain("eigen worktree of clone");
+    expect(m).toContain("absoluut pad");
   });
 });
