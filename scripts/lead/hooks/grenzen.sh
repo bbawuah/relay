@@ -46,6 +46,49 @@ if tool in ("Grep", "Glob"):
     if re.search(r"\.config/(klaarover|douane|agentwerkbank)", p):
         weiger("zoeken in een sleutelmap mag niet.")
 
+# Grootte van vaultnotities (19 okt 2026): een Write of Edit (ook MultiEdit) op een .md onder
+# ~/vault-b-status geeft geen resultaat > 40 KB (LAB_VAULT_MAX_KB) als het bestand nieuw is of groeit;
+# een Edit die een te groot bestand gelijk houdt of kleiner maakt mag. Uitgezonderd: lead.md in de
+# vault-root (eigen rotatie) en alles onder archief/ en emb-gemma/. Alleen dat ene bestand wordt gelezen.
+# Niet afgedwongen: Bash-appends (`cat >> notitie.md`) en elke andere schrijfroute.
+if tool in ("Write", "Edit", "MultiEdit"):
+    vault = os.path.join(os.path.expanduser("~"), "vault-b-status")
+    pad = os.path.normpath(os.path.join(vault, os.path.expanduser(str(ti.get("file_path", "")))))
+    rel = os.path.relpath(pad, vault)
+    if pad.endswith(".md") and not rel.startswith("..") and rel != "lead.md" and rel.split(os.sep)[0] not in ("archief", "emb-gemma"):
+        try:
+            grens = int(float(os.environ.get("LAB_VAULT_MAX_KB", "40")) * 1024)
+        except ValueError:
+            sys.exit(5)
+        huidig = None
+        try:
+            with open(pad, "rb") as f:
+                huidig = f.read().decode("utf-8", "replace")
+        except OSError:
+            huidig = None  # ontbrekend of onleesbaar: geen eigen fout
+        if tool == "Write":
+            na = len(str(ti.get("content", "")).encode("utf-8"))
+        else:
+            edits = ti.get("edits") if tool == "MultiEdit" else [ti]
+            if not isinstance(edits, list):
+                sys.exit(4)
+            if huidig is None:
+                na = sum(len(str(e.get("new_string", "")).encode("utf-8")) for e in edits if isinstance(e, dict))
+            else:
+                tekst = huidig
+                for e in edits:
+                    if not isinstance(e, dict):
+                        sys.exit(4)
+                    oud, nieuw = str(e.get("old_string", "")), str(e.get("new_string", ""))
+                    if oud:
+                        tekst = tekst.replace(oud, nieuw) if e.get("replace_all") else tekst.replace(oud, nieuw, 1)
+                na = len(tekst.encode("utf-8"))
+        voor = len(huidig.encode("utf-8")) if huidig is not None else None
+        if na > grens and (voor is None or na > voor):
+            weiger(f"deze notitie wordt {na / 1024:.0f} KB; de limiet voor een vaultnotitie is {grens / 1024:.0f} KB (LAB_VAULT_MAX_KB). "
+                   "Agents lezen een heel bestand terug, dus splits per spoor (bv. CONTRACT-<spoor>.md, PLAN-<deel>.md) "
+                   "en laat het hoofdbestand naar de delen verwijzen; afgerond werk naar archief/.")
+
 if tool == "Bash":
     c = str(ti.get("command", ""))
     for deel in re.split(r"&&|\|\||;|\n", c):
