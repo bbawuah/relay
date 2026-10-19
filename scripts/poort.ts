@@ -11,6 +11,7 @@
 //   ds-regels   designsysteem-regels R1–R9 (scripts/ds-regels.ts) (alle apps)
 //   werk-commentaar  TODO/HACK/FIXME/XXX/workaround alleen als TODO(JJJJ-MM-DD): reden; verlopen = FOUT
 //   echte-klok  unittests wachten niet op de echte klok: Bun.sleep/setTimeout ≥ 10 ms = FOUT (scripts/echte-klok.ts)
+//   test-tenant goldcoast-tests gebruiken geen vaste, gedeelde tenant-id: nieuweTestTenant() (scripts/test-tenant.ts)
 //   git-scrub   een testbestand dat git aanroept gebruikt een env zonder GIT_* (schoneEnv()); anders FOUT (scripts/git-scrub.ts)
 //   test-integriteit  geen verwijderd testbestand, minder test(/it( of nieuwe .skip/.only/.todo zonder "// test-weg: reden" (scripts/test-integriteit.ts)
 //   rood-op-basis  een fix (tak of PR-titel met "fix") brengt een unittest mee die op de basis faalt en op de tak slaagt (scripts/rood-op-basis.ts)
@@ -39,7 +40,7 @@
 //   --base <ref>     vergelijk met deze ref in plaats van main
 //   --ci             voor .github/workflows/ci.yml: sla de taken over die in
 //                    uitzonderingen.ci van de baseline staan (alleen op de mini)
-//   --alleen <s,…>   alleen deze stappen (sherif,boundaries,ds-regels,werk-commentaar,echte-klok,git-scrub,test-integriteit,rood-op-basis,scripts-tests,python-tests,biome,taken,build,e2e)
+//   --alleen <s,…>   alleen deze stappen (sherif,boundaries,ds-regels,werk-commentaar,echte-klok,git-scrub,test-tenant,test-integriteit,rood-op-basis,scripts-tests,python-tests,biome,taken,build,e2e)
 //   --zelftest       bewijs dat elke stap afkeurt: per stap een bewuste fout in een
 //                    tijdelijke kopie van de werkkopie; de poort moet daar rood worden
 //   --baseline       schrijf de huidige sherif-, boundaries- en ds-regels-schendingen naar de
@@ -58,6 +59,7 @@ import path from "node:path";
 import { aantalSlots, echteOmgeving, neemSlot } from "./e2e-slot";
 import { ongebruikt, sleutels as dsSleutels, zoek as dsZoek } from "./ds-regels";
 import { beschrijf as ekBeschrijf, nieuweTreffers as ekNieuw, OPLOSSING as EK_OPLOSSING, sleutel as ekSleutel, zoek as ekZoek } from "./echte-klok";
+import { beschrijf as ttBeschrijf, nieuweTreffers as ttNieuw, OPLOSSING as TT_OPLOSSING, sleutel as ttSleutel, zoek as ttZoek } from "./test-tenant";
 import { beoordeelBare, beschrijf as gsBeschrijf, nieuweTreffers as gsNieuw, OPLOSSING as GS_OPLOSSING, sleutel as gsSleutel, zoek as gsZoek } from "./git-scrub";
 import { leesPr } from "./bewijs-pr";
 import { dockerBereikbaar, dockerOntbreekt, omgevingVoor, pakkettenVanTaken } from "./db-verplicht";
@@ -68,7 +70,7 @@ import { JUISTE_VORM, sleutel as wcSleutel, zoek as wcZoek } from "./werk-commen
 
 const ROOT = path.resolve(import.meta.dir, "..");
 const BASELINE_PAD = path.join(ROOT, "scripts/poort-baseline.json");
-const STAPPEN = ["sherif", "boundaries", "ds-regels", "werk-commentaar", "echte-klok", "git-scrub", "test-integriteit", "rood-op-basis", "scripts-tests", "python-tests", "biome", "taken", "build", "e2e"] as const;
+const STAPPEN = ["sherif", "boundaries", "ds-regels", "werk-commentaar", "echte-klok", "git-scrub", "test-tenant", "test-integriteit", "rood-op-basis", "scripts-tests", "python-tests", "biome", "taken", "build", "e2e"] as const;
 type Stap = (typeof STAPPEN)[number];
 
 // ── Opties ──────────────────────────────────────────────────────────────────
@@ -166,6 +168,8 @@ type Baseline = {
   "echte-klok"?: string[];
   /** "bestand | regeltekst" van git-aanroepen in tests zonder env zonder GIT_* (zie git-scrub.ts). */
   "git-scrub"?: string[];
+  /** "bestand | regeltekst" van vaste, gedeelde testtenant-id's in goldcoast-tests (zie test-tenant.ts). */
+  "test-tenant"?: string[];
   uitzonderingen: {
     build: { zonder: string[]; reden: string; weg_als: string };
     /** `<package>#<taak>` die CI (--ci) niet draait; lokaal draaien ze wel. */
@@ -227,7 +231,7 @@ export function boundarySleutels(uit: string, root = ROOT): string[] {
 
 type Resultaat = { status: "OK" | "FOUT" | "SKIP"; detail?: string; uitleg?: string };
 
-type BaselineSoort = "sherif" | "boundaries" | "ds-regels" | "werk-commentaar" | "echte-klok" | "git-scrub";
+type BaselineSoort = "sherif" | "boundaries" | "ds-regels" | "werk-commentaar" | "echte-klok" | "git-scrub" | "test-tenant";
 
 function metBaseline(soort: BaselineSoort, r: Uitkomst, sleutels: string[], extra: string[] = [], extraLabel = "allowlist verouderd"): Resultaat {
   const bekend = leesBaseline()[soort] ?? [];
@@ -320,6 +324,19 @@ function stapGitScrub(): Resultaat {
   const nieuw = gsNieuw(treffers, leesBaseline()["git-scrub"] ?? []).map((t) => `     ${gsBeschrijf(t)}`);
   return { ...r, uitleg: `${r.uitleg}${nieuw.length ? `\n${nieuw.join("\n")}` : ""}
      Oplossing: ${GS_OPLOSSING}` };
+}
+
+/**
+ * Test-tenant draait in-process over de getrackte goldcoast-tests (< 1 s): een vaste, gedeelde
+ * testtenant-id is FOUT (bestaande in de baseline, mag alleen krimpen).
+ */
+function stapTestTenant(): Resultaat {
+  const treffers = ttZoek();
+  const r = metBaseline("test-tenant", { code: 0, uit: "" }, treffers.map(ttSleutel));
+  if (r.status !== "FOUT") return r;
+  const nieuw = ttNieuw(treffers, leesBaseline()["test-tenant"] ?? []).map((t) => `     ${ttBeschrijf(t)}`);
+  return { ...r, uitleg: `${r.uitleg}${nieuw.length ? `\n${nieuw.join("\n")}` : ""}
+     Oplossing: ${TT_OPLOSSING}` };
 }
 
 /**
@@ -521,6 +538,7 @@ async function poort(o: Opties): Promise<number> {
       : s === "werk-commentaar" ? stapWerkCommentaar()
       : s === "echte-klok" ? stapEchteKlok()
       : s === "git-scrub" ? stapGitScrub()
+      : s === "test-tenant" ? stapTestTenant()
       : s === "test-integriteit" ? stapTestIntegriteit(stapBase())
       : s === "rood-op-basis" ? stapRoodOpBasis(stapBase(), o.ci)
       : s === "scripts-tests" ? stapScriptsTests()
@@ -562,9 +580,10 @@ function schrijfBaseline(): void {
     .sort();
   b["echte-klok"] = ekZoek().map(ekSleutel).sort();
   b["git-scrub"] = gsZoek().map(gsSleutel).sort();
+  b["test-tenant"] = ttZoek().map(ttSleutel).sort();
   writeFileSync(BASELINE_PAD, JSON.stringify(b, null, 2) + "\n");
   console.log(
-    `baseline: ${b.sherif.length} sherif, ${b.boundaries.length} boundaries, ${b["ds-regels"].length} ds-regels, ${b["werk-commentaar"].length} werk-commentaar, ${b["echte-klok"].length} echte-klok, ${b["git-scrub"].length} git-scrub → scripts/poort-baseline.json`,
+    `baseline: ${b.sherif.length} sherif, ${b.boundaries.length} boundaries, ${b["ds-regels"].length} ds-regels, ${b["werk-commentaar"].length} werk-commentaar, ${b["echte-klok"].length} echte-klok, ${b["git-scrub"].length} git-scrub, ${b["test-tenant"].length} test-tenant → scripts/poort-baseline.json`,
   );
 }
 
@@ -684,6 +703,17 @@ export const KANARIES: Kanarie[] = [
     wat: "de echte oude test van #52: paneel.test.tsx van 9fe29d5^ (Bun.sleep(70) en (60))",
     verwacht: /FOUT echte-klok .*2 nieuw/,
     zet: (m) => schrijf(m, "apps/watchparty/src/ui/paneel.test.tsx", git("show", "9fe29d5^:apps/watchparty/src/ui/paneel.test.tsx") + "\n"),
+  },
+  {
+    stap: "test-tenant",
+    wat: "een goldcoast-test met een vaste tenant-id (fixture) in apps/goldcoast-api",
+    verwacht: /FOUT test-tenant .*1 nieuw/,
+    zet: (m) =>
+      schrijf(
+        m,
+        "apps/goldcoast-api/src/kanarie-tenant.test.ts",
+        'import { expect, test } from "bun:test";\nconst TENANT = "11111111-1111-4111-8111-111111111111";\ntest("kanarie", () => {\n  expect(TENANT).toBeString();\n});\n',
+      ),
   },
   {
     stap: "git-scrub",
