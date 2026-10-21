@@ -151,8 +151,8 @@ Weigert met exit 1 en een reden:
 Vraag Brian om een commando via de kaart in Terminal B (commando-knop; de gedeelde modules staan in `packages/lab-commando`). Een agent vraagt een **soort** met parameters, geen shellregel; Brian keurt het goed met Face ID; een vaste runner voert het uit na controle van de passkey-handtekening. Fase 1 live: `tailnet-open` en `tailnet-dicht`. `tak-weg` en `proef-echo` bestaan alleen zonder `TMUX_PWA_LIVE` (live draait `push.sh` uit een clone die een agent kan schrijven; `tak-weg` komt terug in fase 1b, via de GitHub-API). Plan: `~/vault-b-status/brian-commando/PLAN.md`.
 
 ```sh
-bun scripts/lead/vraag-brian.ts tak-weg --tak lead/x --waarom "PR #351 gemerged"     # id op stdout
-bun scripts/lead/vraag-brian.ts --waarom "…" -- bash scripts/lead/push.sh --verwijder lead/x   # argv herkend als soort
+bun scripts/lead/vraag-brian.ts tailnet-dicht --https 8450 --waarom "demo klaar"     # id op stdout (tak-weg bestaat alleen in teststand)
+bun scripts/lead/vraag-brian.ts --waarom "…" -- /Applications/Tailscale.app/Contents/MacOS/Tailscale serve --https=8450 off   # argv herkend als soort
 bun scripts/lead/vraag-brian.ts soorten | lees <id> [--json] | wacht <id> [--max 30m] | trek-in <id>
 ```
 
