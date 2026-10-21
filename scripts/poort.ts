@@ -20,7 +20,7 @@
 //   biome       biome ci: lint (alleen foutregels), geen format  (hele repo)
 //   taken       turbo run lint typecheck test                    (affected; met POORT_DB_VERPLICHT=1 en docker als goldcoast-api/db affected, scripts/db-verplicht.ts)
 //   build       turbo run build, zonder de site (zie baseline)   (affected)
-//   e2e         turbo run e2e --concurrency=2                    (affected; tmux, watchparty, storybook-axe)
+//   e2e         turbo run e2e --concurrency=<POORT_E2E_CONCURRENCY> (affected; tmux, watchparty, storybook-axe)
 //               met een machinebreed slot (scripts/e2e-slot.ts): standaard 2 runs tegelijk, POORT_E2E_SLOTS;
 //               binnen een run 2 taken tegelijk, POORT_E2E_CONCURRENCY (1–4; 1 = de oude seriële run)
 //
