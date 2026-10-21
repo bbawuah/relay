@@ -38,6 +38,8 @@ export type Rec = {
   blokkades: number;
   ouder: string | null;
   agent_type: string | null;
+  /** Eenmalig id van spawn.sh (LAB_SPAWN_ID); een kindproces dat de omgeving erft, deelt het en telt niet als sessie. */
+  spawn_id?: string;
   /** Gezet door hernoem.ts: naam/lead zijn bewust gewijzigd en gaan mee bij /clear. */
   hernoemd?: boolean;
 };
@@ -108,7 +110,20 @@ export function nieuwRecord(id: string, env: Omgeving, cwd: string, nu: number):
     blokkades: 0,
     ouder: null,
     agent_type: null,
+    ...(env.LAB_SPAWN_ID ? { spawn_id: env.LAB_SPAWN_ID } : {}),
   };
+}
+
+/**
+ * Is `sessieId` een kindproces van een andere, levende sessie met hetzelfde spawn-id? Bijvoorbeeld een `claude -p` die een
+ * agent start en LAB_AGENT_NAAM, LAB_LEAD_NAAM en LAB_SPAWN_ID erft. Een eigenaar telt als levend als hij niet `weg` is en
+ * de laatste activiteit jonger is dan `verouderdMs` (een gecrashte sessie blokkeert een herstart niet voor altijd).
+ */
+export function isKindProces(staat: string, spawnId: string, sessieId: string, nu: number, verouderdMs = 12 * 3600_000): boolean {
+  if (!spawnId) return false;
+  return alleRecords(staat).some(
+    (r) => r.soort === "sessie" && r.spawn_id === spawnId && r.id !== sessieId && r.toestand !== "weg" && nu - Math.max(r.sinds, r.laatste_tool_om ?? 0) < verouderdMs,
+  );
 }
 
 /** Leest een record; een ontbrekend of kapot record wordt een vers record uit de omgeving. */
