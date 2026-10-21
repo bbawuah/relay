@@ -679,4 +679,38 @@ describe("spawn.sh", () => {
     expect(r.fout).toMatch(/geen tool-aanroep/);
     expect(log("tmux.log")).toContain("send-keys -t %7 Enter");
   });
+
+  test("--meerdere: tien sessies in één aanroep, parallel, elk met een eigen pane", () => {
+    const o = opdracht();
+    const lijst = join(dir, "lijst.txt");
+    const namen = Array.from({ length: 10 }, (_, i) => `w${i + 1}`);
+    writeFileSync(lijst, `# commentaar\n\n${namen.map((n) => `${n} ${o} sonnet`).join("\n")}\n`);
+    writeFileSync(join(dir, "pane.txt"), "❯ \n");
+    writeFileSync(join(dir, "reageert"), "");
+    const r = draai(SPAWN, ["--meerdere", lijst, "--lead", "l", "--map", dir], basis());
+    expect([r.code, r.fout]).toEqual([0, ""]);
+    for (const n of namen) expect(r.uit).toContain(`spawn: ${n} gestart: %7`);
+    expect(log("spawn.log").split("\n").filter((x) => x.includes("claude -n"))).toHaveLength(10);
+  });
+
+  test("--meerdere faalt luid als één sessie zijn startregel niet kreeg, en meldt welke", () => {
+    const o = opdracht();
+    const lijst = join(dir, "lijst.txt");
+    writeFileSync(lijst, `w1 ${o}\nw2 ${join(dir, "bestaat-niet.md")}\n`);
+    writeFileSync(join(dir, "pane.txt"), "❯ \n"); // geen "reageert": geen ⏺ na de startzin
+    const r = draai(SPAWN, ["--meerdere", lijst, "--lead", "l", "--map", dir], basis());
+    expect(r.code).toBe(1);
+    expect(r.fout).toMatch(/MISLUKT w1 .*geen tool-aanroep/);
+    expect(r.fout).toMatch(/MISLUKT w2 .*opdrachtbestand bestaat niet/);
+    expect(r.fout).toMatch(/2 van 2 sessies/);
+  });
+
+  test("--meerdere sluit --naam uit en weigert een lege of kapotte lijst", () => {
+    const lijst = join(dir, "lijst.txt");
+    writeFileSync(lijst, "# leeg\n");
+    expect(draai(SPAWN, ["--meerdere", lijst, "--naam", "x", "--lead", "l"], basis()).fout).toMatch(/sluit .* uit/);
+    expect(draai(SPAWN, ["--meerdere", lijst, "--lead", "l"], basis()).fout).toMatch(/geen sessies/);
+    writeFileSync(lijst, "alleennaam\n");
+    expect(draai(SPAWN, ["--meerdere", lijst, "--lead", "l"], basis()).fout).toMatch(/verwacht 'naam opdrachtbestand/);
+  });
 });
