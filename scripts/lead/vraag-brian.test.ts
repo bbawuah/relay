@@ -11,7 +11,7 @@ const wortel = mkdtempSync(path.join(tmpdir(), "vraag-brian-"));
 afterAll(() => rmSync(wortel, { recursive: true, force: true }));
 let teller = 0;
 const nieuweMap = () => path.join(wortel, `m${teller++}`);
-const ctx = { kloon: "/kloon", test: true };
+const ctx = { kloon: "/kloon", home: "/home/test", test: true };
 const NU = Date.parse("2026-10-21T10:00:00Z");
 const basisIn = (basis: string, o: Record<string, unknown> = {}) => ({
   basis, ctx, nu: NU, door: "cm-kern", lead: "lead-goldcoast", waarom: "gemerged", soort: "tak-weg", params: { tak: "lead/x" }, ...o,
