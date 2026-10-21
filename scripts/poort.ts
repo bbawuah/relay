@@ -582,15 +582,33 @@ async function poort(o: Opties): Promise<number> {
   if (waarom) console.log(`poort: geen stempel (${waarom})`);
   else {
     const sha = start.sha;
-    const map = path.join(homedir(), ".cache/lab-bawuah/poort");
-    mkdirSync(map, { recursive: true });
-    writeFileSync(
-      path.join(map, `${sha}.json`),
-      JSON.stringify({ sha, groen: true, modus: o.alles ? "alles" : "affected", base: ctx.base, tijd: new Date().toISOString() }) + "\n",
-    );
+    const fout = schrijfStempel(path.join(homedir(), ".cache/lab-bawuah/poort"), {
+      sha,
+      groen: true,
+      modus: o.alles ? "alles" : "affected",
+      base: ctx.base,
+      tijd: new Date().toISOString(),
+    });
+    if (fout) console.log(geenStempelMelding(fout));
   }
   return fouten;
 }
+
+/** Schrijft <map>/<sha>.json; geeft de fout terug in plaats van te gooien (in de agent-sandbox is
+ * de map niet schrijfbaar, en dan mag een groene poort niet crashen). */
+export function schrijfStempel(map: string, stempel: { sha: string } & Record<string, unknown>): string | null {
+  try {
+    mkdirSync(map, { recursive: true });
+    writeFileSync(path.join(map, `${stempel.sha}.json`), `${JSON.stringify(stempel)}\n`);
+    return null;
+  } catch (e) {
+    return e instanceof Error ? e.message : String(e);
+  }
+}
+
+/** Luid: de poort is groen, maar zonder stempel weigert merge.sh deze tak. */
+export const geenStempelMelding = (fout: string) =>
+  `LET OP poort: groen, maar GEEN stempel geschreven (${fout}). merge.sh weigert deze tak tot er een stempel is.`;
 
 /** Waarom deze run geen stempel krijgt, of null: alleen een volledige, groene run (geen --ci, die
  * taken overslaat) op een werkkopie die bij de start én het eind schoon is, op dezelfde HEAD. */
