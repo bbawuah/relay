@@ -257,7 +257,7 @@ const maakTak = (naam: string, bestand: string, inhoud: string) => {
   git(repo, "checkout", "-q", "main");
 };
 // LAB_WACHTRIJ_KLOK: vaste klok voor het stiltevenster, zodat de tests niet van het uur afhangen.
-const omgeving = (extra: Record<string, string> = {}) => ({ ...schoneEnv(), PATH: `${bin}:${process.env.PATH}`, FAKE_DIR: dir, TMUX: "", TMUX_PANE: "", LAB_WACHTRIJ_KLOK: "20261006-1200", LAB_WACHTRIJ_CI_WACHT: "0", ...extra });
+const omgeving = (extra: Record<string, string> = {}) => ({ ...schoneEnv(), PATH: `${bin}:${process.env.PATH}`, FAKE_DIR: dir, TMUX: "", TMUX_PANE: "", LAB_WACHTRIJ_KLOK: "20261006-1200", LAB_WACHTRIJ_CI_WACHT: "0", LAB_MERGE_STEMPELS: join(dir, "stempels"), ...extra });
 const draaiWachtrij = (args: string[], extra: Record<string, string> = {}) => {
   // Een bun-start-crash (SIGTRAP zonder uitvoer) wordt eenmaal herhaald; zie spawn-crash.ts.
   const { r } = metStartHerstel(() => Bun.spawnSync(["bun", WACHTRIJ, ...args], { cwd: repo, env: omgeving(extra) }));
@@ -802,6 +802,10 @@ describe("merge.sh bezitscheck", () => {
   };
 
   beforeEach(() => {
+    // merge.sh eist een groene e2e-stempel op de head (zie lead.test.ts voor de stempelcheck zelf)
+    mkdirSync(join(dir, "stempels"), { recursive: true });
+    const sha = "abc1234def5678abc1234def5678abc1234def56";
+    writeFileSync(join(dir, "stempels", `${sha}.json`), JSON.stringify({ sha, groen: true, modus: "alles", tijd: "2026-10-21T12:00:00Z" }));
     contract = join(dir, "contract.md");
     writeFileSync(
       contract,

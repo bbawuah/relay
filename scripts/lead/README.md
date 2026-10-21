@@ -23,6 +23,8 @@ scripts/lead/spawn.sh --naam w2 --opdracht ~/vault-b-status/werkwijze-b/CONTRACT
 scripts/lead/spawn.sh --naam w2 --opdracht opdracht.md --lead labbawuah-1c --droog
 ```
 
+Veel sessies tegelijk: `spawn.sh --meerdere lijst.txt --lead <n> [--model ..] [--map ..]`, met per regel `naam opdrachtbestand [sonnet|opus]`. Alle sessies starten parallel (een lus van tien liep tegen de time-out van 600 s en de laatste kreeg zijn startregel niet). De hele lijst wordt eerst gevalideerd (dubbele naam, kapotte regel, ontbrekend opdrachtbestand, ongeldig model): bij een fout start er niets. Het eindoordeel is luid: exit 1 en per mislukte sessie een regel `MISLUKT <naam>` met de reden, bijvoorbeeld "geen tool-aanroep" als de startregel niet aankwam.
+
 | Optie | Betekenis |
 |---|---|
 | `--naam <n>` | Naam van de sessie (`claude -n <n>`). Alleen letters, cijfers, `.`, `_` en `-`. |
@@ -60,7 +62,12 @@ Weigert met exit 1 en een duidelijke reden als:
 - er geen PR-comment is die begint met "Lead-review: akkoord <sha7>", met de eerste 7 tekens van de huidige head. Een akkoord van vóór een nieuwe push telt dus niet ("push na akkoord"). Voorbeeld: `Lead-review: akkoord b80ed00`;
 - de PR geen enkele CheckRun van workflow `CI` heeft (de Vercel-entries in de rollup tellen niet mee; GitHub startte soms geen CI bij een nieuwe PR: #85, #87, #88): de melding is `geen CI-run voor <sha7>; sluit en heropen de PR of push opnieuw`, geen "niet groen" en geen wachten;
 - de verplichte check `poort` ontbreekt of niet groen is (de nieuwste run op starttijd telt; andere checks niet);
-- `mergeable` niet `MERGEABLE` is, of de tak achterloopt op main (`BEHIND`, de ruleset is strict), of `mergeStateStatus` iets anders is dan CLEAN of UNSTABLE (allowlist). Bij UNSTABLE volgt een waarschuwing.
+- `mergeable` niet `MERGEABLE` is, of de tak achterloopt op main (`BEHIND`, de ruleset is strict), of `mergeStateStatus` iets anders is dan CLEAN of UNSTABLE (allowlist). Bij UNSTABLE volgt een waarschuwing;
+- er geen geldige **e2e-stempel** is: geen merge zonder een groene volledige poort (met de geraakte e2e) op de patch van de PR. `scripts/poort.ts` schrijft na een groene volledige run op een schone werkkopie `~/.cache/lab-bawuah/poort/<sha>.json` (`{sha, groen: true, modus, base, tijd}`). merge.sh zoekt een stempel op de head en daarna op de commits van de PR (nieuw naar oud), en eist:
+  - `groen: true`, `sha` gelijk aan de bestandsnaam, `modus` `alles`, of `affected` met een `base` die een voorouder is van de merge-base van main en die commit (een poort met `--base HEAD` telt dus niet). Een symlink telt niet;
+  - bij een stempel op een oudere commit S: dezelfde eigen patch, `git patch-id --stable` van `main...S` gelijk aan die van `main...head`, via `gh api …/compare` (geen fetch, geen repo-code). Zo maakt `update-branch` de stempel niet ongeldig. De combinatie met de nieuwere main toetst dit niet; die is voor een volledige e2e na de merge (plan wf-pijplijn, nog niet gebouwd). Wijzigde main context rond de hunks van de PR, dan verschilt de patch-id en weigert merge.sh (draai dan de poort op de head).
+
+  De melding zegt wat ontbreekt (geen stempel, niet groen of oud formaat, verkeerde basis, patch gewijzigd); `gh api` die faalt is een weigering. Vangnet, geen grens: een agent kan het stempelbestand zelf schrijven, tot de e2e buiten de agent draait en de stempel schrijft waar agents niet bij kunnen. `LAB_MERGE_STEMPELS` (andere stempelmap, voor de tests) geldt niet in de root-kopie.
 
 Zijn de voorwaarden in orde, dan: de merge met `--merge --match-head-commit <volledige head-sha>` (de head die net tegen het akkoord is getoetst; verschuift de head tussen controle en merge, dan weigert GitHub), daarna controleren dat `state` `MERGED` is, en pas dan de remote tak weg via de API (`gh api -X DELETE repos/<GH_REPO>/git/refs/heads/<tak>`, dus niet via git en de pre-push-hook). Staat de PR niet op MERGED, dan blijft de remote tak staan en eindigt het script met exit 1.
 
@@ -238,10 +245,10 @@ Hernoemt het lead-record (id of uniek begin; zie `bun scripts/lead/status.sh --j
 | H1 | SessionStart (`startup\|resume`) | maakt het record, `bezig` |
 | H2 | UserPromptSubmit | `bezig`, beurtteller op nul; bij de lead: ongelezen meldingen als `additionalContext` |
 | H3 | PreToolUse (`*`) | `bezig`, laatste tool; in een subagent het record van de subagent |
-| H4 | PostToolUse (`SendMessage`) | `SendMessage` aan de eigen lead: rapport binnen, en `vrij` als het bericht dat woord bevat |
+| H4 | PostToolUse (`SendMessage`) | `SendMessage` aan de eigen lead: rapport binnen; `vrij` alleen als de laatste regel van het bericht `vrij` is; `wacht_tot` als de laatste regel `wacht op achtergrondrun tot ~HH:MM` is |
 | H5 | Notification (`permission_prompt`, `idle_prompt`) | `goedkeuring` of `idle`, met een melding aan de lead |
 | H6 | Stop (agent, sublead, vervolg) | de gate, zie onder; anders `klaar`, `vrij` of `idle`, met een melding |
-| H7 | Stop (lead) | ongelezen meldingen: eenmalig `decision: block` met de regels |
+| H7 | Stop (lead) | ongelezen meldingen: eenmalig `decision: block` met de regels; elke regel komt één keer aan (slotmap tegen een gelijktijdige wekker, identieke regels vallen samen) |
 | H8 | StopFailure | `vastgelopen`, met een melding |
 | H9 | SubagentStart, SubagentStop | record per subagent onder de ouder: `bezig`, daarna `klaar` |
 | H10 | SessionEnd | `weg` (één write, timeout 1 s) |
@@ -259,7 +266,7 @@ scripts/lead/status.sh [--lead <n>] [--alles] [--git] [--json]
 
 ### De gate (H6)
 
-Een agent die na minstens één tool stopt zonder `SendMessage` aan de lead krijgt `{"decision":"block","reason":"Je stopt zonder rapport aan <lead>. …"}`. Rem: hoogstens 3 blokkades per sessie, daarna altijd doorlaten met de melding "stopte 3× zonder rapport". Geen blokkade bij `stop_hook_active` (de tweede stop gaat door), zonder tools in de beurt, of zolang er een subagent van de sessie bezig is.
+Een agent die na minstens één tool stopt zonder `SendMessage` aan de lead krijgt `{"decision":"block","reason":"Je stopt zonder rapport aan <lead>. …"}`. Rem: hoogstens 3 blokkades per reeks, daarna doorlaten met één melding "stopte 3× zonder rapport" (zonder extra idle-regel; de teller begint dan opnieuw). Idle wordt alleen gemeld bij een overgang: een sessie die al idle was en zonder tools weer stopt, meldt niets. Een sessie die op een achtergrondrun wacht, sluit haar rapport af met de vaste slotregel `wacht op achtergrondrun tot ~HH:MM`; hoogstens 2 uur vooruit (een verstreken of verdere tijd telt niet), en tot dan zijn de gate, de idle-melding en de 3×-melding stil (`status.sh` toont `idle (wacht ~HH:MM)`). Geen blokkade bij `stop_hook_active` (de tweede stop gaat door), zonder tools in de beurt, of zolang er een subagent van de sessie bezig is.
 
 ### Meldingen
 

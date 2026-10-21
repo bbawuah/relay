@@ -1,7 +1,7 @@
 // De --dry=json-uitvoer van turbo: alleen stdout telt; waarschuwingen op stderr (remote cache niet
 // beschikbaar, 403) mogen de poort niet laten crashen.
 import { describe, expect, test } from "bun:test";
-import { type Context, draai, leesDryTaken, stapE2e, type Uitkomst } from "./poort";
+import { type Context, draai, geenStempel, leesDryTaken, stapE2e, type Uitkomst } from "./poort";
 
 const PLAN = JSON.stringify({ tasks: [{ task: "e2e", package: "@lab-bawuah/tmux", command: "bun run test:tmux" }] }, null, 2);
 
@@ -102,5 +102,26 @@ describe("stapE2e: stiltevenster vóór turbo (geen groene cachehit in het venst
     const { aanroepen, turbo } = nepTurbo();
     await stapE2e(ctx, { nu: op("2026-10-18T02:00:00Z"), turbo, neemSlot: slot });
     expect(aanroepen[1]).toContain("--cache=local:rw");
+  });
+});
+
+describe("geenStempel: alleen een volledige groene run op een vaste, schone HEAD", () => {
+  const vol = { alleen: null, zonderE2e: false, ci: false };
+  const a = { sha: "a".repeat(40), schoon: true };
+  test("volledig, groen, schoon en dezelfde HEAD: stempel", () => {
+    expect(geenStempel(0, vol, a, a)).toBeNull();
+  });
+  test("een commit tijdens de run: geen stempel (ook niet op de nieuwe HEAD)", () => {
+    expect(geenStempel(0, vol, a, { sha: "b".repeat(40), schoon: true })).toMatch(/HEAD veranderde tijdens de run \(aaaaaaa → bbbbbbb\)/);
+  });
+  test("vuil bij de start of het eind: geen stempel", () => {
+    expect(geenStempel(0, vol, { ...a, schoon: false }, a)).toMatch(/niet schoon/);
+    expect(geenStempel(0, vol, a, { ...a, schoon: false })).toMatch(/niet schoon/);
+  });
+  test("--ci, --alleen, --zonder-e2e of een FOUT: geen stempel", () => {
+    expect(geenStempel(0, { ...vol, ci: true }, a, a)).toMatch(/--ci/);
+    expect(geenStempel(0, { ...vol, alleen: ["e2e"] }, a, a)).toMatch(/niet volledig/);
+    expect(geenStempel(0, { ...vol, zonderE2e: true }, a, a)).toMatch(/niet volledig/);
+    expect(geenStempel(1, vol, a, a)).toMatch(/niet groen/);
   });
 });
