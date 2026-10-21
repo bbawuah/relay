@@ -262,6 +262,7 @@ describe("register (H1-H5, H8-H10)", () => {
     expect(eerste.stdout.match(/w2 klaar \(rapport binnen\)/g)).toHaveLength(1); // identieke regels vallen samen
     const tweede = await verwerk("Stop", { session_id: "l1", cwd: "/w" }, { ...lead, LAB_AGENT_NAAM: "lead" }, opt);
     expect(tweede.stdout).toBe("");
+  });
 
   test("fix: een kindproces met hetzelfde LAB_SPAWN_ID registreert zich niet en meldt niets", async () => {
     const env = omgeving({ LAB_SPAWN_ID: "sp-1" });
