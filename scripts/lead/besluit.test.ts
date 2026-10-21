@@ -94,7 +94,8 @@ describe("besluit.ts", () => {
     schrijfNieuw(map, maakBesluit(leesArgs([...zonder, "--id", "met-tijd", "--deadline", "1h", "--zonder-antwoord", "nee=Dan niet."]).o, nu));
     expect(lijstRegels(map, [], nu.getTime())).toEqual(["open      met-tijd  Compactie-hook op één plek  [tot 2026-10-06T11:00:00.000Z, anders nee]"]);
     expect(lijstRegels(map, [], Date.parse("2026-10-06T11:00:00Z"))[0]).toStartWith("VERLOPEN  met-tijd");
-    const p = Bun.spawnSync(["bun", SCRIPT, "lees", "met-tijd", "--map", map], { stdout: "pipe", stderr: "pipe" });
+    // Never the live audit log: an audit file of its own (review #387).
+    const p = Bun.spawnSync(["bun", SCRIPT, "lees", "met-tijd", "--map", map, "--audit", path.join(dir, "audit-v2.jsonl")], { stdout: "pipe", stderr: "pipe" });
     expect(p.exitCode).toBe(4); // the real clock is past 2026-10-06T11:00
     expect(p.stderr.toString()).toContain("Jouw standaard: nee (Dan niet.); dat is geen keuze van Brian.");
   });
@@ -102,7 +103,7 @@ describe("besluit.ts", () => {
   test("the command line: nieuw, lijst, lees, and usage", () => {
     const map = path.join(dir, "cli");
     const draai = (...a: string[]) => {
-      const p = Bun.spawnSync(["bun", SCRIPT, ...a, "--map", map], { stdout: "pipe", stderr: "pipe", env: { ...process.env, LAB_LEAD_NAAM: "labbawuah-1c" } });
+      const p = Bun.spawnSync(["bun", SCRIPT, ...a, "--map", map], { stdout: "pipe", stderr: "pipe", env: { ...process.env, LAB_LEAD_NAAM: "labbawuah-1c", TMUX_PWA_DATA: path.join(dir, "data") } }); // without --audit: not the live log
       return { code: p.exitCode, uit: p.stdout.toString(), fout: p.stderr.toString() };
     };
     expect(draai("nieuw", ...args).code).toBe(0);
