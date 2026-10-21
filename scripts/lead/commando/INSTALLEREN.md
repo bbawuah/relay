@@ -76,6 +76,15 @@ plutil -lint ~/Library/LaunchAgents/nl.lab-b.commando.plist
 launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/nl.lab-b.commando.plist
 ```
 
+**HOME moet gelijk zijn aan die van de tmux-LaunchAgent.** HOME zit in de hash waarover je tekent (de env van de soort). De server rekent met zijn HOME, de runner met de zijne. Wijken ze af, dan is elk akkoord onbewezen en draait er niets. Controleer het:
+
+```sh
+grep -A1 '<key>HOME</key>' ~/Library/LaunchAgents/nl.lab-b.commando.plist
+launchctl print gui/$(id -u)/nl.lab-b.tmux | grep -w HOME
+```
+
+Beide moeten hetzelfde pad tonen. Zet `nl.lab-b.tmux` (geschreven door `apps/tmux/scripts/uitrollen.sh`) geen eigen HOME, dan geldt die van jouw gebruiker (`echo $HOME`), en dat is wat het sjabloon invult.
+
 De agent start `/opt/homebrew/bin/bun /usr/local/lib/lab-lead/commando-runner.js --live`. Hij heeft `WatchPaths` op `~/.local/state/lab-commando/akkoord` en krijgt alleen `PATH`, `HOME` en `LANG`. Elke start verwerkt wat er in `akkoord/` ligt en stopt daarna. De log staat in `~/Library/Logs/lab-b/commando-runner.log`. Daar staat ook een akkoord dat niet van jou bewezen is (zie stap 4).
 
 ## 4. Controleren

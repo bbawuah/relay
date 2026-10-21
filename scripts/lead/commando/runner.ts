@@ -27,7 +27,7 @@ import {
   commandoMap,
   type Ctx,
   inboxRegel,
-  kloonPad,
+  ctxVanOmgeving,
   leesGewoonBestand,
   MAPPEN,
   redigeer,
@@ -64,8 +64,9 @@ export interface Sleutels { versie: 1; rpID: string; origins: string[]; sleutels
  * Ctx van de runner. --live is altijd live (test=false), wat de omgeving ook zegt. Zonder --live weigert
  * de CLI tenzij testStand(env) (LAB_COMMANDO_TEST=1, zonder TMUX_PWA_LIVE): gelijk aan de server.
  */
-export function runnerCtx(live: boolean): Ctx {
-  return { kloon: kloonPad(), test: !live };
+export function runnerCtx(live: boolean, env: Record<string, string | undefined> = process.env): Ctx {
+  // kloon en home uit de omgeving (één keer, bij de start); test nooit uit de omgeving, alleen uit --live.
+  return { ...ctxVanOmgeving(env), test: !live };
 }
 
 function exact(x: unknown, sleutels: string[], optioneel: string[], wat: string): Record<string, unknown> {

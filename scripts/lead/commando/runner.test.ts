@@ -577,6 +577,16 @@ describe("runner: Ctx gelijk aan die van de server", () => {
     expect(verzoekHash(v, runnerCtx(true))).toBe(verzoekHash(v, maakCtx({ TMUX_PWA_LIVE: "1" })));
     expect(verzoekHash(v, runnerCtx(false))).toBe(verzoekHash(v, maakCtx({ LAB_COMMANDO_TEST: "1" })));
   });
+  test("home komt uit HOME van de runner; test nooit uit de omgeving, alleen uit --live", () => {
+    expect(runnerCtx(true, { HOME: "/home/vector", LAB_COMMANDO_TEST: "1" })).toEqual({ kloon: ctx.kloon, home: "/home/vector", test: false });
+    expect(runnerCtx(false, { HOME: "/home/vector", TMUX_PWA_LIVE: "1" })).toEqual({ kloon: ctx.kloon, home: "/home/vector", test: true });
+  });
+  test("een andere HOME bij de server dan bij de runner: andere hash, dus onbewezen", async () => {
+    const v = verzoek({ soort: "tailnet-dicht", params: { https: "8450" } });
+    nep("Tailscale", "exit 0");
+    await leg(v, { ctxBijTekenen: { ...ctx, home: "/Users/ander" } });
+    await onbewezen(v.id, /gewijzigd/, { nepBin });
+  });
 });
 
 describe("passkeys.pub en akkoord: strikt lezen", () => {
