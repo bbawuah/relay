@@ -160,13 +160,86 @@ describe("register (H1-H5, H8-H10)", () => {
     expect(r?.rapport_in_beurt).toBe(true);
     expect(r?.vrij).toBe(false);
     expect(r?.rapport_om).toBe(T0);
-    await verwerk("PostToolUse", inv({ tool_name: "SendMessage", tool_input: { to: "lead", message: "Ik ben vrij voor werk" } }), env, opt);
+    await verwerk("PostToolUse", inv({ tool_name: "SendMessage", tool_input: { to: "lead", message: "PR 12 klaar, de slots waren vrij\n\nvrij" } }), env, opt);
     r = leesRecord(staat, "s1");
     expect(r?.vrij).toBe(true);
     // "vrijdag" is niet het woord vrij
     await verwerk("UserPromptSubmit", inv(), env, opt);
     await verwerk("PostToolUse", inv({ tool_name: "SendMessage", tool_input: { to: "lead", message: "vrijdag klaar" } }), env, opt);
     expect(leesRecord(staat, "s1")?.vrij).toBe(false);
+  });
+
+  test("fix: vrij alleen als vaste slotregel, niet als woord in de rapporttekst", async () => {
+    const env = omgeving();
+    for (const bericht of ["e2e-slots waren vrij", "vrij\nmaar nog bezig met e2e", "Ik ben vrij voor werk"]) {
+      await verwerk("UserPromptSubmit", inv(), env, opt);
+      await verwerk("PostToolUse", inv({ tool_name: "SendMessage", tool_input: { to: "lead", message: bericht } }), env, opt);
+      expect([bericht, leesRecord(staat, "s1")?.vrij]).toEqual([bericht, false]);
+    }
+    await verwerk("PostToolUse", inv({ tool_name: "SendMessage", tool_input: { to: "lead", message: "klaar\n\nVrij." } }), env, opt);
+    expect(leesRecord(staat, "s1")?.vrij).toBe(true);
+  });
+
+  test("fix: wacht op achtergrondrun zet wacht_tot en zwijgt idle en 3×-melding tot dan", async () => {
+    const env = omgeving();
+    const vandaag = new Date(T0);
+    vandaag.setHours(12, 0, 0, 0);
+    klok = vandaag.getTime();
+    await stuurTool(env);
+    await verwerk("PostToolUse", inv({ tool_name: "SendMessage", tool_input: { to: "lead", message: "e2e loopt\nwacht op achtergrondrun tot ~12:30" } }), env, opt);
+    expect(leesRecord(staat, "s1")?.wacht_tot).toBe(klok + 30 * 60_000);
+    await verwerk("Stop", inv(), env, opt);
+    const na = inboxRegels().length;
+    for (let i = 0; i < 4; i++) {
+      klok += 5 * 60_000;
+      await stuurTool(env); // bezig, geen rapport in deze beurt
+      const u = await verwerk("Stop", inv(), env, opt);
+      expect(u.stdout).toBe(""); // ook geen gate-blokkade
+    }
+    expect(inboxRegels()).toHaveLength(na);
+    // na ~12:30 is de wachttijd om en geldt de gate weer
+    klok += 30 * 60_000;
+    await stuurTool(env);
+    expect(JSON.parse((await verwerk("Stop", inv(), env, opt)).stdout).decision).toBe("block");
+  });
+
+  test("fix: een sessie die idle was en zonder tools weer stopt, meldt niet opnieuw idle", async () => {
+    const env = omgeving();
+    await verwerk("SessionStart", inv(), env, opt);
+    await verwerk("Stop", inv(), env, opt);
+    const na = inboxRegels().filter((x) => x.tekst === "w2 is idle").length;
+    for (let i = 0; i < 3; i++) await verwerk("Stop", inv(), env, opt);
+    expect(inboxRegels().filter((x) => x.tekst === "w2 is idle")).toHaveLength(na);
+  });
+
+  test("fix: 3×-melding komt eenmaal per reeks, zonder extra idle-regel", async () => {
+    const env = omgeving();
+    for (let i = 0; i < MAX_BLOKKADES; i++) {
+      await stuurTool(env);
+      await verwerk("Stop", inv(), env, opt);
+    }
+    await stuurTool(env);
+    await verwerk("Stop", inv(), env, opt);
+    const teksten = inboxRegels().map((x) => x.tekst);
+    expect(teksten.filter((x) => x.includes("stopte 3×"))).toHaveLength(1);
+    expect(teksten).not.toContain("w2 is idle");
+    await stuurTool(env);
+    expect(JSON.parse((await verwerk("Stop", inv(), env, opt)).stdout).decision).toBe("block"); // nieuwe reeks
+  });
+
+  test("fix: een melding wordt eenmaal afgeleverd, ook als twee lezers tegelijk komen", async () => {
+    inboxMelding(staat, "lead", "w2", "w2 klaar (rapport binnen)", T0);
+    inboxMelding(staat, "lead", "w2", "w2 klaar (rapport binnen)", T0);
+    const lead = LEAD();
+    // een andere lezer (wekker) houdt het slot vast terwijl de Stop-hook komt
+    mkdirSync(join(staat, "inbox", "lead.gelezen.slot"), { recursive: true });
+    const geblokkeerd = await verwerk("Stop", { session_id: "l1", cwd: "/w" }, { ...lead, LAB_AGENT_NAAM: "lead" }, opt);
+    expect(geblokkeerd.stdout).toBe("");
+    rmSync(join(staat, "inbox", "lead.gelezen.slot"), { recursive: true });
+    const eerste = await verwerk("Stop", { session_id: "l1", cwd: "/w" }, { ...lead, LAB_AGENT_NAAM: "lead" }, opt);
+    expect(eerste.stdout.match(/w2 klaar \(rapport binnen\)/g)).toHaveLength(1); // identieke regels vallen samen
+    const tweede = await verwerk("Stop", { session_id: "l1", cwd: "/w" }, { ...lead, LAB_AGENT_NAAM: "lead" }, opt);
+    expect(tweede.stdout).toBe("");
   });
 
   test("H5 Notification: goedkeuring met melding in de inbox; idle_prompt alleen de toestand", async () => {
@@ -273,7 +346,7 @@ describe("H6 gate (agent, sublead, vervolg)", () => {
     const u = await verwerk("Stop", inv({ stop_hook_active: false }), env, opt);
     expect(u).toEqual({ code: 0, stdout: "", stderr: "" });
     expect(inboxRegels().map((x) => x.tekst)).toContain("w2 stopte 3× zonder rapport");
-    expect(leesRecord(staat, "s1")?.blokkades).toBe(3);
+    expect(leesRecord(staat, "s1")?.blokkades).toBe(0); // reeks gemeld en teruggezet
   });
 
   test("b) laat de stop door zolang subagents van deze sessie lopen; daarna weer blokkeren", async () => {
