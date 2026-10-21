@@ -2,8 +2,7 @@ import { afterAll, describe, expect, test } from "bun:test";
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { MAPPEN, schrijfAtomair, type Akkoord, type Uitslag } from "./commando/opslag";
-import { verzoekHash } from "./commando/schema";
+import { type Akkoord, MAPPEN, schrijfAtomair, type Uitslag, verzoekHash } from "@lab-bawuah/lab-commando";
 import {
   afgewezenRegel, AfwijsFout, alleVerzoeken, dien, OnbekendFout, verzoekPad, duurMs, leesArgs, LimietFout, leesVerzoek, MAX_OPEN_PER_INDIENER, MAX_OPEN_TOTAAL, stand, trekIn, uitslagTekst, VERZOEK_GELDIG_S, wacht,
 } from "./vraag-brian";

@@ -148,7 +148,7 @@ Weigert met exit 1 en een reden:
 
 ## vraag-brian.ts
 
-Vraag Brian om een commando via de kaart in Terminal B (commando-knop, `scripts/lead/commando/`). Een agent vraagt een **soort** met parameters, geen shellregel; Brian keurt het goed met Face ID; een vaste runner voert het uit na controle van de passkey-handtekening. Fase 1: `tak-weg`, `tailnet-open`, `tailnet-dicht` (en `proef-echo`, alleen zonder `TMUX_PWA_LIVE`). Plan: `~/vault-b-status/brian-commando/PLAN.md`.
+Vraag Brian om een commando via de kaart in Terminal B (commando-knop; de gedeelde modules staan in `packages/lab-commando`). Een agent vraagt een **soort** met parameters, geen shellregel; Brian keurt het goed met Face ID; een vaste runner voert het uit na controle van de passkey-handtekening. Fase 1: `tak-weg`, `tailnet-open`, `tailnet-dicht` (en `proef-echo`, alleen zonder `TMUX_PWA_LIVE`). Plan: `~/vault-b-status/brian-commando/PLAN.md`.
 
 ```sh
 bun scripts/lead/vraag-brian.ts tak-weg --tak lead/x --waarom "PR #351 gemerged"     # id op stdout
@@ -164,7 +164,7 @@ bun scripts/lead/vraag-brian.ts soorten | lees <id> [--json] | wacht <id> [--max
 | Opslag | `${LAB_COMMANDO:-~/.local/state/lab-commando}` (700/600), atomair schrijven, lezen zonder symlinks. Tests gebruiken een tijdelijke `LAB_COMMANDO` en `LAB_LEAD_STAAT`. |
 | Uitslag | Exit 0 bij `klaar`; de lead krijgt een korte regel in de inbox (≤ 512 B), de volle geredigeerde staart (20 regels) staat in `uitslag/<id>.json` en komt met `lees`. |
 
-De server en de runner importeren `commando/{soorten,schema,opslag,redactie,inbox}.ts`, niet dit bestand.
+De server en de runner importeren `@lab-bawuah/lab-commando` (`packages/lab-commando/src`), niet dit bestand.
 
 ## lab-lees.sh
 

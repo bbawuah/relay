@@ -17,10 +17,10 @@
 import { randomBytes } from "node:crypto";
 import { appendFileSync, existsSync, readdirSync } from "node:fs";
 import { join } from "node:path";
-import { type Akkoord, commandoMap, kloonPad, leesGewoonBestand, MAPPEN, schrijfAtomair, type Stand, type Uitslag, zorgVoorMappen } from "./commando/opslag";
-import { redigeer } from "./commando/redactie";
-import { afgeleid, type Ctx, geldigId, valideerUitslag, valideerVerzoek, type Verzoek, verzoekHash } from "./commando/schema";
-import { herken, soort, soorten, stilteVoor } from "./commando/soorten";
+import {
+  type Akkoord, afgeleid, commandoMap, type Ctx, geldigId, herken, kloonPad, leesGewoonBestand, MAPPEN, redigeer, schrijfAtomair, soort, soorten, type Stand, stilteVoor, type Uitslag,
+  valideerUitslag, valideerVerzoek, type Verzoek, verzoekHash, zorgVoorMappen,
+} from "@lab-bawuah/lab-commando";
 
 export const VERZOEK_GELDIG_S = 24 * 3600;
 export const MAX_OPEN_PER_INDIENER = 5;
