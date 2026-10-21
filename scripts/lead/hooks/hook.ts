@@ -17,7 +17,7 @@
 // Nooit opgeslagen: prompt, tool_input (behalve SendMessage.to en een boolean "vrij"),
 // last_assistant_message, transcripts. Geen netwerk, geen git, geen gh.
 
-import { type Omgeving, type Rec, dubbeleLeads, eigenLeadNaam, inboxGrootte, inboxMelding, leesOfMaak, leesOngelezen, leesRecord, lopendeSubagents, meldAdres, nieuwRecord, regelsTekst, schrijfRecord, staatMap, tmuxPanes, voorgangerInPane, zetGelezen, zetToestand } from "./register";
+import { type Omgeving, type Rec, dubbeleLeads, eigenLeadNaam, inboxGrootte, inboxMelding, leesOfMaak, leesOngelezen, leesRecord, lopendeSubagents, isKindProces, meldAdres, nieuwRecord, regelsTekst, schrijfRecord, staatMap, tmuxPanes, voorgangerInPane, zetGelezen, zetToestand } from "./register";
 
 export type Uitslag = { code: number; stdout: string; stderr: string };
 export type Opties = {
@@ -55,6 +55,8 @@ export async function verwerk(event: string, invoer: Invoer, env: Omgeving, opti
   if (!ROLLEN.includes(rol)) return LEEG;
   const nu = opties.nu ?? Date.now;
   const staat = staatMap(env);
+  // Een kindproces (bijvoorbeeld `claude -p`) erft de omgeving van een geregistreerde sessie maar is geen sessie.
+  if (event !== "wekker" && isKindProces(staat, env.LAB_SPAWN_ID || "", tekst(invoer.session_id), nu())) return LEEG;
   const sessieId = tekst(invoer.session_id);
   const rec0 = sessieId ? leesRecord(staat, sessieId) : null;
   if (event === "wekker") return rol === "lead" ? wekker(staat, leadNaamVan(env, rec0), nu, opties) : LEEG;

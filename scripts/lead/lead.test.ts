@@ -582,24 +582,32 @@ describe("spawn.sh", () => {
 
   test("het commando krijgt het env-voorvoegsel voor de hooks, per rol; --droog toont het", () => {
     const o = opdracht();
+    const zonderId = (t: string) => t.replace(/ LAB_SPAWN_ID=[\w-]+/, "");
     const voor = (rol: string) => `env LAB_AGENT_NAAM=w1 LAB_AGENT_ROL=${rol} LAB_LEAD_NAAM=lead-x LAB_OPDRACHT=${o} claude -n w1`;
     const a = draai(SPAWN, ["--naam", "w1", "--opdracht", o, "--lead", "lead-x", "--droog"], basis());
-    expect(a.uit).toContain(`"${voor("agent")}"`);
+    expect(zonderId(a.uit)).toContain(`"${voor("agent")}"`);
     expect(a.uit).toContain("@agent_rol agent");
     expect(a.uit).toContain("@agent_naam w1");
     const s = draai(SPAWN, ["--naam", "w1", "--opdracht", o, "--lead", "lead-x", "--sublead", "--droog"], basis());
-    expect(s.uit).toContain(`"${voor("sublead")}"`);
+    expect(zonderId(s.uit)).toContain(`"${voor("sublead")}"`);
     const v = draai(SPAWN, ["--naam", "w1", "--opdracht", o, "--lead", "lead-x", "--vervolg", "lead/test-tak", "--map", repo, "--droog"], basis());
-    expect(v.uit).toContain(`"${voor("vervolg")}"`);
+    expect(zonderId(v.uit)).toContain(`"${voor("vervolg")}"`);
     const m = draai(SPAWN, ["--naam", "w1", "--opdracht", o, "--lead", "lead-x", "--model", "opus", "--droog"], basis());
-    expect(m.uit).toContain(`${voor("agent")} --model opus"`);
+    expect(zonderId(m.uit)).toContain(`${voor("agent")} --model opus"`);
   });
 
   test("een opdrachtpad met spatie staat in het voorvoegsel tussen enkele quotes", () => {
     const spatie = join(dir, "met spatie.md");
     writeFileSync(spatie, "x");
     const r = draai(SPAWN, ["--naam", "w1", "--opdracht", spatie, "--lead", "l", "--droog"], basis());
-    expect(r.uit).toContain(`LAB_OPDRACHT='${spatie}' claude -n w1`);
+    expect(r.uit.replace(/ LAB_SPAWN_ID=[\w-]+/, "")).toContain(`LAB_OPDRACHT='${spatie}' claude -n w1`);
+  });
+
+  test("het commando bevat een eenmalig LAB_SPAWN_ID, per sessie anders", () => {
+    const o = opdracht();
+    const id = (n: string) => /LAB_SPAWN_ID=([\w-]+)/.exec(draai(SPAWN, ["--naam", n, "--opdracht", o, "--lead", "l", "--droog"], basis()).uit)?.[1];
+    expect(id("w1")).toBeTruthy();
+    expect(id("w1")).not.toBe(id("w2"));
   });
 
   test("zet na het starten @agent_rol en @agent_naam op de pane (nep-tmux)", () => {
