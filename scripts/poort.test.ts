@@ -79,7 +79,7 @@ describe("stapE2e: stiltevenster vóór turbo (geen groene cachehit in het venst
       nu = new Date("2026-10-18T03:01:00Z"); // 05:01
       return { vrij() {} };
     };
-    const r = await stapE2e(ctx, { nu: () => nu, turbo, neemSlot: wachtendSlot });
+    const r = await stapE2e(ctx, { nu: () => nu, turbo, neemSlot: wachtendSlot, env: {} });
     expect(r.status).toBe("FOUT");
     expect(r.detail).toMatch(/tijdens het wachten/);
     expect(aanroepen).toEqual([["e2e", "--dry=json"]]);
@@ -96,6 +96,7 @@ describe("stapE2e: stiltevenster vóór turbo (geen groene cachehit in het venst
         return u;
       },
       neemSlot: slot,
+      env: {},
     });
     expect(r.status).toBe("FOUT");
     expect(r.detail).toMatch(/tijdens de run/);
@@ -133,7 +134,7 @@ describe("stapE2e: stiltevenster vóór turbo (geen groene cachehit in het venst
 
   test("de run gaat nooit via de remote cache", async () => {
     const { aanroepen, turbo } = nepTurbo();
-    await stapE2e(ctx, { nu: op("2026-10-18T02:00:00Z"), turbo, neemSlot: slot });
+    await stapE2e(ctx, { nu: op("2026-10-18T02:00:00Z"), turbo, neemSlot: slot, env: {} });
     expect(aanroepen[1]).toContain("--cache=local:rw");
   });
 });
