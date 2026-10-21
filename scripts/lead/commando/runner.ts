@@ -36,6 +36,7 @@ import {
   soort as zoekSoort,
   staart,
   stilteReden,
+  testStand,
   type Uitslag,
   valideerVerzoek,
   type Verzoek,
@@ -59,7 +60,10 @@ const B64URL = /^[A-Za-z0-9_-]+$/;
 export interface Sleutel { credentialId: string; publicKey: string; apparaat?: string }
 export interface Sleutels { versie: 1; rpID: string; origins: string[]; sleutels: Sleutel[] }
 
-/** Ctx van de runner. Gelijk aan die van de server: live server = TMUX_PWA_LIVE=1 = runner --live. */
+/**
+ * Ctx van de runner. --live is altijd live (test=false), wat de omgeving ook zegt. Zonder --live weigert
+ * de CLI tenzij testStand(env) (LAB_COMMANDO_TEST=1, zonder TMUX_PWA_LIVE): gelijk aan de server.
+ */
 export function runnerCtx(live: boolean): Ctx {
   return { kloon: kloonPad(), test: !live };
 }
@@ -565,6 +569,7 @@ if (import.meta.main) {
     } else {
       const map = waarde("--map");
       const sleutels = waarde("--sleutels");
+      if (!testStand(process.env)) stop("zonder --live alleen in test-stand: LAB_COMMANDO_TEST=1 en geen TMUX_PWA_LIVE");
       if (!map || !sleutels) stop("zonder --live zijn --map en --sleutels verplicht (test-stand)");
       const echt = path.resolve(path.join(homedir(), ".local/state/lab-commando"));
       if (path.resolve(map!) === echt) stop(`test-stand op de echte map ${echt} weigert`);

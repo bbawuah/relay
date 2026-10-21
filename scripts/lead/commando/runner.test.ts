@@ -14,7 +14,7 @@ import { maakCtx } from "../vraag-brian";
 const NU = Date.parse("2026-10-21T10:00:00Z");
 const ORIGIN = "http://localhost:8399";
 const RPID = "localhost";
-const ENV_SLEUTELS = ["LAB_COMMANDO", "LAB_COMMANDO_KLOON", "LAB_LEAD_STAAT", "TMUX_PWA_LIVE"] as const;
+const ENV_SLEUTELS = ["LAB_COMMANDO", "LAB_COMMANDO_KLOON", "LAB_COMMANDO_TEST", "LAB_LEAD_STAAT", "TMUX_PWA_LIVE"] as const;
 let oudeEnv: Record<string, string | undefined>;
 let dir: string;
 let map: string;
@@ -98,6 +98,7 @@ beforeEach(async () => {
   process.env.LAB_COMMANDO_KLOON = join(dir, "kloon");
   process.env.LAB_LEAD_STAAT = join(dir, "staat");
   delete process.env.TMUX_PWA_LIVE;
+  process.env.LAB_COMMANDO_TEST = "1"; // test-stand faalt dicht (testStand); de CLI-tests erven dit
   zorgVoorMappen(map);
   ctx = runnerCtx(false);
   auth = await maakAuthenticator();
@@ -566,13 +567,15 @@ describe("runner live (fase 1): alleen tailscale met een vast pad, niets uit de 
 });
 
 describe("runner: Ctx gelijk aan die van de server", () => {
-  test("live server (TMUX_PWA_LIVE=1) = runner --live, anders test-stand", () => {
+  test("runner --live = live server (TMUX_PWA_LIVE=1) = server zonder vlaggen; test-stand alleen met LAB_COMMANDO_TEST=1", () => {
     expect(runnerCtx(true)).toEqual(maakCtx({ TMUX_PWA_LIVE: "1" }));
-    expect(runnerCtx(false)).toEqual(maakCtx({}));
+    expect(runnerCtx(true)).toEqual(maakCtx({})); // faalt dicht: zonder vlag is de server live
+    expect(runnerCtx(true)).toEqual(maakCtx({ TMUX_PWA_LIVE: "1", LAB_COMMANDO_TEST: "1" }));
+    expect(runnerCtx(false)).toEqual(maakCtx({ LAB_COMMANDO_TEST: "1" }));
     expect(runnerCtx(true).test).toBe(false);
     const v = verzoek({ soort: "tailnet-dicht", params: { https: "8450" } });
     expect(verzoekHash(v, runnerCtx(true))).toBe(verzoekHash(v, maakCtx({ TMUX_PWA_LIVE: "1" })));
-    expect(verzoekHash(v, runnerCtx(false))).toBe(verzoekHash(v, maakCtx({})));
+    expect(verzoekHash(v, runnerCtx(false))).toBe(verzoekHash(v, maakCtx({ LAB_COMMANDO_TEST: "1" })));
   });
 });
 
@@ -672,5 +675,18 @@ describe("runner-CLI", () => {
     expect(cli("--live", "--map", map).err).toMatch(/--live neemt geen/);
     expect(cli("--vrij").err).toMatch(/onbekende optie --vrij/);
     expect(cli("--map", map).err).toMatch(/--map en --sleutels verplicht/);
+  });
+  test("zonder --live weigert de runner buiten test-stand (geen LAB_COMMANDO_TEST=1, of met TMUX_PWA_LIVE)", async () => {
+    const v = verzoek({ verlooptS: Math.floor(Date.now() / 1000) + 3600, tijd: new Date().toISOString() });
+    await leg(v, { verlooptS: Math.floor(Date.now() / 1000) + 300 });
+    const sl = join(dir, "sleutels.json");
+    writeFileSync(sl, JSON.stringify(sleutels));
+    const omgevingen: Record<string, string>[] = [{ LAB_COMMANDO_TEST: "" }, { LAB_COMMANDO_TEST: "ja" }, { TMUX_PWA_LIVE: "1" }];
+    for (const env of omgevingen) {
+      const r = cliMet(env, "--map", map, "--sleutels", sl);
+      expect(r.code).toBe(1);
+      expect(r.err).toMatch(/alleen in test-stand: LAB_COMMANDO_TEST=1/);
+      expect(existsSync(join(map, MAPPEN.akkoord, `${v.id}.json`))).toBe(true);
+    }
   });
 });
