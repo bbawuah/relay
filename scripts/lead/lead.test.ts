@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -821,5 +821,59 @@ describe("spawn.sh", () => {
     expect(r.code).toBe(1);
     expect(r.fout).toMatch(/geen tool-aanroep/);
     expect(log("tmux.log")).toContain("send-keys -t %7 Enter");
+  });
+
+  test("--meerdere: tien sessies in één aanroep, parallel, elk met een eigen pane", () => {
+    const o = opdracht();
+    const lijst = join(dir, "lijst.txt");
+    const namen = Array.from({ length: 10 }, (_, i) => `w${i + 1}`);
+    writeFileSync(lijst, `# commentaar\n\n${namen.map((n) => `${n} ${o} sonnet`).join("\n")}\n`);
+    writeFileSync(join(dir, "pane.txt"), "❯ \n");
+    writeFileSync(join(dir, "reageert"), "");
+    const r = draai(SPAWN, ["--meerdere", lijst, "--lead", "l", "--map", dir], basis());
+    expect([r.code, r.fout]).toEqual([0, ""]);
+    for (const n of namen) expect(r.uit).toContain(`spawn: ${n} gestart: %7`);
+    expect(log("spawn.log").split("\n").filter((x) => x.includes("claude -n"))).toHaveLength(10);
+  });
+
+  test("--meerdere faalt luid als sessies hun startregel niet kregen, en meldt welke", () => {
+    const o = opdracht();
+    const lijst = join(dir, "lijst.txt");
+    writeFileSync(lijst, `w1 ${o}\nw2 ${o}\n`);
+    writeFileSync(join(dir, "pane.txt"), "❯ \n"); // geen "reageert": geen ⏺ na de startzin
+    const r = draai(SPAWN, ["--meerdere", lijst, "--lead", "l", "--map", dir], basis());
+    expect(r.code).toBe(1);
+    expect(r.fout).toMatch(/MISLUKT w1 .*geen tool-aanroep/);
+    expect(r.fout).toMatch(/MISLUKT w2 .*geen tool-aanroep/);
+    expect(r.fout).toMatch(/2 van 2 sessies/);
+  });
+
+  test("--meerdere valideert de hele lijst vóór de eerste start: dubbele naam, kapotte regel na een goede", () => {
+    const o = opdracht();
+    const lijst = join(dir, "lijst.txt");
+    const tmp = join(dir, "tmp");
+    mkdirSync(tmp);
+    const proef = (inhoud: string) => {
+      writeFileSync(lijst, inhoud);
+      writeFileSync(join(dir, "pane.txt"), "❯ \n");
+      return draai(SPAWN, ["--meerdere", lijst, "--lead", "l", "--map", dir], basis({ TMPDIR: tmp }));
+    };
+    const dubbel = proef(`w1 ${o}\nw2 ${o}\nw1 ${o}\n`);
+    expect(dubbel.code).toBe(1);
+    expect(dubbel.fout).toMatch(/regel 3: dubbele naam 'w1'; er is nog niets gestart/);
+    expect(proef(`w1 ${o}\nw2\n`).fout).toMatch(/regel 2: verwacht 'naam opdrachtbestand/);
+    expect(proef(`w1 ${o}\nw2 ${join(dir, "bestaat-niet.md")}\n`).fout).toMatch(/regel 2: opdrachtbestand bestaat niet/);
+    expect(proef(`w1 ${o} sonnet\nw2 ${o} gpt\n`).fout).toMatch(/regel 2: model moet sonnet of opus/);
+    expect(log("spawn.log")).toBe(""); // niets gestart, ook w1 niet
+    expect(readdirSync(tmp)).toEqual([]); // geen temp-map achtergelaten
+  });
+
+  test("--meerdere sluit --naam uit en weigert een lege of kapotte lijst", () => {
+    const lijst = join(dir, "lijst.txt");
+    writeFileSync(lijst, "# leeg\n");
+    expect(draai(SPAWN, ["--meerdere", lijst, "--naam", "x", "--lead", "l"], basis()).fout).toMatch(/sluit .* uit/);
+    expect(draai(SPAWN, ["--meerdere", lijst, "--lead", "l"], basis()).fout).toMatch(/geen sessies/);
+    writeFileSync(lijst, "alleennaam\n");
+    expect(draai(SPAWN, ["--meerdere", lijst, "--lead", "l"], basis()).fout).toMatch(/verwacht 'naam opdrachtbestand/);
   });
 });
