@@ -278,7 +278,7 @@ describe("CLI", () => {
     for (const [k, v] of Object.entries(process.env)) if (v !== undefined && !k.startsWith("LAB_") && !k.startsWith("TMUX")) schoon[k] = v;
     const p = Bun.spawnSync(["bun", SCRIPT, ...args], {
       cwd: wortel, stdout: "pipe", stderr: "pipe",
-      env: { ...schoon, LAB_COMMANDO: basis, LAB_AGENT_ROL: "sub", LAB_AGENT_NAAM: "cm-kern", LAB_LEAD_NAAM: "lead-goldcoast", ...env },
+      env: { ...schoon, LAB_COMMANDO: basis, LAB_COMMANDO_TEST: "1", LAB_AGENT_ROL: "sub", LAB_AGENT_NAAM: "cm-kern", LAB_LEAD_NAAM: "lead-goldcoast", ...env },
     });
     return { code: p.exitCode, uit: p.stdout.toString(), fout: p.stderr.toString() };
   };
@@ -378,7 +378,18 @@ describe("CLI", () => {
     expect(r.uit).toContain("proef-echo");
   });
 
-  test("in de livestand (TMUX_PWA_LIVE) bestaat proef-echo niet", () => {
+  test("zonder LAB_COMMANDO_TEST is het live: tak-weg en proef-echo bestaan niet, indienen wordt afgewezen", () => {
+    const basis = nieuweMap();
+    const s = draai(basis, ["soorten"], { LAB_AGENT_ROL: "", LAB_COMMANDO_TEST: "" });
+    expect(s.uit).toContain("tailnet-open");
+    expect(s.uit).not.toContain("tak-weg");
+    expect(s.uit).not.toContain("proef-echo");
+    expect(draai(basis, ["tak-weg", "--tak", "lead/x", "--waarom", "w"], { LAB_COMMANDO_TEST: "" }).code).toBe(2);
+    expect(draai(basis, ["tak-weg", "--tak", "lead/x", "--waarom", "w"], { LAB_COMMANDO_TEST: "0" }).code).toBe(2);
+    expect(draai(basis, ["tak-weg", "--tak", "lead/x", "--waarom", "w"]).code).toBe(0);
+  });
+
+  test("in de livestand (TMUX_PWA_LIVE) bestaat proef-echo niet, ook met LAB_COMMANDO_TEST=1", () => {
     const r = draai(nieuweMap(), ["soorten"], { LAB_AGENT_ROL: "", TMUX_PWA_LIVE: "1" });
     expect(r.uit).not.toContain("proef-echo");
   });

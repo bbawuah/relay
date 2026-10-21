@@ -18,7 +18,7 @@ import { randomBytes } from "node:crypto";
 import { appendFileSync, existsSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import {
-  type Akkoord, afgeleid, commandoMap, type Ctx, geldigId, herken, kloonPad, leesGewoonBestand, MAPPEN, redigeer, schrijfAtomair, soort, soorten, type Stand, stilteVoor, type Uitslag,
+  type Akkoord, afgeleid, testStand, commandoMap, type Ctx, geldigId, herken, kloonPad, leesGewoonBestand, MAPPEN, redigeer, schrijfAtomair, soort, soorten, type Stand, stilteVoor, type Uitslag,
   valideerUitslag, valideerVerzoek, type Verzoek, verzoekHash, zorgVoorMappen,
 } from "@lab-bawuah/lab-commando";
 
@@ -31,7 +31,7 @@ export class AfwijsFout extends Error {}
 /** Geen of een ongeldig id: exit 2. */
 export class OnbekendFout extends Error {}
 
-export const maakCtx = (env: Record<string, string | undefined> = process.env): Ctx => ({ kloon: kloonPad(), test: !env.TMUX_PWA_LIVE });
+export const maakCtx = (env: Record<string, string | undefined> = process.env): Ctx => ({ kloon: kloonPad(), test: testStand(env) });
 
 const nuS = (nu: number): number => Math.floor(nu / 1000);
 
