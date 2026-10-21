@@ -2,6 +2,10 @@
 # Start een Claude-sessie in een eigen tmux-venster en geef die een opdracht.
 # Gebruik: scripts/lead/spawn.sh --naam <n> --opdracht <bestand> [--model sonnet|opus]
 #          [--map <pad>] [--lead <unieke naam>] [--sublead [--workflow <JJJJ-MM-DD>]] [--vervolg <tak>] [--droog]
+#        scripts/lead/spawn.sh --meerdere <lijst> [--model ..] [--map ..] [--lead ..] [--droog]
+#          lijst: per regel `naam opdrachtbestand [sonnet|opus]` (# en lege regels worden overgeslagen). Alle sessies
+#          starten parallel; per sessie dezelfde controles als hierboven; het eindoordeel is luid: exit 1 en een regel
+#          per mislukte sessie als er één niet startte of zijn startregel niet aankwam.
 # Zie scripts/lead/README.md.
 set -euo pipefail
 
@@ -19,7 +23,7 @@ for v in WACHT POLS BEWIJS; do
 done
 [[ $WACHT_VERTROUWEN =~ ^[0-9]+$ ]] || fout "WACHT_VERTROUWEN moet een geheel getal zijn, niet '$WACHT_VERTROUWEN'"
 
-naam="" opdracht="" model="" map="$PWD" lead="" droog=0 sublead=0 vervolg="" workflow=""
+naam="" opdracht="" model="" map="$PWD" lead="" droog=0 sublead=0 vervolg="" workflow="" meerdere=""
 waarde() { [ "$#" -ge 2 ] || fout "optie $1 heeft een waarde nodig"; }
 while [ $# -gt 0 ]; do
   case $1 in
@@ -32,10 +36,57 @@ while [ $# -gt 0 ]; do
     --workflow) waarde "$@"; workflow=$2; shift 2 ;;
     --vervolg) waarde "$@"; vervolg=$2; shift 2 ;;
     --droog) droog=1; shift ;;
-    -h|--help) sed -n '2,5p' "$0"; exit 0 ;;
+    --meerdere) waarde "$@"; meerdere=$2; shift 2 ;;
+    -h|--help) sed -n '2,9p' "$0"; exit 0 ;;
     *) fout "onbekende optie: $1" ;;
   esac
 done
+
+if [ -n "$meerdere" ]; then
+  [ -z "$naam$opdracht$vervolg" ] && [ "$sublead" = 0 ] || fout "--meerdere sluit --naam, --opdracht, --vervolg en --sublead uit"
+  [ -f "$meerdere" ] || fout "lijst bestaat niet: $meerdere"
+  zelf="${BASH_SOURCE[0]}"
+  # Eerst de hele lijst valideren, dan pas starten: een kapotte regel halverwege laat geen halve reeks of temp-map achter.
+  namen=() opdrachten=() modellen=()
+  regelnr=0
+  while read -r n o m extra; do
+    regelnr=$((regelnr + 1))
+    case ${n:-} in ""|"#"*) continue ;; esac
+    [ -n "${o:-}" ] && [ -z "${extra:-}" ] || fout "$meerdere regel $regelnr: verwacht 'naam opdrachtbestand [model]'"
+    [[ $n =~ ^[A-Za-z0-9._-]+$ ]] || fout "$meerdere regel $regelnr: naam '$n' mag alleen letters, cijfers, punt, streepje en underscore bevatten"
+    for eerder in ${namen[@]+"${namen[@]}"}; do
+      [ "$eerder" != "$n" ] || fout "$meerdere regel $regelnr: dubbele naam '$n'; er is nog niets gestart"
+    done
+    [ -f "$o" ] || fout "$meerdere regel $regelnr: opdrachtbestand bestaat niet: $o; er is nog niets gestart"
+    case ${m:-$model} in ""|sonnet|opus) ;; *) fout "$meerdere regel $regelnr: model moet sonnet of opus zijn, niet '${m:-$model}'" ;; esac
+    namen+=("$n") opdrachten+=("$o") modellen+=("${m:-$model}")
+  done <"$meerdere"
+  [ "${#namen[@]}" -gt 0 ] || fout "lijst $meerdere bevat geen sessies"
+  uitmap=$(mktemp -d "${TMPDIR:-/tmp}/spawn-meerdere.XXXXXX")
+  pids=()
+  for i in "${!namen[@]}"; do
+    args=(--naam "${namen[$i]}" --opdracht "${opdrachten[$i]}" --map "$map")
+    [ -z "${modellen[$i]}" ] || args+=(--model "${modellen[$i]}")
+    [ -z "$lead" ] || args+=(--lead "$lead")
+    [ "$droog" = 0 ] || args+=(--droog)
+    bash "$zelf" "${args[@]}" >"$uitmap/${namen[$i]}.uit" 2>"$uitmap/${namen[$i]}.fout" &
+    pids+=($!)
+  done
+  mislukt=0
+  for i in "${!namen[@]}"; do
+    n=${namen[$i]} rc=0
+    wait "${pids[$i]}" || rc=$?
+    if [ "$rc" = 0 ]; then
+      echo "spawn: $n gestart: $(tail -n 1 "$uitmap/$n.uit")"
+    else
+      mislukt=$((mislukt + 1))
+      echo "spawn: MISLUKT $n (exit $rc): $(cat "$uitmap/$n.fout")" >&2
+    fi
+  done
+  rm -rf "$uitmap"
+  [ "$mislukt" = 0 ] || fout "$mislukt van ${#namen[@]} sessies zijn niet (goed) gestart; zie de regels hierboven"
+  exit 0
+fi
 
 # Zonder --lead: de naam van de aanroepende lead uit het register (via TMUX_PANE), anders LAB_LEAD_NAAM.
 HIER=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
