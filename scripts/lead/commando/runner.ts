@@ -10,7 +10,8 @@
 // De runner vertrouwt niets van de tmux-server: hij leest het verzoek zelf, leidt argv, cwd en env
 // zelf af, rekent de hash zelf uit en controleert de WebAuthn-handtekening tegen passkeys.pub (root-eigen,
 // alleen publieke sleutels). Zonder geldige handtekening van Brian over precies dit verzoek draait er niets.
-// Nooit een shell: argv gaat rechtstreeks naar Bun.spawn.
+// Nooit een shell: argv gaat rechtstreeks naar Bun.spawn. Live (fase 1) draait alleen tailscale met een
+// vast absoluut pad en cwd /; niets uit de clone of een andere map die een agent kan wijzigen.
 //
 // passkeys.pub (beheerd door de runner, zie INSTALLEREN.md):
 //   {"versie":1,"rpID":"<host>","origins":["https://<host>"],"sleutels":[{"credentialId":"<b64url>","publicKey":"<b64url COSE>","apparaat"?:"…"}]}
@@ -27,7 +28,9 @@ import { stilteReden, soort as zoekSoort, type Soort } from "./soorten";
 
 export const SLEUTELS_PAD = "/usr/local/lib/lab-lead/passkeys.pub";
 /** Een akkoord geldt 5 min (B4); wat verder in de toekomst ligt, heeft de server niet gemaakt. */
-export const MAX_AKKOORD_S = 10 * 60;
+export const MAX_AKKOORD_S = 5 * 60;
+/** Speling voor een klok die iets voorloopt. */
+export const KLOK_MARGE_S = 30;
 export const MAX_UITVOER = 64 * 1024;
 export const UITVOER_DAGEN = 7;
 /** Hooguit zoveel akkoorden per start; de rest komt bij de volgende start (WatchPaths). */
@@ -160,36 +163,70 @@ export async function controleerHandtekening(a: Akkoord, verwachteChallenge: str
 }
 
 export interface Uitvoering { exit: number | null; uitvoer: string; reden?: string }
-export type Spawner = (argv: string[], o: { cwd: string; env: Record<string, string>; timeoutMs: number }) => Promise<Uitvoering>;
+export type Spawner = (argv: string[], o: { cwd: string; env: Record<string, string>; timeoutMs: number; naExitMs?: number }) => Promise<Uitvoering>;
 
-async function leesBegrensd(stroom: ReadableStream<Uint8Array> | null, max: number): Promise<{ tekst: string; afgekapt: boolean }> {
-  if (!stroom) return { tekst: "", afgekapt: false };
+/** Leest een stroom begrensd. `stop` breekt het lezen af (een kleinkind kan de pipe openhouden). */
+function leesBegrensd(stroom: ReadableStream<Uint8Array> | null, max: number): { klaar: Promise<{ tekst: string; afgekapt: boolean }>; stop: () => void } {
+  if (!stroom) return { klaar: Promise.resolve({ tekst: "", afgekapt: false }), stop: () => {} };
+  const lezer = stroom.getReader();
   const delen: Uint8Array[] = [];
   let n = 0;
   let afgekapt = false;
-  for await (const deel of stroom) {
-    if (n >= max) {
-      afgekapt = true;
-      continue; // doorlezen, anders blokkeert het proces op een volle pipe
+  const klaar = (async () => {
+    try {
+      for (;;) {
+        const { done, value } = await lezer.read();
+        if (done) break;
+        if (n >= max) {
+          afgekapt = true;
+          continue; // doorlezen, anders blokkeert het proces op een volle pipe
+        }
+        const neem = value.subarray(0, max - n);
+        if (neem.length < value.length) afgekapt = true;
+        delen.push(neem);
+        n += neem.length;
+      }
+    } catch {
+      // afgebroken met stop(): wat er is, telt
     }
-    const neem = deel.subarray(0, max - n);
-    if (neem.length < deel.length) afgekapt = true;
-    delen.push(neem);
-    n += neem.length;
-  }
-  return { tekst: Buffer.concat(delen).toString("utf8"), afgekapt };
+    return { tekst: Buffer.concat(delen).toString("utf8"), afgekapt };
+  })();
+  return { klaar, stop: () => void lezer.cancel().catch(() => {}) };
 }
 
-/** Echte uitvoering: geen shell, stdin dicht, vaste env, timeout per soort, uitvoer begrensd. */
+/** Na de exit van het proces wacht de runner hooguit zo lang op de pipes. */
+export const NA_EXIT_MS = 2000;
+
+/**
+ * Echte uitvoering: geen shell, stdin dicht, vaste env, timeout per soort, uitvoer begrensd. Houdt een
+ * kleinkind stdout of stderr open na de exit, dan stopt het lezen na naExitMs: de runner blijft nooit hangen.
+ */
 export const echteSpawner: Spawner = async (argv, o) => {
   const p = Bun.spawn(argv, { cwd: o.cwd, env: o.env, stdin: "ignore", stdout: "pipe", stderr: "pipe", timeout: o.timeoutMs, killSignal: "SIGKILL" });
-  const [uit, err] = await Promise.all([leesBegrensd(p.stdout, MAX_UITVOER), leesBegrensd(p.stderr, MAX_UITVOER)]);
+  const lezers = [leesBegrensd(p.stdout, MAX_UITVOER), leesBegrensd(p.stderr, MAX_UITVOER)];
   const exit = await p.exited;
-  let uitvoer = uit.tekst + (err.tekst ? (uit.tekst && !uit.tekst.endsWith("\n") ? "\n" : "") + err.tekst : "");
+  let open = false;
+  let klok: ReturnType<typeof setTimeout> | undefined;
+  const deadline = new Promise<void>((r) => {
+    klok = setTimeout(() => {
+      open = true;
+      for (const l of lezers) l.stop();
+      r();
+    }, o.naExitMs ?? NA_EXIT_MS);
+  });
+  await Promise.race([Promise.all(lezers.map((l) => l.klaar)), deadline]);
+  clearTimeout(klok);
+  const [uit, err] = await Promise.all(lezers.map((l) => l.klaar));
+  let uitvoer = uit!.tekst + (err!.tekst ? (uit!.tekst && !uit!.tekst.endsWith("\n") ? "\n" : "") + err!.tekst : "");
   if (uitvoer.length > MAX_UITVOER) uitvoer = uitvoer.slice(0, MAX_UITVOER);
-  if (uit.afgekapt || err.afgekapt) uitvoer += "\n[uitvoer afgekapt]";
+  if (uit!.afgekapt || err!.afgekapt) uitvoer += "\n[uitvoer afgekapt]";
+  if (open) uitvoer += "\n[uitvoer afgebroken: een pipe bleef open na de exit]";
   return { exit: p.signalCode ? null : exit, uitvoer, ...(p.signalCode ? { reden: `gestopt met ${p.signalCode} (timeout ${o.timeoutMs} ms?)` } : {}) };
 };
+
+/** Een akkoord dat niet bewezen van Brian is: geen eindstand, het verzoek blijft open. */
+export interface Onbewezen { id: string; stand: "onbewezen"; reden: string }
+export type Afloop = Uitslag | Onbewezen;
 
 export interface Opties {
   map: string;
@@ -198,13 +235,16 @@ export interface Opties {
   nu?: () => number;
   spawn?: Spawner;
   /**
-   * Alleen in test-stand: argv[0] (en git voor de clone) komt uit deze map, nooit van PATH. Zonder
-   * nepBin draait test-stand alleen soorten met alleenTest, zodat een test nooit de echte tailscale of
-   * een git-remote raakt.
+   * Alleen in test-stand: argv[0] komt uit deze map, nooit van PATH. Zonder nepBin draait test-stand
+   * alleen soorten met alleenTest, zodat een test nooit de echte tailscale raakt.
    */
   nepBin?: string;
   /** Alleen voor tests: overschrijft de timeout van de soort. */
   timeoutMs?: number;
+  /** Alleen voor tests: hoe lang de runner na de exit nog op de pipes wacht. */
+  naExitMs?: number;
+  /** Logregels (standaard stderr, dus de log van de LaunchAgent). */
+  log?: (regel: string) => void;
 }
 
 const pad = (o: Opties, map: keyof typeof MAPPEN, naam: string) => path.join(o.map, MAPPEN[map], naam);
@@ -241,14 +281,30 @@ function nepPad(nepBin: string, naam: string): string {
   return p;
 }
 
-/** De eigen clone op de top van origin/main brengen; scripts draaien nooit uit een worktree van een agent. */
-async function bereidKloon(o: Opties, kloon: string, env: Record<string, string>, spawn: Spawner): Promise<string | null> {
-  const git = o.ctx.test && o.nepBin ? nepPad(o.nepBin, "git") : "git";
-  for (const args of [["fetch", "-q", "origin", "+refs/heads/main:refs/remotes/origin/main"], ["checkout", "-q", "--detach", "refs/remotes/origin/main"]]) {
-    const r = await spawn([git, "-C", kloon, ...args], { cwd: kloon, env, timeoutMs: 60_000 });
-    if (r.exit !== 0) return `git ${args[0]} in de clone faalde (exit ${r.exit}): ${redigeer(r.uitvoer).slice(0, 200)}`;
+/**
+ * Wat live mag draaien (fase 1): alleen tailscale met een vast absoluut pad en cwd /. Geen soort draait
+ * live uit de clone of een andere map die de gebruiker (en dus een agent) kan wijzigen; tak-weg wacht
+ * op fase 1b (GitHub-API, zonder repo-code).
+ */
+export const LIVE_ARGV0: readonly string[] = ["/Applications/Tailscale.app/Contents/MacOS/Tailscale"];
+export const LIVE_CWD = "/";
+
+/** Hoe vaak deze soort in de laatste 24 uur is gestart, volgens het grootboek (`<tijd> <soort>` per id). */
+export function startsVandaag(map: string, soortId: string, nu: number): number {
+  const grens = nu - 86_400_000;
+  let n = 0;
+  for (const naam of readdirSync(path.join(map, MAPPEN.gebruikt))) {
+    if (!ID.test(naam)) continue; // `<id>.afgewezen` telt niet
+    let regel: string;
+    try {
+      regel = leesGewoonBestand(path.join(map, MAPPEN.gebruikt, naam)).trim();
+    } catch {
+      continue;
+    }
+    const [t, s] = regel.split(" ");
+    if (s === soortId && Date.parse(t ?? "") > grens) n++;
   }
-  return null;
+  return n;
 }
 
 /**
@@ -256,7 +312,12 @@ async function bereidKloon(o: Opties, kloon: string, env: Record<string, string>
  * nooit overschrijven. Faalt dicht: een status die niet te lezen is, geeft een reden.
  */
 export async function tailnetBezet(tailscale: string, https: string, env: Record<string, string>, spawn: Spawner): Promise<string | null> {
-  const r = await spawn([tailscale, "serve", "status", "--json"], { cwd: "/", env, timeoutMs: 15_000 });
+  let r: Uitvoering;
+  try {
+    r = await spawn([tailscale, "serve", "status", "--json"], { cwd: LIVE_CWD, env, timeoutMs: 15_000 });
+  } catch (e) {
+    return `tailscale serve status start niet: ${(e as Error).message.slice(0, 200)}`;
+  }
   if (r.exit !== 0) return `tailscale serve status faalde (exit ${r.exit})`;
   let status: unknown;
   try {
@@ -272,12 +333,19 @@ export async function tailnetBezet(tailscale: string, https: string, env: Record
 }
 
 /**
- * Verwerkt één akkoord. Geeft de uitslag, of null als er niets te doen was (al geclaimd, replay).
- * Volgorde zoals PLAN §2.5; elke fout vóór de uitvoering wordt `fout` met de reden, en er draait niets.
+ * Verwerkt één akkoord. Geeft de uitslag, `onbewezen`, of null als er niets te doen was (al geclaimd, replay).
+ *
+ * Twee soorten weigering:
+ * - onbewezen (ongeldig akkoord of verzoek, id of hash klopt niet, handtekening klopt niet): dat kan
+ *   iedereen neerleggen. Geen eindstand, het verzoek blijft open en het akkoord gaat weg; een logregel
+ *   op stderr en hooguit één inbox-regel per verzoek (marker `gebruikt/<id>.afgewezen`).
+ * - bewezen (Brian tekende, maar verlopen, te lang geldig, stiltevenster, maxPerDag, niet live toegestaan):
+ *   eindstand `fout` of `verlopen` met de reden. Er draait niets.
  */
-export async function verwerk(id: string, o: Opties): Promise<Uitslag | null> {
+export async function verwerk(id: string, o: Opties): Promise<Afloop | null> {
   const nu = o.nu ?? Date.now;
   const spawn = o.spawn ?? echteSpawner;
+  const log = o.log ?? ((r: string) => console.error(r));
   const tijd = () => new Date(nu()).toISOString();
   if (!ID.test(id)) return null;
 
@@ -290,6 +358,16 @@ export async function verwerk(id: string, o: Opties): Promise<Uitslag | null> {
   }
   let verzoek: Verzoek | undefined;
   let soort: Soort | undefined;
+  const onbewezen = (reden: string): Onbewezen => {
+    log(`commando-runner: ${id} onbewezen, niets uitgevoerd: ${reden}`);
+    try {
+      closeSync(openSync(pad(o, "gebruikt", `${id}.afgewezen`), "wx", 0o600));
+      if (verzoek) inboxRegel(verzoek.lead, VAN, `commando ${soort?.id ?? verzoek.soort} ${id}: akkoord niet bewezen, niets uitgevoerd | ${reden.slice(0, 120)} | het verzoek staat nog open`, nu());
+    } catch {
+      // al gemeld voor dit verzoek
+    }
+    return { id, stand: "onbewezen", reden };
+  };
   const weiger = (reden: string, stand: "fout" | "verlopen" = "fout"): Uitslag => {
     const u: Uitslag = { versie: 1, id, stand, staart: [], reden, tijd: tijd() };
     schrijfUitslag(o, u);
@@ -300,88 +378,104 @@ export async function verwerk(id: string, o: Opties): Promise<Uitslag | null> {
     // 2. Replay: een id draait hooguit één keer, en een bestaande uitslag blijft staan.
     if (existsSync(pad(o, "gebruikt", id)) || existsSync(pad(o, "uitslag", `${id}.json`))) return null;
 
-    // 3. Verzoek en akkoord strikt lezen; argv, cwd, env en de hash zelf afleiden.
+    // 3. Verzoek en akkoord strikt lezen; argv, cwd, env en de hash zelf afleiden. Tot en met de
+    //    handtekening is niets bewezen van Brian.
     let akkoord: Akkoord;
     try {
-      akkoord = valideerAkkoord(JSON.parse(leesGewoonBestand(claim)));
       verzoek = valideerVerzoek(JSON.parse(leesGewoonBestand(pad(o, "verzoeken", `${id}.json`))));
     } catch (e) {
-      return weiger(`ongeldig: ${(e as Error).message.slice(0, 200)}`);
+      return onbewezen(`verzoek ongeldig: ${(e as Error).message.slice(0, 200)}`);
     }
-    if (akkoord.id !== id || verzoek.id !== id) return weiger("id in het bestand hoort niet bij de bestandsnaam");
+    try {
+      akkoord = valideerAkkoord(JSON.parse(leesGewoonBestand(claim)));
+    } catch (e) {
+      return onbewezen(`akkoord ongeldig: ${(e as Error).message.slice(0, 200)}`);
+    }
+    if (akkoord.id !== id || verzoek.id !== id) return onbewezen("id in het bestand hoort niet bij de bestandsnaam");
     soort = zoekSoort(verzoek.soort, o.ctx);
-    if (!soort) return weiger(`onbekende soort ${verzoek.soort}`);
+    if (!soort) return onbewezen(`onbekende soort ${verzoek.soort}`);
     const namen = Object.keys(soort.params).sort();
     const gegeven = Object.keys(verzoek.params).sort();
-    if (namen.join(",") !== gegeven.join(",")) return weiger(`params ${gegeven.join(",")} passen niet bij ${soort.id} (${namen.join(",")})`);
-    for (const n of namen) if (!soort.params[n]!.test(verzoek.params[n]!)) return weiger(`param ${n} ongeldig voor ${soort.id}`);
+    if (namen.join(",") !== gegeven.join(",")) return onbewezen(`params ${gegeven.join(",")} passen niet bij ${soort.id} (${namen.join(",")})`);
+    for (const n of namen) if (!soort.params[n]!.test(verzoek.params[n]!)) return onbewezen(`param ${n} ongeldig voor ${soort.id}`);
     const extra = soort.extraCheck?.(verzoek.params) ?? null;
-    if (extra) return weiger(extra);
+    if (extra) return onbewezen(extra);
     const { argv, cwd, env } = afgeleid(verzoek, o.ctx);
     const hash = verzoekHash(verzoek, o.ctx);
-    if (akkoord.hash !== hash) return weiger("het verzoek of de sjabloon is gewijzigd na het akkoord");
+    if (akkoord.hash !== hash) return onbewezen("het verzoek of de sjabloon is gewijzigd na het akkoord");
 
     // 4. De handtekening van Brian over precies deze hash, nonce en vervaltijd.
     const fout = await controleerHandtekening(akkoord, challenge(id, hash, akkoord.nonce, akkoord.verlooptS), o.sleutels);
-    if (fout) return weiger(fout);
+    if (fout) return onbewezen(fout);
 
-    // 5. Geldigheid en stiltevenster.
+    // 5. Geldigheid, stiltevenster en maxPerDag.
     const nuS = Math.floor(nu() / 1000);
     if (akkoord.verlooptS <= nuS) return weiger("akkoord verlopen", "verlopen");
-    if (akkoord.verlooptS > nuS + MAX_AKKOORD_S) return weiger("akkoord geldt te lang");
+    if (akkoord.verlooptS > nuS + MAX_AKKOORD_S + KLOK_MARGE_S) return weiger("akkoord geldt te lang");
     if (verzoek.verlooptS <= nuS) return weiger("verzoek verlopen", "verlopen");
     const stil = stilteReden(soort, o.ctx, new Date(nu()));
     if (stil) return weiger(stil);
+    if (startsVandaag(o.map, soort.id, nu()) >= soort.maxPerDag) return weiger(`${soort.id} draaide al ${soort.maxPerDag} keer in 24 uur (maxPerDag)`);
 
-    // Test-stand raakt nooit een echte binary, behalve een testsoort.
+    // 6. Live alleen tailscale met een vast pad; test-stand raakt nooit een echte binary, behalve een testsoort.
     let uitArgv = argv;
-    if (o.ctx.test) {
-      if (o.nepBin) {
-        try {
-          uitArgv = [nepPad(o.nepBin, argv[0]!), ...argv.slice(1)];
-        } catch (e) {
-          return weiger((e as Error).message);
-        }
-      } else if (!soort.alleenTest) return weiger(`test-stand zonder --nep-bin draait alleen testsoorten, niet ${soort.id}`);
-    }
+    if (!o.ctx.test) {
+      if (!LIVE_ARGV0.includes(argv[0]!) || cwd !== LIVE_CWD) return weiger(`${soort.id} draait in fase 1 niet live (alleen tailscale met een vast pad en cwd /)`);
+    } else if (o.nepBin) {
+      try {
+        uitArgv = [nepPad(o.nepBin, argv[0]!), ...argv.slice(1)];
+      } catch (e) {
+        return weiger((e as Error).message);
+      }
+    } else if (!soort.alleenTest) return weiger(`test-stand zonder --nep-bin draait alleen testsoorten, niet ${soort.id}`);
 
-    // 6. Grootboek vóór de uitvoering (exclusief aanmaken: wie tweede is, stopt).
+    // 7. Grootboek vóór de uitvoering (exclusief aanmaken: wie tweede is, stopt).
     try {
       const fd = openSync(pad(o, "gebruikt", id), "wx", 0o600);
-      writeSync(fd, `${tijd()}\n`);
+      writeSync(fd, `${tijd()} ${soort.id}\n`);
       closeSync(fd);
     } catch {
       return null;
     }
     schrijfUitslag(o, { versie: 1, id, stand: "bezig", staart: [], tijd: tijd() });
 
-    // 7. Uitvoeren, voor een script uit de eigen clone eerst die clone op origin/main.
-    let r: Uitvoering;
-    const voorFout =
-      cwd === o.ctx.kloon
-        ? await bereidKloon(o, cwd, env, spawn)
-        : soort.id === "tailnet-open"
-          ? await tailnetBezet(uitArgv[0]!, verzoek.params.https!, env, spawn)
-          : null;
-    if (voorFout) r = { exit: null, uitvoer: "", reden: voorFout };
-    else r = await spawn(uitArgv, { cwd, env, timeoutMs: o.timeoutMs ?? soort.timeoutMs });
+    // Vanaf hier staat `bezig`: elke fout wordt een eindstand, nooit een hangende `bezig`.
+    try {
+      // 8. Uitvoeren. Een binary die niet start, wordt `fout`, geen hangende `bezig`.
+      let r: Uitvoering;
+      const voorFout = soort.id === "tailnet-open" ? await tailnetBezet(uitArgv[0]!, verzoek.params.https!, env, spawn) : null;
+      if (voorFout) r = { exit: null, uitvoer: "", reden: voorFout };
+      else {
+        try {
+          r = await spawn(uitArgv, { cwd, env, timeoutMs: o.timeoutMs ?? soort.timeoutMs, ...(o.naExitMs === undefined ? {} : { naExitMs: o.naExitMs }) });
+        } catch (e) {
+          r = { exit: null, uitvoer: "", reden: `starten mislukt: ${(e as Error).message.slice(0, 200)}` };
+        }
+      }
 
-    // 8. Redigeren, log, uitslag, inbox.
-    const schoon = redigeer(r.uitvoer);
-    const toon = soort.uitvoer === "toon";
-    if (toon) schrijfAtomair(pad(o, "uitvoer", `${id}.log`), schoon);
-    const u: Uitslag = {
-      versie: 1,
-      id,
-      stand: r.exit === 0 ? "klaar" : "fout",
-      ...(r.exit === null ? {} : { exit: r.exit }),
-      staart: toon ? staart(schoon) : [],
-      ...(r.reden ? { reden: r.reden } : {}),
-      tijd: tijd(),
-    };
-    schrijfUitslag(o, u);
-    meldLead(verzoek.lead, u, soort.id, nu());
-    return u;
+      // 9. Redigeren, log, uitslag, inbox.
+      const schoon = redigeer(r.uitvoer);
+      const toon = soort.uitvoer === "toon";
+      if (toon) schrijfAtomair(pad(o, "uitvoer", `${id}.log`), schoon);
+      const u: Uitslag = {
+        versie: 1,
+        id,
+        stand: r.exit === 0 ? "klaar" : "fout",
+        ...(r.exit === null ? {} : { exit: r.exit }),
+        staart: toon ? staart(schoon) : [],
+        ...(r.reden ? { reden: redigeer(r.reden) } : {}),
+        tijd: tijd(),
+      };
+      schrijfUitslag(o, u);
+      try {
+        meldLead(verzoek.lead, u, soort.id, nu());
+      } catch (e) {
+        log(`commando-runner: ${id}: inbox: ${(e as Error).message.slice(0, 200)}`); // de uitslag staat al
+      }
+      return u;
+    } catch (e) {
+      return weiger(`runner-fout: ${(e as Error).message.slice(0, 200)}`);
+    }
   } finally {
     rmSync(claim, { force: true });
   }
@@ -398,23 +492,29 @@ export function ruimUitvoerOp(o: Opties): void {
   }
 }
 
-/** Verwerkt alle akkoorden die nu klaarliggen (oudste eerst, hooguit MAX_PER_RUN). */
-export async function verwerkAlles(o: Opties): Promise<Uitslag[]> {
+/** Verwerkt alle akkoorden die nu klaarliggen (oudste eerst, hooguit MAX_PER_RUN). Een fout stopt de rest niet. */
+export async function verwerkAlles(o: Opties): Promise<Afloop[]> {
   controleerMappen(o.map);
+  const log = o.log ?? ((r: string) => console.error(r));
   const map = path.join(o.map, MAPPEN.akkoord);
   const ids = readdirSync(map)
     .filter((n) => n.endsWith(".json") && ID.test(n.slice(0, -5)))
     .map((n) => ({ id: n.slice(0, -5), t: statSync(path.join(map, n), { throwIfNoEntry: false })?.mtimeMs ?? 0 }))
     .sort((a, b) => a.t - b.t)
     .slice(0, MAX_PER_RUN);
-  const uit: Uitslag[] = [];
+  const uit: Afloop[] = [];
   for (const { id } of ids) {
-    const u = await verwerk(id, o);
-    if (u) uit.push(u);
+    try {
+      const u = await verwerk(id, o);
+      if (u) uit.push(u);
+    } catch (e) {
+      log(`commando-runner: ${id}: ${(e as Error).message.slice(0, 200)}`);
+    }
   }
   ruimUitvoerOp(o);
   return uit;
 }
+
 
 if (import.meta.main) {
   const args = process.argv.slice(2);
@@ -461,7 +561,7 @@ if (import.meta.main) {
     stop((e as Error).message);
   }
   try {
-    for (const u of await verwerkAlles(opties!)) console.log(`${u.id} ${u.stand}${u.exit === undefined ? "" : ` exit ${u.exit}`}${u.reden ? ` (${u.reden})` : ""}`);
+    for (const u of await verwerkAlles(opties!)) console.log(`${u.id} ${u.stand}${"exit" in u && u.exit !== undefined ? ` exit ${u.exit}` : ""}${u.reden ? ` (${u.reden})` : ""}`);
   } catch (e) {
     stop((e as Error).message);
   }

@@ -3,7 +3,7 @@
 // (root:wheel). Gebruik:
 //   bun scripts/lead/installeer-grens.ts                 print de sudo-commando's voor Brian (voert niets uit)
 //   bun scripts/lead/installeer-grens.ts --controleer    vergelijk de geïnstalleerde kopieën met origin/main
-//   bun scripts/lead/installeer-grens.ts --sleutels-export <uit> --rpid <host> --origin <url>   alleen Brian
+//   bun scripts/lead/installeer-grens.ts --sleutels-export <uit> --login <login> --rpid <host> --origin <url>   alleen Brian
 // Opties: --doel <map> (standaard /usr/local/lib/lab-lead); alleen voor tests: --eigenaar <uid>,
 // --repo <map> (standaard deze checkout), --zonder-fetch, --testwortel <map> (voorouder-check stopt daar),
 // --plist <pad> en --passkeys <pad>.
@@ -34,7 +34,7 @@ export const PLIST_NAAM = "nl.lab-b.commando.plist";
 /** Modus per geïnstalleerd bestand. */
 export const MODI: Record<string, number> = { ...BESTANDEN, [RUNNER]: 0o755, [SLEUTELS]: 0o644 };
 
-const sha = (inhoud: Buffer) => createHash("sha256").update(inhoud).digest("hex");
+const sha = (inhoud: Buffer | string) => createHash("sha256").update(inhoud).digest("hex");
 const q = (s: string) => `'${s.replaceAll("'", `'\\''`)}'`;
 
 function git(repo: string, args: string[]): Buffer {
@@ -102,28 +102,52 @@ export function commandos(bron: string, doel = DOEL, runner?: string): string[] 
   return uit;
 }
 
+/** Kort id van een passkey: de eerste 8 tekens van de credential-id, om te vergelijken met Terminal B. */
+export const kortId = (credentialId: string) => credentialId.slice(0, 8);
+
+/** "<naam> <JJJJ-MM-DD>" in printbare ASCII (het formaat van passkeys.pub), hooguit 64 tekens. */
+export function apparaatVan(naam: unknown, aangemaakt: unknown): string {
+  const datum = typeof aangemaakt === "string" && /^\d{4}-\d{2}-\d{2}/.test(aangemaakt) ? aangemaakt.slice(0, 10) : "zonder-datum";
+  const n = (typeof naam === "string" && naam.trim() ? naam.trim() : "zonder naam").replace(/[^\x20-\x7e]/g, "?").slice(0, 64 - datum.length - 1);
+  return `${n} ${datum}`;
+}
+
 /**
- * Alleen Brian: zet de publieke delen uit de passkey-opslag van de tmux-app ({"passkeys":[{id, publicKey, …}]})
- * om naar passkeys.pub. Schrijft `uit` met modus 600 en weigert een bestaand bestand. Neemt geen namen,
- * logins of tellers mee. Geeft de regels terug om het te installeren en daarna te wissen.
+ * Alleen Brian: zet de publieke delen van zijn eigen passkeys (alleen `login`) uit de opslag van de tmux-app
+ * ({"passkeys":[{login, id, publicKey, naam, aangemaakt, …}]}) om naar passkeys.pub. Per sleutel gaan mee:
+ * credential-id, publieke sleutel en `apparaat` (naam en aanmaakdatum, om te herkennen). Geen login, tellers
+ * of transports. Schrijft `uit` met modus 600 en weigert een bestaand bestand. Geeft een overzicht per
+ * sleutel, de sha256 van het bestand en de regels om het te installeren en daarna te wissen.
  */
-export function exporteerSleutels(passkeys: string, uit: string, rpID: string, origins: string[], doel = DOEL): { sleutels: Sleutels; regels: string[] } {
+export function exporteerSleutels(
+  passkeys: string,
+  uit: string,
+  rpID: string,
+  origins: string[],
+  login: string,
+  doel = DOEL,
+): { sleutels: Sleutels; overzicht: string[]; sha256: string; regels: string[] } {
   const ruw = JSON.parse(readFileSync(passkeys, "utf8")) as { passkeys?: unknown };
   if (!Array.isArray(ruw.passkeys)) throw new Error(`${passkeys}: geen lijst passkeys`);
+  const van = ruw.passkeys.filter((p): p is Record<string, unknown> => !!p && typeof p === "object" && (p as { login?: unknown }).login === login);
+  if (!van.length) throw new Error(`${passkeys}: geen passkeys voor login ${login}`);
   const sleutels = valideerSleutels({
     versie: 1,
     rpID,
     origins,
-    sleutels: ruw.passkeys.map((p) => ({ credentialId: (p as { id?: unknown }).id, publicKey: (p as { publicKey?: unknown }).publicKey })),
+    sleutels: van.map((p) => ({ credentialId: p.id, publicKey: p.publicKey, apparaat: apparaatVan(p.naam, p.aangemaakt) })),
   });
+  const inhoud = `${JSON.stringify(sleutels, null, 2)}\n`;
   const fd = openSync(uit, "wx", 0o600);
   try {
-    writeSync(fd, `${JSON.stringify(sleutels, null, 2)}\n`);
+    writeSync(fd, inhoud);
   } finally {
     closeSync(fd);
   }
   return {
     sleutels,
+    overzicht: sleutels.sleutels.map((k) => `${kortId(k.credentialId)}  ${k.apparaat}`),
+    sha256: sha(inhoud),
     regels: [`sudo install -o root -g wheel -m 644 ${q(uit)} ${q(path.join(doel, SLEUTELS))}`, `rm ${q(uit)}`],
   };
 }
@@ -213,8 +237,11 @@ export function controleer(
     if (!existsSync(pad)) fout(`${pad}: ontbreekt; zie scripts/lead/commando/INSTALLEREN.md`);
     else if (veilig(pad, pad, MODI[SLEUTELS])) {
       try {
-        const n = valideerSleutels(JSON.parse(readFileSync(pad, "utf8"))).sleutels.length;
-        regels.push(`OK   ${pad} (${n} ${n === 1 ? "sleutel" : "sleutels"})`);
+        const inhoud = readFileSync(pad, "utf8");
+        const { sleutels } = valideerSleutels(JSON.parse(inhoud));
+        const n = sleutels.length;
+        regels.push(`OK   ${pad} sha256 ${sha(inhoud).slice(0, 12)} (${n} ${n === 1 ? "sleutel" : "sleutels"}; vergelijk met de passkeys in Terminal B)`);
+        for (const k of sleutels) regels.push(`       ${kortId(k.credentialId)}  ${k.apparaat ?? "(geen apparaat)"}`);
       } catch (e) {
         fout(`${pad}: ${(e as Error).message}`);
       }
@@ -243,7 +270,7 @@ if (import.meta.main) {
     if (!v || v.startsWith("--")) stop(`${naam} mist een waarde`);
     return v;
   };
-  const opties = ["--controleer", "--doel", "--eigenaar", "--repo", "--zonder-fetch", "--testwortel", "--plist", "--passkeys", "--sleutels-export", "--rpid", "--origin", "--help", "-h"];
+  const opties = ["--controleer", "--doel", "--eigenaar", "--repo", "--zonder-fetch", "--testwortel", "--plist", "--passkeys", "--sleutels-export", "--login", "--rpid", "--origin", "--help", "-h"];
   for (const a of args) if (a.startsWith("-") && !opties.includes(a)) stop(`onbekende optie ${a}`);
   if (args.includes("-h") || args.includes("--help")) {
     console.log(readFileSync(import.meta.path, "utf8").split("\n").slice(1, 12).join("\n"));
@@ -252,14 +279,18 @@ if (import.meta.main) {
   const uitExport = waarde("--sleutels-export");
   if (uitExport) {
     // Leest de passkey-opslag van de tmux-app: dit draait alleen Brian, nooit een agent.
+    const login = waarde("--login") ?? stop("--sleutels-export vraagt --login <jouw login in Terminal B>");
     const rpID = waarde("--rpid") ?? stop("--sleutels-export vraagt --rpid <host van Terminal B>");
     const origins = args.flatMap((a, i) => (a === "--origin" && args[i + 1] ? [args[i + 1]!] : []));
     if (!origins.length) stop("--sleutels-export vraagt --origin <url van Terminal B>");
     const passkeys = waarde("--passkeys") ?? path.join(homedir(), ".config/tmux-pwa/passkeys.json");
     try {
-      const { sleutels, regels } = exporteerSleutels(passkeys, path.resolve(uitExport), rpID, origins, path.resolve(waarde("--doel") ?? DOEL));
+      const { sleutels, overzicht, sha256, regels } = exporteerSleutels(passkeys, path.resolve(uitExport), rpID, origins, login, path.resolve(waarde("--doel") ?? DOEL));
       const n = sleutels.sleutels.length;
-      console.log(`# ${n} publieke ${n === 1 ? "sleutel" : "sleutels"} in ${uitExport} (modus 600). Installeer en wis:`);
+      console.log(`# ${n} publieke ${n === 1 ? "sleutel" : "sleutels"} van ${login} in ${uitExport} (modus 600). Vergelijk met de passkeys in Terminal B:`);
+      for (const r of overzicht) console.log(`#   ${r}`);
+      console.log(`# sha256 ${sha256}  (na de installatie: shasum -a 256 ${path.join(path.resolve(waarde("--doel") ?? DOEL), SLEUTELS)})`);
+      console.log("# Installeer en wis:");
       for (const r of regels) console.log(r);
     } catch (e) {
       stop((e as Error).message);

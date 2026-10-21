@@ -1,9 +1,12 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { createHash } from "node:crypto";
 import { chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { schoneEnv } from "../test-integriteit";
+import { valideerSleutels } from "./commando/runner";
 import {
+  apparaatVan,
   BESTANDEN,
   BRON_IN_REPO,
   bouwRunner,
@@ -163,7 +166,7 @@ describe("installeer-grens.ts: de commando-runner", () => {
   // wordt echt gebouwd met bun build uit refs/remotes/origin/main.
   const sjabloon = () => readFileSync(join(import.meta.dir, "commando", "nl.lab-b.commando.plist.sjabloon"), "utf8");
   let plist: string;
-  const sleutels = { versie: 1, rpID: "mini.tail1234.ts.net", origins: ["https://mini.tail1234.ts.net"], sleutels: [{ credentialId: "Y3JlZA", publicKey: "cHVibGllaw" }] };
+  const sleutels = { versie: 1, rpID: "mini.tail1234.ts.net", origins: ["https://mini.tail1234.ts.net"], sleutels: [{ credentialId: "Y3JlZA", publicKey: "cHVibGllaw", apparaat: "iPhone 2026-10-01" }] };
   const draaiThuis = (...args: string[]) => {
     const p = Bun.spawnSync(["bun", SCRIPT, "--repo", repo, "--zonder-fetch", ...args], {
       env: { ...schoneEnv(), HOME: dir, PATH: `${join(dir, "bin")}:${process.env.PATH}` },
@@ -225,7 +228,8 @@ describe("installeer-grens.ts: de commando-runner", () => {
     const v = installeer();
     const u = controleerAlles(v);
     expect(u.regels.filter((r) => r.startsWith("FOUT"))).toEqual([]);
-    expect(u.regels.join("\n")).toContain("passkeys.pub (1 sleutel)");
+    expect(u.regels.join("\n")).toMatch(/passkeys\.pub sha256 [0-9a-f]{12} \(1 sleutel; vergelijk met de passkeys in Terminal B\)/);
+    expect(u.regels).toContain("       Y3JlZA  iPhone 2026-10-01");
     const r = draaiThuis("--controleer", "--doel", doel, "--eigenaar", String(uid), "--testwortel", dir, "--plist", plist);
     expect(r.uit).not.toContain("FOUT");
     expect(r.code).toBe(0);
@@ -258,31 +262,50 @@ describe("installeer-grens.ts: de commando-runner", () => {
       writeFileSync(p, JSON.stringify({ passkeys: [{ login: "brian@x", id: "Y3JlZA", publicKey: "cHVibGllaw", counter: 7, naam: "iPhone", aangemaakt: "2026-10-01" }] }));
       return p;
     };
-    test("neemt alleen credential-id en publieke sleutel mee, schrijft modus 600", () => {
+    const ander = { login: "agent@x", id: "a3dhYWQ", publicKey: "a3dhYWRwdWI", counter: 1, naam: "Laptop agent", aangemaakt: "2026-10-20T09:00:00Z" };
+    const tweede = { login: "brian@x", id: "dHdlZWRlLWlk", publicKey: "dHdlZWRl", counter: 3, naam: "MacBook van Brian’s", aangemaakt: "2026-10-15T08:00:00Z" };
+    const meer = () => {
+      const p = join(dir, "passkeys-meer.json");
+      writeFileSync(p, JSON.stringify({ passkeys: [ander, JSON.parse(readFileSync(opslag(), "utf8")).passkeys[0], tweede] }));
+      return p;
+    };
+    test("alleen de passkeys van de login; credential-id, publieke sleutel en apparaat (naam, datum); modus 600", () => {
       const uit = join(dir, "passkeys.pub");
-      const r = exporteerSleutels(opslag(), uit, "mini.tail1234.ts.net", ["https://mini.tail1234.ts.net"]);
-      expect(r.sleutels).toEqual(sleutels as typeof r.sleutels);
+      const r = exporteerSleutels(meer(), uit, "mini.tail1234.ts.net", ["https://mini.tail1234.ts.net"], "brian@x");
+      expect(r.sleutels.sleutels).toEqual([sleutels.sleutels[0]!, { credentialId: "dHdlZWRlLWlk", publicKey: "dHdlZWRl", apparaat: "MacBook van Brian?s 2026-10-15" }]);
       const tekst = readFileSync(uit, "utf8");
-      for (const w of ["brian@x", "iPhone", "counter", "aangemaakt"]) expect(tekst).not.toContain(w);
+      for (const w of ["brian@x", "agent@x", "a3dhYWQ", "counter", "aangemaakt", "login"]) expect(tekst).not.toContain(w);
       expect(statSync(uit).mode & 0o777).toBe(0o600);
+      expect(r.overzicht).toEqual(["Y3JlZA  iPhone 2026-10-01", "dHdlZWRl  MacBook van Brian?s 2026-10-15"]);
+      expect(r.sha256).toBe(createHash("sha256").update(readFileSync(uit)).digest("hex"));
       expect(r.regels).toEqual([`sudo install -o root -g wheel -m 644 '${uit}' '/usr/local/lib/lab-lead/passkeys.pub'`, `rm '${uit}'`]);
     });
-    test("weigert een bestaand uitvoerbestand, een verkeerde origin of een kapotte opslag", () => {
+    test("apparaat: zonder naam of datum, en een lange naam blijft binnen 64 tekens", () => {
+      expect(apparaatVan(undefined, undefined)).toBe("zonder naam zonder-datum");
+      expect(apparaatVan("x".repeat(100), "2026-10-01").length).toBe(64);
+      expect(valideerSleutels({ ...sleutels, sleutels: [{ ...sleutels.sleutels[0]!, apparaat: apparaatVan("x".repeat(100), "2026-10-01") }] })).toBeTruthy();
+    });
+    test("weigert een bestaand uitvoerbestand, een verkeerde origin, een kapotte opslag of een login zonder passkeys", () => {
       const uit = join(dir, "passkeys.pub");
       writeFileSync(uit, "al daar");
-      expect(() => exporteerSleutels(opslag(), uit, "mini.tail1234.ts.net", ["https://mini.tail1234.ts.net"])).toThrow(/EEXIST/);
-      expect(() => exporteerSleutels(opslag(), join(dir, "b.pub"), "mini.tail1234.ts.net", ["http://mini.tail1234.ts.net"])).toThrow(/origin/);
+      expect(() => exporteerSleutels(opslag(), uit, "mini.tail1234.ts.net", ["https://mini.tail1234.ts.net"], "brian@x")).toThrow(/EEXIST/);
+      expect(() => exporteerSleutels(opslag(), join(dir, "b.pub"), "mini.tail1234.ts.net", ["http://mini.tail1234.ts.net"], "brian@x")).toThrow(/origin/);
       writeFileSync(join(dir, "kapot.json"), JSON.stringify({ iets: [] }));
-      expect(() => exporteerSleutels(join(dir, "kapot.json"), join(dir, "c.pub"), "mini.tail1234.ts.net", ["https://mini.tail1234.ts.net"])).toThrow(/geen lijst/);
+      expect(() => exporteerSleutels(join(dir, "kapot.json"), join(dir, "c.pub"), "mini.tail1234.ts.net", ["https://mini.tail1234.ts.net"], "brian@x")).toThrow(/geen lijst/);
+      expect(() => exporteerSleutels(meer(), join(dir, "d.pub"), "mini.tail1234.ts.net", ["https://mini.tail1234.ts.net"], "niemand@x")).toThrow(/geen passkeys voor login niemand@x/);
+      expect(existsSync(join(dir, "d.pub"))).toBe(false);
     });
     test("CLI: print de sudo-regel en het wissen, en voert niets uit", () => {
       const uit = join(dir, "export.pub");
-      const r = draaiThuis("--sleutels-export", uit, "--rpid", "mini.tail1234.ts.net", "--origin", "https://mini.tail1234.ts.net", "--passkeys", opslag());
+      const r = draaiThuis("--sleutels-export", uit, "--login", "brian@x", "--rpid", "mini.tail1234.ts.net", "--origin", "https://mini.tail1234.ts.net", "--passkeys", opslag());
       expect(r.err).toBe("");
-      expect(r.uit).toContain("# 1 publieke sleutel");
+      expect(r.uit).toContain("# 1 publieke sleutel van brian@x");
+      expect(r.uit).toContain("#   Y3JlZA  iPhone 2026-10-01");
+      expect(r.uit).toContain(`# sha256 ${createHash("sha256").update(readFileSync(uit)).digest("hex")}  (na de installatie: shasum -a 256 /usr/local/lib/lab-lead/passkeys.pub)`);
       expect(r.uit).toContain(`rm '${uit}'`);
       expect(existsSync(join(dir, "sudo.log"))).toBe(false);
-      expect(draaiThuis("--sleutels-export", join(dir, "y.pub"), "--rpid", "x").err).toMatch(/vraagt --origin/);
+      expect(draaiThuis("--sleutels-export", join(dir, "y.pub"), "--login", "brian@x", "--rpid", "x").err).toMatch(/vraagt --origin/);
+      expect(draaiThuis("--sleutels-export", join(dir, "z.pub"), "--rpid", "x").err).toMatch(/vraagt --login/);
     });
   });
 });

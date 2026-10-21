@@ -97,10 +97,10 @@ Exit 1 met een FOUT-regel per probleem. `--doel`, `--eigenaar <uid>`, `--repo <m
 
 Staat `scripts/lead/commando/runner.ts` in `origin/main`, dan hoort de commando-runner er ook bij:
 - de bundel `commando-runner.js` (755). Die wordt gebouwd uit `git archive origin/main` met `bun install --frozen-lockfile --ignore-scripts` en `bun build`, deterministisch bij dezelfde bun en `bun.lock`;
-- `passkeys.pub` (644, alleen publieke sleutels; `--controleer` toetst het formaat);
+- `passkeys.pub` (644, alleen publieke sleutels; `--controleer` toetst het formaat en toont de sha256 en per sleutel het korte id en het apparaat);
 - de LaunchAgent `~/Library/LaunchAgents/nl.lab-b.commando.plist`, die gelijk moet zijn aan het sjabloon.
 
-`--sleutels-export <uit> --rpid <host> --origin <url>` leest de passkey-opslag van de tmux-app en draait daarom alleen bij Brian. De stappen staan in `commando/INSTALLEREN.md`.
+`--sleutels-export <uit> --login <login> --rpid <host> --origin <url>` leest de passkey-opslag van de tmux-app en draait daarom alleen bij Brian. Het neemt alleen de passkeys van die login mee en print per sleutel naam, datum en kort id, plus de sha256 van het bestand. De stappen staan in `commando/INSTALLEREN.md`. Live draait de runner in fase 1 alleen tailscale met een vast pad; `tak-weg` weigert hij live.
 
 ## wachtrij.ts
 
