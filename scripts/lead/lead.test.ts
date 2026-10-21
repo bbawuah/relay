@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -60,6 +60,19 @@ if [ "$1 $2" = "pr merge" ]; then
   [ -f "$FAKE_DIR/merge-werkt" ] && sed -i.bak 's/"state":"OPEN"/"state":"MERGED"/' "$FAKE_DIR/pr.json"
   exit 0
 fi
+# api [-H Accept: …diff] repos/<o>/<r>/compare/<a>...<b> [--jq <expr>]: rekent met de lokale bare origin
+if [ "$1" = api ] && [[ "$*" == *"/compare/"* ]]; then
+  [ -f "$FAKE_DIR/compare-faalt" ] && { echo "nep: compare mislukt" >&2; exit 1; }
+  shift; alsdiff=0
+  if [ "$1" = -H ]; then alsdiff=1; shift 2; fi
+  r=\${1#repos/*/*/compare/}; a=\${r%%...*}; b=\${r#*...}
+  G=(git --git-dir "$FAKE_DIR/origin.git")
+  mb=$("\${G[@]}" merge-base "$a" "$b") || exit 1
+  if [ $alsdiff = 1 ]; then "\${G[@]}" diff "$mb" "$b"; exit $?; fi
+  ra=$("\${G[@]}" rev-parse "$a^{commit}"); rb=$("\${G[@]}" rev-parse "$b^{commit}")
+  if [ "$ra" = "$rb" ]; then st=identical; elif [ "$mb" = "$ra" ]; then st=ahead; elif [ "$mb" = "$rb" ]; then st=behind; else st=diverged; fi
+  printf '{"status":"%s","merge_base_commit":{"sha":"%s"}}' "$st" "$mb" | jq -r "$3"; exit $?
+fi
 # api -X DELETE repos/<o>/<r>/git/refs/heads/<tak>: verwijder de tak uit de lokale bare origin
 if [ "$1 $2 $3" = "api -X DELETE" ]; then
   git --git-dir "$FAKE_DIR/origin.git" update-ref -d "refs/heads/\${4#repos/*/*/git/refs/heads/}"; exit $?
@@ -96,7 +109,15 @@ exit 0
   git(repo, "remote", "add", "origin", origin);
   git(repo, "push", "-q", "origin", "main");
   git(repo, "push", "-q", "origin", "main:lead/test-tak");
+
+  // Standaard heeft de nep-head van pr() een groene e2e-stempel (modus alles); de stempeltests
+  // maken hun eigen commits en stempels.
+  mkdirSync(join(dir, "stempels"));
+  stempel("abc1234def5678abc1234def5678abc1234def56", { modus: "alles", base: null });
 });
+
+const stempel = (sha: string, o: Record<string, unknown> = {}) =>
+  writeFileSync(join(dir, "stempels", `${sha}.json`), `${JSON.stringify({ sha, groen: true, modus: "affected", tijd: "2026-10-21T18:00:00.000Z", ...o })}\n`);
 
 afterEach(() => rmSync(dir, { recursive: true, force: true }));
 
@@ -105,6 +126,7 @@ const omgeving = (extra: Record<string, string> = {}) => ({
   PATH: `${bin}:${process.env.PATH}`,
   FAKE_DIR: dir,
   LAB_LEAD_STAAT: join(dir, "staat"),
+  LAB_MERGE_STEMPELS: join(dir, "stempels"),
   TMUX: "",
   TMUX_PANE: "",
   ...extra,
@@ -301,7 +323,8 @@ describe("merge.sh", () => {
     const regels = log("gh.log").trim().split("\n");
     expect(regels.length).toBeGreaterThan(1);
     for (const r of regels) {
-      if (r.startsWith("gh api")) expect(r).toBe("gh api -X DELETE repos/bbawuah/LAB-BAWUAH/git/refs/heads/lead/test-tak --silent");
+      if (r.startsWith("gh api -X DELETE")) expect(r).toBe("gh api -X DELETE repos/bbawuah/LAB-BAWUAH/git/refs/heads/lead/test-tak --silent");
+      else if (r.startsWith("gh api")) expect(r).toMatch(/^gh api (-H Accept: application\/vnd\.github\.diff )?repos\/bbawuah\/LAB-BAWUAH\/compare\//);
       else expect(r).toEndWith("--repo bbawuah/LAB-BAWUAH");
     }
     // de remote tak gaat weg via de API, niet via een lokale git push
@@ -316,6 +339,126 @@ describe("merge.sh", () => {
     // vanuit de repo telt de override nog: een check die niet bestaat, weigert
     pr();
     expect(draai(MERGE, ["71", "--droog"], { LAB_MERGE_CHECK: "bestaat-niet" }).fout).toMatch(/'bestaat-niet' staat niet/);
+  });
+
+  describe("e2e-stempel", () => {
+    const wie = ["-c", "user.name=t", "-c", "user.email=t@t"];
+    const commit = (bericht: string, bestand?: [string, string]) => {
+      if (bestand) {
+        writeFileSync(join(repo, bestand[0]), bestand[1]);
+        git(repo, "add", bestand[0]);
+      }
+      expect(git(repo, ...wie, "commit", "-q", "--allow-empty", "-m", bericht).exitCode).toBe(0);
+      return git(repo, "rev-parse", "HEAD").stdout.toString().trim();
+    };
+    const push = (ref: string) => expect(git(repo, "push", "-q", "-f", "origin", ref).exitCode).toBe(0);
+    // main met één bestand; de tak van de PR wijzigt een ander bestand
+    const opzet = () => {
+      const basis = commit("basis", ["a.txt", "a\n"]);
+      push("main");
+      git(repo, "checkout", "-q", "-b", "werk");
+      const s1 = commit("pr: x", ["x.txt", "x1\n"]);
+      return { basis, s1 };
+    };
+    const prOp = (head: string, commits: string[]) => {
+      push(`${head}:refs/heads/lead/test-tak`);
+      pr({ headRefOid: head, comments: [{ body: `Lead-review: akkoord ${head.slice(0, 7)}` }], commits: commits.map((oid) => ({ oid })) });
+    };
+
+    test("stempel op de head (affected, basis = main): akkoord; --droog noemt de stempel", () => {
+      const { basis, s1 } = opzet();
+      stempel(s1, { base: basis });
+      prOp(s1, [s1]);
+      const r = draai(MERGE, ["71", "--droog"]);
+      expect(r.code).toBe(0);
+      expect(r.uit).toContain(`e2e-stempel op de head ${s1.slice(0, 7)} (affected, 2026-10-21T18:00:00.000Z)`);
+      expect(r.uit).toContain(`droog: PR 71 voldoet (e2e-stempel ${s1.slice(0, 7)})`);
+      expect(log("gh.log")).not.toContain("pr merge");
+    });
+
+    test("stempel op een oudere commit met dezelfde patch: akkoord", () => {
+      const { basis, s1 } = opzet();
+      const s2 = commit("lege commit na de poort");
+      stempel(s1, { base: basis });
+      prOp(s2, [s1, s2]);
+      const r = draai(MERGE, ["71", "--droog"]);
+      expect(r.code).toBe(0);
+      expect(r.uit).toContain(`e2e-stempel op ${s1.slice(0, 7)} (affected, 2026-10-21T18:00:00.000Z); patch van de head ${s2.slice(0, 7)} is gelijk`);
+    });
+
+    test("update-branch: main in de tak gemerged, stempel van vóór de merge: akkoord", () => {
+      const { basis, s1 } = opzet();
+      stempel(s1, { base: basis });
+      git(repo, "checkout", "-q", "main");
+      commit("main schuift door", ["b.txt", "b\n"]);
+      push("main");
+      git(repo, "checkout", "-q", "werk");
+      expect(git(repo, ...wie, "merge", "-q", "--no-edit", "main").exitCode).toBe(0);
+      const m = git(repo, "rev-parse", "HEAD").stdout.toString().trim();
+      prOp(m, [s1, m]);
+      const r = draai(MERGE, ["71", "--droog"]);
+      expect(r.code).toBe(0);
+      expect(r.uit).toContain(`e2e-stempel op ${s1.slice(0, 7)}`);
+      expect(r.uit).toContain(`patch van de head ${m.slice(0, 7)} is gelijk`);
+    });
+
+    test("patch gewijzigd na de stempel: geweigerd", () => {
+      const { basis, s1 } = opzet();
+      const s2 = commit("pr: x verder", ["x.txt", "x2\n"]);
+      stempel(s1, { base: basis });
+      prOp(s2, [s1, s2]);
+      geweigerd(draai(MERGE, ["71"]), new RegExp(`patch is gewijzigd na de stempel op ${s1.slice(0, 7)}`));
+    });
+
+    test("geen stempel: geweigerd, met de opdracht om de poort te draaien; ook --droog", () => {
+      const { s1 } = opzet();
+      prOp(s1, [s1]);
+      geweigerd(draai(MERGE, ["71"]), /geen e2e-stempel voor PR 71: draai `bun run poort` \(met e2e\)/);
+      expect(draai(MERGE, ["71", "--droog"]).code).toBe(1);
+    });
+
+    test("rode, onleesbare of oude stempel (zonder groen): geweigerd", () => {
+      const { basis, s1 } = opzet();
+      prOp(s1, [s1]);
+      for (const o of [{ groen: false, base: basis }, { groen: undefined, base: basis }, { sha: "f".repeat(40), base: basis }, { base: null }, { modus: "half", base: basis }]) {
+        stempel(s1, o);
+        geweigerd(draai(MERGE, ["71"]), /is niet groen of onleesbaar/);
+      }
+      writeFileSync(join(dir, "stempels", `${s1}.json`), "{kapot");
+      geweigerd(draai(MERGE, ["71"]), /is niet groen of onleesbaar/);
+    });
+
+    test("stempel met een basis die geen voorouder van main is (--base HEAD): geweigerd", () => {
+      const { s1 } = opzet();
+      stempel(s1, { base: s1 });
+      prOp(s1, [s1]);
+      geweigerd(draai(MERGE, ["71"]), /met een basis \(\w{7}\) die geen voorouder van main is/);
+    });
+
+    test("een symlink als stempel telt niet", () => {
+      const { basis, s1 } = opzet();
+      writeFileSync(join(dir, "elders.json"), JSON.stringify({ sha: s1, groen: true, modus: "affected", base: basis, tijd: "x" }));
+      Bun.spawnSync(["ln", "-s", join(dir, "elders.json"), join(dir, "stempels", `${s1}.json`)]);
+      prOp(s1, [s1]);
+      geweigerd(draai(MERGE, ["71"]), /geen e2e-stempel voor PR 71/);
+    });
+
+    test("gh compare faalt: geweigerd (fail-closed)", () => {
+      const { basis, s1 } = opzet();
+      stempel(s1, { base: basis });
+      prOp(s1, [s1]);
+      writeFileSync(join(dir, "compare-faalt"), "");
+      geweigerd(draai(MERGE, ["71"]), /kon main\.\.\.\w{7} niet vergelijken/);
+    });
+
+    test("met een geldige stempel merget hij echt", () => {
+      const { basis, s1 } = opzet();
+      stempel(s1, { base: basis });
+      prOp(s1, [s1]);
+      writeFileSync(join(dir, "merge-werkt"), "");
+      expect(draai(MERGE, ["71"]).code).toBe(0);
+      expect(log("gh.log")).toContain(`gh pr merge 71 --merge --match-head-commit ${s1}`);
+    });
   });
 
   test("merget met --merge en verwijdert pas daarna de remote tak", () => {
@@ -678,5 +821,59 @@ describe("spawn.sh", () => {
     expect(r.code).toBe(1);
     expect(r.fout).toMatch(/geen tool-aanroep/);
     expect(log("tmux.log")).toContain("send-keys -t %7 Enter");
+  });
+
+  test("--meerdere: tien sessies in één aanroep, parallel, elk met een eigen pane", () => {
+    const o = opdracht();
+    const lijst = join(dir, "lijst.txt");
+    const namen = Array.from({ length: 10 }, (_, i) => `w${i + 1}`);
+    writeFileSync(lijst, `# commentaar\n\n${namen.map((n) => `${n} ${o} sonnet`).join("\n")}\n`);
+    writeFileSync(join(dir, "pane.txt"), "❯ \n");
+    writeFileSync(join(dir, "reageert"), "");
+    const r = draai(SPAWN, ["--meerdere", lijst, "--lead", "l", "--map", dir], basis());
+    expect([r.code, r.fout]).toEqual([0, ""]);
+    for (const n of namen) expect(r.uit).toContain(`spawn: ${n} gestart: %7`);
+    expect(log("spawn.log").split("\n").filter((x) => x.includes("claude -n"))).toHaveLength(10);
+  });
+
+  test("--meerdere faalt luid als sessies hun startregel niet kregen, en meldt welke", () => {
+    const o = opdracht();
+    const lijst = join(dir, "lijst.txt");
+    writeFileSync(lijst, `w1 ${o}\nw2 ${o}\n`);
+    writeFileSync(join(dir, "pane.txt"), "❯ \n"); // geen "reageert": geen ⏺ na de startzin
+    const r = draai(SPAWN, ["--meerdere", lijst, "--lead", "l", "--map", dir], basis());
+    expect(r.code).toBe(1);
+    expect(r.fout).toMatch(/MISLUKT w1 .*geen tool-aanroep/);
+    expect(r.fout).toMatch(/MISLUKT w2 .*geen tool-aanroep/);
+    expect(r.fout).toMatch(/2 van 2 sessies/);
+  });
+
+  test("--meerdere valideert de hele lijst vóór de eerste start: dubbele naam, kapotte regel na een goede", () => {
+    const o = opdracht();
+    const lijst = join(dir, "lijst.txt");
+    const tmp = join(dir, "tmp");
+    mkdirSync(tmp);
+    const proef = (inhoud: string) => {
+      writeFileSync(lijst, inhoud);
+      writeFileSync(join(dir, "pane.txt"), "❯ \n");
+      return draai(SPAWN, ["--meerdere", lijst, "--lead", "l", "--map", dir], basis({ TMPDIR: tmp }));
+    };
+    const dubbel = proef(`w1 ${o}\nw2 ${o}\nw1 ${o}\n`);
+    expect(dubbel.code).toBe(1);
+    expect(dubbel.fout).toMatch(/regel 3: dubbele naam 'w1'; er is nog niets gestart/);
+    expect(proef(`w1 ${o}\nw2\n`).fout).toMatch(/regel 2: verwacht 'naam opdrachtbestand/);
+    expect(proef(`w1 ${o}\nw2 ${join(dir, "bestaat-niet.md")}\n`).fout).toMatch(/regel 2: opdrachtbestand bestaat niet/);
+    expect(proef(`w1 ${o} sonnet\nw2 ${o} gpt\n`).fout).toMatch(/regel 2: model moet sonnet of opus/);
+    expect(log("spawn.log")).toBe(""); // niets gestart, ook w1 niet
+    expect(readdirSync(tmp)).toEqual([]); // geen temp-map achtergelaten
+  });
+
+  test("--meerdere sluit --naam uit en weigert een lege of kapotte lijst", () => {
+    const lijst = join(dir, "lijst.txt");
+    writeFileSync(lijst, "# leeg\n");
+    expect(draai(SPAWN, ["--meerdere", lijst, "--naam", "x", "--lead", "l"], basis()).fout).toMatch(/sluit .* uit/);
+    expect(draai(SPAWN, ["--meerdere", lijst, "--lead", "l"], basis()).fout).toMatch(/geen sessies/);
+    writeFileSync(lijst, "alleennaam\n");
+    expect(draai(SPAWN, ["--meerdere", lijst, "--lead", "l"], basis()).fout).toMatch(/verwacht 'naam opdrachtbestand/);
   });
 });
