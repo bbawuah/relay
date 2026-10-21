@@ -2,6 +2,10 @@
 
 Scripts voor de lead: een sessie starten met een opdrachtbestand, een PR mergen zonder de voorwaarden te vergeten, een merge-wachtrij die meerdere goedgekeurde PR's als één integratie-PR door de poort haalt, een tak pushen of een gemergede remote tak verwijderen (`push.sh`), en het lab alleen lezen (`lab-lees.sh`). Alle kennen `--droog` (laat zien wat er zou gebeuren, doet niets).
 
+## Ingang: `bun lab help`
+
+Alle scripts van de repo, ook deze, zijn te starten met `bun lab <commando> [args…]` (`scripts/lab.ts`). `bun lab help` toont de commando's per groep; `bun lab help <commando>` toont het pad en, als het script die kent, zijn `--help`. Argumenten, werkmap en exitcode gaan ongewijzigd door. `bun lab merge` neemt de vaste kopie `/usr/local/lib/lab-lead/merge.sh` als die er is.
+
 ## Vangnet, geen grens
 
 Deze scripts en `hooks/grenzen.sh` vangen vergissingen van agents op; ze zijn geen grens. Een agent die het bewust wil, komt er langs: hij draait onder dezelfde macOS-gebruiker als Brian, kan bestanden in de repo en zijn eigen omgeving wijzigen en heeft dezelfde `gh`-, git- en ssh-toegang. Wat de grens echt maakt, is architectuur (nog niet gebouwd):
