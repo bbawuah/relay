@@ -1,7 +1,10 @@
 // De --dry=json-uitvoer van turbo: alleen stdout telt; waarschuwingen op stderr (remote cache niet
 // beschikbaar, 403) mogen de poort niet laten crashen.
 import { describe, expect, test } from "bun:test";
-import { type Context, draai, geenStempel, leesDryTaken, stapE2e, type Uitkomst } from "./poort";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { type Context, draai, geenStempel, geenStempelMelding, leesDryTaken, schrijfStempel, stapE2e, type Uitkomst } from "./poort";
 
 const PLAN = JSON.stringify({ tasks: [{ task: "e2e", package: "@lab-bawuah/tmux", command: "bun run test:tmux" }] }, null, 2);
 
@@ -153,5 +156,28 @@ describe("geenStempel: alleen een volledige groene run op een vaste, schone HEAD
     expect(geenStempel(0, { ...vol, alleen: ["e2e"] }, a, a)).toMatch(/niet volledig/);
     expect(geenStempel(0, { ...vol, zonderE2e: true }, a, a)).toMatch(/niet volledig/);
     expect(geenStempel(1, vol, a, a)).toMatch(/niet groen/);
+  });
+});
+
+describe("schrijfStempel: een niet-schrijfbare map is geen crash", () => {
+  test("schrijft <sha>.json en geeft null", () => {
+    const tmp = mkdtempSync(join(tmpdir(), "stempel-"));
+    try {
+      expect(schrijfStempel(join(tmp, "a/b"), { sha: "abc", groen: true })).toBeNull();
+      expect(JSON.parse(readFileSync(join(tmp, "a/b/abc.json"), "utf8"))).toEqual({ sha: "abc", groen: true });
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+  test("de map is niet te maken (een bestand staat in de weg): de fout komt terug, er wordt niet gegooid", () => {
+    const tmp = mkdtempSync(join(tmpdir(), "stempel-"));
+    try {
+      writeFileSync(join(tmp, "bezet"), "");
+      const fout = schrijfStempel(join(tmp, "bezet/poort"), { sha: "abc" });
+      expect(fout).toBeTruthy();
+      expect(geenStempelMelding(fout ?? "")).toMatch(/^LET OP poort: groen, maar GEEN stempel geschreven \(.+\)\. merge\.sh weigert/);
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
   });
 });
