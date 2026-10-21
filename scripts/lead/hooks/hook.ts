@@ -42,23 +42,36 @@ function leadNaamVan(env: Omgeving, rec: Rec | null): string {
   return env.LAB_AGENT_ROL === "lead" ? eigenLeadNaam(rec, env) : meldAdres(rec, env);
 }
 
-/** "vrij" telt alleen als vaste slotregel: de laatste niet-lege regel is `vrij` (hoofdletters, punt of uitroepteken mogen). */
-export function isVrijRegel(bericht: string): boolean {
-  const regels = bericht.split("\n").map((x) => x.trim()).filter(Boolean);
-  return /^vrij[.!]?$/i.test(regels.at(-1) ?? "");
+/** Laatste niet-lege regel zonder opmaaktekens aan de randen (`**vrij**`, `- vrij`, `> vrij.`). */
+function slotRegel(bericht: string): string {
+  const regel = bericht.split("\n").map((x) => x.trim()).filter(Boolean).at(-1) ?? "";
+  return regel.replace(/^[\s>*_`-]+/, "").replace(/[\s*_`]+$/, "");
 }
 
-/** Vaste slotregel `wacht op achtergrondrun tot ~HH:MM`: het eerstvolgende HH:MM na `t` (lokale tijd), anders null. */
+/** "vrij" telt alleen als vaste slotregel: de laatste niet-lege regel is `vrij` (hoofdletters, opmaak, punt of uitroepteken mogen). */
+export function isVrijRegel(bericht: string): boolean {
+  return /^vrij[.!]?$/i.test(slotRegel(bericht));
+}
+
+export const WACHT_MAX_MS = 2 * 3600_000;
+
+/**
+ * Vaste slotregel `wacht op achtergrondrun tot ~HH:MM`: het moment (vandaag of morgen, lokale tijd) dat 0 tot 2 uur na `t`
+ * ligt. Een tijd die al voorbij is (12:30 om 12:31) of verder dan 2 uur weg (23:59 om 12:00) telt niet: null, dus normaal melden.
+ */
 export function wachtTot(bericht: string, t: number): number | null {
-  const regels = bericht.split("\n").map((x) => x.trim()).filter(Boolean);
-  const m = /^wacht op achtergrondrun tot ~?(\d{1,2}):(\d{2})\.?$/i.exec(regels.at(-1) ?? "");
+  const m = /^wacht op achtergrondrun tot ~?(\d{1,2}):(\d{2})\.?$/i.exec(slotRegel(bericht));
   if (!m) return null;
   const [u, min] = [Number(m[1]), Number(m[2])];
   if (u > 23 || min > 59) return null;
-  const d = new Date(t);
-  d.setHours(u, min, 0, 0);
-  if (d.getTime() <= t) d.setDate(d.getDate() + 1);
-  return d.getTime();
+  for (const dag of [0, 1]) {
+    const d = new Date(t);
+    d.setDate(d.getDate() + dag);
+    d.setHours(u, min, 0, 0);
+    const verschil = d.getTime() - t;
+    if (verschil > 0 && verschil <= WACHT_MAX_MS) return d.getTime();
+  }
+  return null;
 }
 
 export function gateReden(lead: string): string {

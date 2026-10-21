@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { MAX_BLOKKADES, type Opties, verwerk, wekker } from "./hook";
+import { MAX_BLOKKADES, type Opties, isVrijRegel, verwerk, wachtTot, wekker } from "./hook";
 import { type Rec, gelezenOffset, inboxMelding, inboxPad, leesRecord, schrijfRecord } from "./register";
 
 // Alles draait in een wegwerpmap (LAB_LEAD_STAAT); de echte ~/.claude en ~/.local/state blijven ongemoeid.
@@ -201,6 +201,28 @@ describe("register (H1-H5, H8-H10)", () => {
     klok += 30 * 60_000;
     await stuurTool(env);
     expect(JSON.parse((await verwerk("Stop", inv(), env, opt)).stdout).decision).toBe("block");
+  });
+
+  test("fix: wacht_tot hoogstens 2 uur vooruit; een verstreken of te ver weg liggende tijd telt niet", () => {
+    const om = (u: number, m: number, dagen = 0) => {
+      const d = new Date(T0);
+      d.setDate(d.getDate() + dagen);
+      d.setHours(u, m, 0, 0);
+      return d.getTime();
+    };
+    const regel = (hhmm: string) => `klaar\nwacht op achtergrondrun tot ~${hhmm}`;
+    expect(wachtTot(regel("12:30"), om(12, 0))).toBe(om(12, 30));
+    expect(wachtTot(regel("14:00"), om(12, 0))).toBe(om(14, 0)); // precies 2 uur
+    expect(wachtTot(regel("14:01"), om(12, 0))).toBeNull();
+    expect(wachtTot(regel("23:59"), om(12, 0))).toBeNull(); // bijna een dag stilte
+    expect(wachtTot(regel("12:30"), om(12, 31))).toBeNull(); // niet doorrollen naar morgen
+    expect(wachtTot(regel("01:00"), om(23, 30))).toBe(om(1, 0, 1)); // over middernacht mag
+    expect(wachtTot(regel("25:00"), om(12, 0))).toBeNull();
+  });
+
+  test("fix: vrij ook in opmaak (**vrij**, - vrij), maar niet midden in de tekst", () => {
+    for (const ok of ["klaar\n**vrij**", "klaar\n- vrij", "klaar\n> Vrij.", "vrij\n\n"]) expect([ok, isVrijRegel(ok)]).toEqual([ok, true]);
+    for (const nee of ["de slots waren vrij", "vrij\nmaar nog bezig", "vrijdag", "geen vrij"]) expect([nee, isVrijRegel(nee)]).toEqual([nee, false]);
   });
 
   test("fix: een sessie die idle was en zonder tools weer stopt, meldt niet opnieuw idle", async () => {

@@ -259,7 +259,7 @@ scripts/lead/status.sh [--lead <n>] [--alles] [--git] [--json]
 
 ### De gate (H6)
 
-Een agent die na minstens één tool stopt zonder `SendMessage` aan de lead krijgt `{"decision":"block","reason":"Je stopt zonder rapport aan <lead>. …"}`. Rem: hoogstens 3 blokkades per reeks, daarna doorlaten met één melding "stopte 3× zonder rapport" (zonder extra idle-regel; de teller begint dan opnieuw). Idle wordt alleen gemeld bij een overgang: een sessie die al idle was en zonder tools weer stopt, meldt niets. Een sessie die op een achtergrondrun wacht, sluit haar rapport af met de vaste slotregel `wacht op achtergrondrun tot ~HH:MM`; tot dan zijn de gate, de idle-melding en de 3×-melding stil (`status.sh` toont `idle (wacht ~HH:MM)`). Geen blokkade bij `stop_hook_active` (de tweede stop gaat door), zonder tools in de beurt, of zolang er een subagent van de sessie bezig is.
+Een agent die na minstens één tool stopt zonder `SendMessage` aan de lead krijgt `{"decision":"block","reason":"Je stopt zonder rapport aan <lead>. …"}`. Rem: hoogstens 3 blokkades per reeks, daarna doorlaten met één melding "stopte 3× zonder rapport" (zonder extra idle-regel; de teller begint dan opnieuw). Idle wordt alleen gemeld bij een overgang: een sessie die al idle was en zonder tools weer stopt, meldt niets. Een sessie die op een achtergrondrun wacht, sluit haar rapport af met de vaste slotregel `wacht op achtergrondrun tot ~HH:MM`; hoogstens 2 uur vooruit (een verstreken of verdere tijd telt niet), en tot dan zijn de gate, de idle-melding en de 3×-melding stil (`status.sh` toont `idle (wacht ~HH:MM)`). Geen blokkade bij `stop_hook_active` (de tweede stop gaat door), zonder tools in de beurt, of zolang er een subagent van de sessie bezig is.
 
 ### Meldingen
 
