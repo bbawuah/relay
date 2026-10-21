@@ -131,7 +131,8 @@ export function tabel(rijen: Rij[], nu: number, metGit: boolean): string {
   if (metGit) kop.push("git");
   const regels: string[][] = [];
   for (const r of rijen) {
-    const toest = r.toestand === "klaar" ? "klaar ✓" : r.toestand === "vrij" ? "vrij ✓" : r.toestand;
+    const wacht = (r.wacht_tot ?? 0) > nu && r.toestand === "idle" ? ` (wacht ~${tijd(r.wacht_tot ?? 0)})` : "";
+    const toest = (r.toestand === "klaar" ? "klaar ✓" : r.toestand === "vrij" ? "vrij ✓" : r.toestand) + wacht;
     const rapport = r.rapport_om ? tijd(r.rapport_om) : "–";
     regels.push([r.naam || r.id.slice(0, 8), r.rol, r.lead || "–", r.vastgelopen ? `${toest} ?` : toest, duur(nu - r.sinds), r.laatste_tool ?? "–", rapport, kort(r.opdracht), ...(metGit ? [gitTekst(r.git)] : [])]);
     for (const k of r.kinderen) {
