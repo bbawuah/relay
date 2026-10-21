@@ -20,8 +20,9 @@
 //   biome       biome ci: lint (alleen foutregels), geen format  (hele repo)
 //   taken       turbo run lint typecheck test                    (affected; met POORT_DB_VERPLICHT=1 en docker als goldcoast-api/db affected, scripts/db-verplicht.ts)
 //   build       turbo run build, zonder de site (zie baseline)   (affected)
-//   e2e         turbo run e2e --concurrency=1                    (affected; tmux, watchparty, storybook-axe)
-//               met een machinebreed slot (scripts/e2e-slot.ts): standaard 2 runs tegelijk, POORT_E2E_SLOTS
+//   e2e         turbo run e2e --concurrency=<POORT_E2E_CONCURRENCY> (affected; tmux, watchparty, storybook-axe)
+//               met een machinebreed slot (scripts/e2e-slot.ts): standaard 2 runs tegelijk, POORT_E2E_SLOTS;
+//               binnen een run 2 taken tegelijk, POORT_E2E_CONCURRENCY (1–4; 1 = de oude seriële run)
 //
 // sherif, boundaries en ds-regels vergelijken met scripts/poort-baseline.json:
 // bekende schendingen zijn schuld, een nieuwe is FOUT, en een opgeloste die nog in
@@ -58,7 +59,7 @@
 import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import path from "node:path";
-import { aantalSlots, echteOmgeving, neemSlot } from "./e2e-slot";
+import { aantalSlots, echteOmgeving, neemSlot, slotPrio } from "./e2e-slot";
 import { ongebruikt, sleutels as dsSleutels, zoek as dsZoek } from "./ds-regels";
 import { beschrijf as ekBeschrijf, nieuweTreffers as ekNieuw, OPLOSSING as EK_OPLOSSING, sleutel as ekSleutel, zoek as ekZoek } from "./echte-klok";
 import { beschrijf as ttBeschrijf, nieuweTreffers as ttNieuw, OPLOSSING as TT_OPLOSSING, sleutel as ttSleutel, zoek as ttZoek } from "./test-tenant";
@@ -455,13 +456,32 @@ export type E2eAfhankelijk = {
   turbo?: (ctx: Context, taken: string[], extra?: string[]) => Uitkomst;
   neemSlot?: () => Promise<{ vrij(): void }>;
   dockerInfo?: (timeout: number) => { code: number | null };
+  env?: Record<string, string | undefined>;
 };
+
+/**
+ * Taken tegelijk binnen één e2e-run: POORT_E2E_CONCURRENCY, een geheel getal 1–4, standaard 2.
+ * De suites delen binnen een run niets (eigen vrije poorten, tmux-socket per pid, watchparty-poort
+ * en -dist per run, testcontainer per pid). Een andere waarde is een fout, geen stille terugval.
+ */
+export function e2eConcurrency(env: Record<string, string | undefined>): number {
+  const w = env.POORT_E2E_CONCURRENCY;
+  if (w === undefined || w === "") return 2;
+  if (!/^[1-4]$/.test(w)) throw new Error(`POORT_E2E_CONCURRENCY=${JSON.stringify(w)}: verwacht een geheel getal van 1 tot en met 4 (1 = serieel)`);
+  return Number(w);
+}
 
 // Stiltevenster en cache: de venstercheck staat hier VÓÓR de `turbo run e2e` (alleen de --dry=json
 // ervoor, die niets draait). Zo geeft een cachehit in het venster nooit een groene e2e-stap, en een
 // e2e die in het venster wél draait en weigert, faalt en wordt door turbo niet gecachet.
 export async function stapE2e(ctx: Context, dep: E2eAfhankelijk = {}): Promise<Resultaat> {
   const draaiTurbo = dep.turbo ?? turbo;
+  let concurrency: number;
+  try {
+    concurrency = e2eConcurrency(dep.env ?? process.env);
+  } catch (e) {
+    return { status: "FOUT", detail: (e as Error).message };
+  }
   const dry = draaiTurbo(ctx, ["e2e"], ["--dry=json"]);
   if (dry.code !== 0) return { status: "FOUT", detail: "turbo --dry faalde", uitleg: staart(dry.uit) };
   // Alleen stdout: turbo meldt waarschuwingen (remote cache niet beschikbaar, 403) op stderr.
@@ -475,10 +495,10 @@ export async function stapE2e(ctx: Context, dep: E2eAfhankelijk = {}): Promise<R
   const venster = (wanneer: string): Resultaat => ({ status: "FOUT", detail: `stiltevenster 05:00–07:15 ${wanneer}, e2e van ${e2e.join(", ")} niet gedraaid of niet geldig; na 07:15 opnieuw, of --zonder-e2e` });
   if (inStiltevenster(nu())) return venster("(voor het slot)");
   // Maximaal POORT_E2E_SLOTS (standaard 2) volledige e2e-runs tegelijk op de machine;
-  // binnen een run blijft turbo op --concurrency=1.
+  // binnen een run POORT_E2E_CONCURRENCY (standaard 2) taken tegelijk.
   let slot: Awaited<ReturnType<typeof neemSlot>>;
   try {
-    slot = await (dep.neemSlot ?? (() => neemSlot(echteOmgeving(process.cwd()), aantalSlots())))();
+    slot = await (dep.neemSlot ?? (() => neemSlot(echteOmgeving(process.cwd()), aantalSlots(), undefined, slotPrio())))();
   } catch (e) {
     return { status: "FOUT", detail: (e as Error).message };
   }
@@ -493,7 +513,7 @@ export async function stapE2e(ctx: Context, dep: E2eAfhankelijk = {}): Promise<R
     const geenDocker = dockerOntbreekt(verplicht, !verplicht || dockerBereikbaar(dep.dockerInfo ?? dockerInfo));
     if (geenDocker) return { status: "FOUT", detail: "geen docker", uitleg: `     ${geenDocker}` };
     // --cache=local:rw: e2e-uitslagen gaan nooit via de remote cache (remoteCache in turbo.json) naar of van een andere machine.
-    const r = turboResultaat(draaiTurbo({ ...ctx, env }, ["e2e"], ["--concurrency=1", "--cache=local:rw"]));
+    const r = turboResultaat(draaiTurbo({ ...ctx, env }, ["e2e"], [`--concurrency=${concurrency}`, "--cache=local:rw"]));
     if (inStiltevenster(nu())) return venster("(begonnen tijdens de run)");
     return { ...r, detail: `${e2e.join(", ")}: ${r.detail}` };
   } finally {
@@ -582,15 +602,33 @@ async function poort(o: Opties): Promise<number> {
   if (waarom) console.log(`poort: geen stempel (${waarom})`);
   else {
     const sha = start.sha;
-    const map = path.join(homedir(), ".cache/lab-bawuah/poort");
-    mkdirSync(map, { recursive: true });
-    writeFileSync(
-      path.join(map, `${sha}.json`),
-      JSON.stringify({ sha, groen: true, modus: o.alles ? "alles" : "affected", base: ctx.base, tijd: new Date().toISOString() }) + "\n",
-    );
+    const fout = schrijfStempel(path.join(homedir(), ".cache/lab-bawuah/poort"), {
+      sha,
+      groen: true,
+      modus: o.alles ? "alles" : "affected",
+      base: ctx.base,
+      tijd: new Date().toISOString(),
+    });
+    if (fout) console.log(geenStempelMelding(fout));
   }
   return fouten;
 }
+
+/** Schrijft <map>/<sha>.json; geeft de fout terug in plaats van te gooien (in de agent-sandbox is
+ * de map niet schrijfbaar, en dan mag een groene poort niet crashen). */
+export function schrijfStempel(map: string, stempel: { sha: string } & Record<string, unknown>): string | null {
+  try {
+    mkdirSync(map, { recursive: true });
+    writeFileSync(path.join(map, `${stempel.sha}.json`), `${JSON.stringify(stempel)}\n`);
+    return null;
+  } catch (e) {
+    return e instanceof Error ? e.message : String(e);
+  }
+}
+
+/** Luid: de poort is groen, maar zonder stempel weigert merge.sh deze tak. */
+export const geenStempelMelding = (fout: string) =>
+  `LET OP poort: groen, maar GEEN stempel geschreven (${fout}). merge.sh weigert deze tak tot er een stempel is.`;
 
 /** Waarom deze run geen stempel krijgt, of null: alleen een volledige, groene run (geen --ci, die
  * taken overslaat) op een werkkopie die bij de start én het eind schoon is, op dezelfde HEAD. */
