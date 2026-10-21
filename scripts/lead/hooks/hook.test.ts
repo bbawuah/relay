@@ -264,6 +264,25 @@ describe("register (H1-H5, H8-H10)", () => {
     expect(tweede.stdout).toBe("");
   });
 
+  test("fix: een kindproces met hetzelfde LAB_SPAWN_ID registreert zich niet en meldt niets", async () => {
+    const env = omgeving({ LAB_SPAWN_ID: "sp-1" });
+    await verwerk("SessionStart", inv(), env, opt);
+    await stuurTool(env);
+    // `claude -p` erft de omgeving en heeft een eigen session_id
+    const kind = (ev: string, extra: Record<string, unknown> = {}) => verwerk(ev, { session_id: "kind", cwd: "/w/kind", ...extra }, env, opt);
+    await kind("SessionStart");
+    await kind("PreToolUse", { tool_name: "Bash" });
+    expect(await kind("Stop")).toEqual({ code: 0, stdout: "", stderr: "" }); // geen gate
+    await kind("SessionEnd");
+    expect(leesRecord(staat, "kind")).toBeNull();
+    expect(leesRecord(staat, "s1")?.toestand).not.toBe("weg");
+    expect(inboxRegels()).toHaveLength(0);
+    // na SessionEnd van de eigenaar mag een volgende sessie (clear/resume) het id overnemen
+    await verwerk("SessionEnd", inv(), env, opt);
+    await kind("SessionStart");
+    expect(leesRecord(staat, "kind")?.spawn_id).toBe("sp-1");
+  });
+
   test("H5 Notification: goedkeuring met melding in de inbox; idle_prompt alleen de toestand", async () => {
     const env = omgeving();
     await stuurTool(env, "Bash");

@@ -136,7 +136,9 @@ rol=agent
 # Het opdrachtpad kan een spatie bevatten, dus tussen enkele quotes (een ' is al geweigerd).
 opdracht_q=$opdracht
 case $opdracht_q in *[!A-Za-z0-9_/.:+=@-]*) opdracht_q="'$opdracht_q'" ;; esac
-cmd="env LAB_AGENT_NAAM=$naam LAB_AGENT_ROL=$rol LAB_LEAD_NAAM=$lead LAB_OPDRACHT=$opdracht_q claude -n $naam"
+# Eenmalig id: een kindproces dat deze omgeving erft (claude -p) herkent de hook er aan dat het geen eigen sessie is.
+spawn_id="$(date +%s)-$$-$RANDOM"
+cmd="env LAB_AGENT_NAAM=$naam LAB_AGENT_ROL=$rol LAB_LEAD_NAAM=$lead LAB_OPDRACHT=$opdracht_q LAB_SPAWN_ID=$spawn_id claude -n $naam"
 if [ -n "$model" ]; then cmd="$cmd --model $model"; fi
 pad=$opdracht
 case $pad in *[[:space:]]*) pad="'$pad'" ;; esac
