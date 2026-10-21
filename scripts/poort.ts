@@ -20,8 +20,9 @@
 //   biome       biome ci: lint (alleen foutregels), geen format  (hele repo)
 //   taken       turbo run lint typecheck test                    (affected; met POORT_DB_VERPLICHT=1 en docker als goldcoast-api/db affected, scripts/db-verplicht.ts)
 //   build       turbo run build, zonder de site (zie baseline)   (affected)
-//   e2e         turbo run e2e --concurrency=1                    (affected; tmux, watchparty, storybook-axe)
-//               met een machinebreed slot (scripts/e2e-slot.ts): standaard 2 runs tegelijk, POORT_E2E_SLOTS
+//   e2e         turbo run e2e --concurrency=<POORT_E2E_CONCURRENCY> (affected; tmux, watchparty, storybook-axe)
+//               met een machinebreed slot (scripts/e2e-slot.ts): standaard 2 runs tegelijk, POORT_E2E_SLOTS;
+//               binnen een run 2 taken tegelijk, POORT_E2E_CONCURRENCY (1–4; 1 = de oude seriële run)
 //
 // sherif, boundaries en ds-regels vergelijken met scripts/poort-baseline.json:
 // bekende schendingen zijn schuld, een nieuwe is FOUT, en een opgeloste die nog in
@@ -455,13 +456,32 @@ export type E2eAfhankelijk = {
   turbo?: (ctx: Context, taken: string[], extra?: string[]) => Uitkomst;
   neemSlot?: () => Promise<{ vrij(): void }>;
   dockerInfo?: (timeout: number) => { code: number | null };
+  env?: Record<string, string | undefined>;
 };
+
+/**
+ * Taken tegelijk binnen één e2e-run: POORT_E2E_CONCURRENCY, een geheel getal 1–4, standaard 2.
+ * De suites delen binnen een run niets (eigen vrije poorten, tmux-socket per pid, watchparty-poort
+ * en -dist per run, testcontainer per pid). Een andere waarde is een fout, geen stille terugval.
+ */
+export function e2eConcurrency(env: Record<string, string | undefined>): number {
+  const w = env.POORT_E2E_CONCURRENCY;
+  if (w === undefined || w === "") return 2;
+  if (!/^[1-4]$/.test(w)) throw new Error(`POORT_E2E_CONCURRENCY=${JSON.stringify(w)}: verwacht een geheel getal van 1 tot en met 4 (1 = serieel)`);
+  return Number(w);
+}
 
 // Stiltevenster en cache: de venstercheck staat hier VÓÓR de `turbo run e2e` (alleen de --dry=json
 // ervoor, die niets draait). Zo geeft een cachehit in het venster nooit een groene e2e-stap, en een
 // e2e die in het venster wél draait en weigert, faalt en wordt door turbo niet gecachet.
 export async function stapE2e(ctx: Context, dep: E2eAfhankelijk = {}): Promise<Resultaat> {
   const draaiTurbo = dep.turbo ?? turbo;
+  let concurrency: number;
+  try {
+    concurrency = e2eConcurrency(dep.env ?? process.env);
+  } catch (e) {
+    return { status: "FOUT", detail: (e as Error).message };
+  }
   const dry = draaiTurbo(ctx, ["e2e"], ["--dry=json"]);
   if (dry.code !== 0) return { status: "FOUT", detail: "turbo --dry faalde", uitleg: staart(dry.uit) };
   // Alleen stdout: turbo meldt waarschuwingen (remote cache niet beschikbaar, 403) op stderr.
@@ -475,7 +495,7 @@ export async function stapE2e(ctx: Context, dep: E2eAfhankelijk = {}): Promise<R
   const venster = (wanneer: string): Resultaat => ({ status: "FOUT", detail: `stiltevenster 05:00–07:15 ${wanneer}, e2e van ${e2e.join(", ")} niet gedraaid of niet geldig; na 07:15 opnieuw, of --zonder-e2e` });
   if (inStiltevenster(nu())) return venster("(voor het slot)");
   // Maximaal POORT_E2E_SLOTS (standaard 2) volledige e2e-runs tegelijk op de machine;
-  // binnen een run blijft turbo op --concurrency=1.
+  // binnen een run POORT_E2E_CONCURRENCY (standaard 2) taken tegelijk.
   let slot: Awaited<ReturnType<typeof neemSlot>>;
   try {
     slot = await (dep.neemSlot ?? (() => neemSlot(echteOmgeving(process.cwd()), aantalSlots(), undefined, slotPrio())))();
@@ -493,7 +513,7 @@ export async function stapE2e(ctx: Context, dep: E2eAfhankelijk = {}): Promise<R
     const geenDocker = dockerOntbreekt(verplicht, !verplicht || dockerBereikbaar(dep.dockerInfo ?? dockerInfo));
     if (geenDocker) return { status: "FOUT", detail: "geen docker", uitleg: `     ${geenDocker}` };
     // --cache=local:rw: e2e-uitslagen gaan nooit via de remote cache (remoteCache in turbo.json) naar of van een andere machine.
-    const r = turboResultaat(draaiTurbo({ ...ctx, env }, ["e2e"], ["--concurrency=1", "--cache=local:rw"]));
+    const r = turboResultaat(draaiTurbo({ ...ctx, env }, ["e2e"], [`--concurrency=${concurrency}`, "--cache=local:rw"]));
     if (inStiltevenster(nu())) return venster("(begonnen tijdens de run)");
     return { ...r, detail: `${e2e.join(", ")}: ${r.detail}` };
   } finally {
