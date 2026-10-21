@@ -20,11 +20,28 @@ import { verifyAuthenticationResponse, type AuthenticationResponseJSON } from "@
 import { closeSync, existsSync, lstatSync, openSync, readdirSync, renameSync, rmSync, statSync, writeSync } from "node:fs";
 import { homedir } from "node:os";
 import path from "node:path";
-import { inboxRegel } from "./inbox";
-import { commandoMap, kloonPad, leesGewoonBestand, MAPPEN, schrijfAtomair, zorgVoorMappen, type Akkoord, type Uitslag } from "./opslag";
-import { redigeer, staart } from "./redactie";
-import { afgeleid, challenge, valideerVerzoek, verzoekHash, type Ctx, type Verzoek } from "./schema";
-import { stilteReden, soort as zoekSoort, type Soort } from "./soorten";
+import {
+  afgeleid,
+  type Akkoord,
+  challenge,
+  commandoMap,
+  type Ctx,
+  inboxRegel,
+  kloonPad,
+  leesGewoonBestand,
+  MAPPEN,
+  redigeer,
+  schrijfAtomair,
+  type Soort,
+  soort as zoekSoort,
+  staart,
+  stilteReden,
+  type Uitslag,
+  valideerVerzoek,
+  type Verzoek,
+  verzoekHash,
+  zorgVoorMappen,
+} from "@lab-bawuah/lab-commando";
 
 export const SLEUTELS_PAD = "/usr/local/lib/lab-lead/passkeys.pub";
 /** Een akkoord geldt 5 min (B4); wat verder in de toekomst ligt, heeft de server niet gemaakt. */
@@ -236,7 +253,8 @@ export interface Opties {
   spawn?: Spawner;
   /**
    * Alleen in test-stand: argv[0] komt uit deze map, nooit van PATH. Zonder nepBin draait test-stand
-   * alleen soorten met alleenTest, zodat een test nooit de echte tailscale raakt.
+   * alleen argv[0] uit TEST_ZONDER_NEP (/bin/echo van proef-echo), zodat een test nooit de echte tailscale
+   * of bash raakt. alleenTest alleen is niet genoeg: tak-weg is ook alleenTest.
    */
   nepBin?: string;
   /** Alleen voor tests: overschrijft de timeout van de soort. */
@@ -288,6 +306,8 @@ function nepPad(nepBin: string, naam: string): string {
  */
 export const LIVE_ARGV0: readonly string[] = ["/Applications/Tailscale.app/Contents/MacOS/Tailscale"];
 export const LIVE_CWD = "/";
+/** Wat test-stand zonder --nep-bin echt mag draaien: alleen onschuldige binaries met een vast pad. */
+export const TEST_ZONDER_NEP: readonly string[] = ["/bin/echo"];
 
 /** Hoe vaak deze soort in de laatste 24 uur is gestart, volgens het grootboek (`<tijd> <soort>` per id). */
 export function startsVandaag(map: string, soortId: string, nu: number): number {
@@ -427,7 +447,7 @@ export async function verwerk(id: string, o: Opties): Promise<Afloop | null> {
       } catch (e) {
         return weiger((e as Error).message);
       }
-    } else if (!soort.alleenTest) return weiger(`test-stand zonder --nep-bin draait alleen testsoorten, niet ${soort.id}`);
+    } else if (!TEST_ZONDER_NEP.includes(argv[0]!)) return weiger(`test-stand zonder --nep-bin draait alleen ${TEST_ZONDER_NEP.join(", ")}, niet ${soort.id}`);
 
     // 7. Grootboek vóór de uitvoering (exclusief aanmaken: wie tweede is, stopt).
     try {

@@ -2,7 +2,7 @@
 // Het sleutelpaar wordt hier gemaakt (crypto.subtle), nooit uit een bestand gelezen.
 
 import { createHash } from "node:crypto";
-import type { Akkoord } from "./opslag";
+import type { Akkoord } from "@lab-bawuah/lab-commando";
 import type { Sleutels } from "./runner";
 
 const b64 = (b: Uint8Array | ArrayBuffer) => Buffer.from(b instanceof ArrayBuffer ? new Uint8Array(b) : b).toString("base64url");

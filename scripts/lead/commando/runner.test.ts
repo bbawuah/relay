@@ -2,10 +2,8 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { MAPPEN, zorgVoorMappen, type Akkoord, type Uitslag } from "./opslag";
+import { type Akkoord, challenge, type Ctx, MAPPEN, soort, type Uitslag, type Verzoek, verzoekHash, zorgVoorMappen } from "@lab-bawuah/lab-commando";
 import { controleerMappen, KLOK_MARGE_S, leesSleutels, LIVE_ARGV0, MAX_AKKOORD_S, runnerCtx, valideerAkkoord, valideerSleutels, verwerk, verwerkAlles, type Opties, type Sleutels } from "./runner";
-import { challenge, verzoekHash, type Ctx, type Verzoek } from "./schema";
-import { soort } from "./soorten";
 import { maakAuthenticator, sleutelsVoor, type Authenticator } from "./webauthn-proef";
 import { maakCtx } from "../vraag-brian";
 
@@ -528,15 +526,26 @@ describe("runner: test-stand raakt nooit een echte binary", () => {
 
 describe("runner live (fase 1): alleen tailscale met een vast pad, niets uit de clone", () => {
   const live = () => runnerCtx(true);
-  test("tak-weg draait live niet, en er draait niets", async () => {
+  test("tak-weg draait live niet (bestaat live niet), en er draait niets", async () => {
     const v = verzoek({ soort: "tak-weg", params: { tak: "lead/x" } });
-    await leg(v, { ctxBijTekenen: live() });
+    await leg(v); // getekend met de hash uit test-stand; live kent de soort niet eens
     let runs = 0;
     const u = await verwerk(v.id, opties({ ctx: live(), spawn: async () => (runs++, { exit: 0, uitvoer: "" }) }));
     expect(runs).toBe(0);
-    expect(["fout", "onbewezen"]).toContain(u!.stand);
-    expect(u!.reden).toMatch(/niet live|onbekende soort/);
+    expect(u).toMatchObject({ stand: "onbewezen", reden: "onbekende soort tak-weg" });
     expect(existsSync(join(map, MAPPEN.gebruikt, v.id))).toBe(false);
+  });
+  test("een soort die live bestaat maar niet het vaste tailscale-pad draait, weigert live", async () => {
+    const s = soort("tailnet-dicht", live())!;
+    const was = s.argv;
+    s.argv = (p) => ["/bin/sh", "-c", `echo ${p.https}`]; // speelt even een soort met een ander argv[0]
+    try {
+      const v = verzoek({ soort: "tailnet-dicht", params: { https: "8450" } });
+      await leg(v, { ctxBijTekenen: live() });
+      await afgewezen(v.id, /niet live/, { ctx: live() });
+    } finally {
+      s.argv = was;
+    }
   });
   test("tailnet-open en -dicht: argv[0] is het vaste tailscale-pad, cwd /, nooit de clone (nep-spawner)", async () => {
     const gezien: { argv: string[]; cwd: string }[] = [];
@@ -561,7 +570,7 @@ describe("runner: Ctx gelijk aan die van de server", () => {
     expect(runnerCtx(true)).toEqual(maakCtx({ TMUX_PWA_LIVE: "1" }));
     expect(runnerCtx(false)).toEqual(maakCtx({}));
     expect(runnerCtx(true).test).toBe(false);
-    const v = verzoek({ soort: "tak-weg", params: { tak: "lead/x" } });
+    const v = verzoek({ soort: "tailnet-dicht", params: { https: "8450" } });
     expect(verzoekHash(v, runnerCtx(true))).toBe(verzoekHash(v, maakCtx({ TMUX_PWA_LIVE: "1" })));
     expect(verzoekHash(v, runnerCtx(false))).toBe(verzoekHash(v, maakCtx({})));
   });
