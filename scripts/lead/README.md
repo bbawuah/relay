@@ -148,7 +148,7 @@ Weigert met exit 1 en een reden:
 
 ## vraag-brian.ts
 
-Vraag Brian om een commando via de kaart in Terminal B (commando-knop; de gedeelde modules staan in `packages/lab-commando`). Een agent vraagt een **soort** met parameters, geen shellregel; Brian keurt het goed met Face ID; een vaste runner voert het uit na controle van de passkey-handtekening. Fase 1: `tak-weg`, `tailnet-open`, `tailnet-dicht` (en `proef-echo`, alleen zonder `TMUX_PWA_LIVE`). Plan: `~/vault-b-status/brian-commando/PLAN.md`.
+Vraag Brian om een commando via de kaart in Terminal B (commando-knop; de gedeelde modules staan in `packages/lab-commando`). Een agent vraagt een **soort** met parameters, geen shellregel; Brian keurt het goed met Face ID; een vaste runner voert het uit na controle van de passkey-handtekening. Fase 1 live: `tailnet-open` en `tailnet-dicht`. `tak-weg` en `proef-echo` bestaan alleen zonder `TMUX_PWA_LIVE` (live draait `push.sh` uit een clone die een agent kan schrijven; `tak-weg` komt terug in fase 1b, via de GitHub-API). Plan: `~/vault-b-status/brian-commando/PLAN.md`.
 
 ```sh
 bun scripts/lead/vraag-brian.ts tak-weg --tak lead/x --waarom "PR #351 gemerged"     # id op stdout
