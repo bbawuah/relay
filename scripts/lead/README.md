@@ -146,6 +146,26 @@ Weigert met exit 1 en een reden:
 
 `--verwijder <tak>`: alleen een exacte taknaam (`git check-ref-format`, geen `*`, `?`, `[`, niet met `-`), nooit `main`/`master`. Het script haalt `origin/main` en `origin/<tak>` vers op, eist `git merge-base --is-ancestor origin/<tak> origin/main` en verwijdert met `--force-with-lease=refs/heads/<tak>:<sha>` als slot: is de tak na de controle nog verschoven, dan weigert git. Is `remote.origin.url` een GitHub-URL en is `gh` er, dan eist het script ook een gemergede PR van die tak (`gh pr list --repo <eigenaar/repo> --head <tak> --state merged`); faalt `gh`, dan weigert het. Ook bij verwijderen draait de pre-push-hook.
 
+## vraag-brian.ts
+
+Vraag Brian om een commando via de kaart in Terminal B (commando-knop; de gedeelde modules staan in `packages/lab-commando`). Een agent vraagt een **soort** met parameters, geen shellregel; Brian keurt het goed met Face ID; een vaste runner voert het uit na controle van de passkey-handtekening. Fase 1 live: `tailnet-open` en `tailnet-dicht`. `tak-weg` en `proef-echo` bestaan alleen zonder `TMUX_PWA_LIVE` (live draait `push.sh` uit een clone die een agent kan schrijven; `tak-weg` komt terug in fase 1b, via de GitHub-API). Plan: `~/vault-b-status/brian-commando/PLAN.md`.
+
+```sh
+bun scripts/lead/vraag-brian.ts tailnet-dicht --https 8450 --waarom "demo klaar"     # id op stdout (tak-weg bestaat alleen in teststand)
+bun scripts/lead/vraag-brian.ts --waarom "…" -- /Applications/Tailscale.app/Contents/MacOS/Tailscale serve --https=8450 off   # argv herkend als soort
+bun scripts/lead/vraag-brian.ts soorten | lees <id> [--json] | wacht <id> [--max 30m] | trek-in <id>
+```
+
+| Onderdeel | Gedrag |
+|---|---|
+| Indienen | Vraagt `LAB_AGENT_ROL`; `door` = `LAB_AGENT_NAAM`, `lead` = `LAB_LEAD_NAAM` (de lead zelf: haar naam). `--waarom` verplicht (≤ 500 tekens). Hetzelfde open verzoek geeft het bestaande id terug. `--droog` toont verzoek, hash, kaarttekst en argv en schrijft niets. |
+| Limieten | 5 open per indiener, 20 open in totaal, `maxPerDag` per soort in 24 uur (exit 3). Een verzoek verloopt na 24 uur. |
+| Afwijzing | Onbekende soort, kwade param of een `-- <argv>` die geen soort maakt: exit 2, met de lijst soorten, en een regel in `afgewezen.jsonl` (zo zien we welke soort de volgende is). Vrije tekst gaat nooit door. |
+| Opslag | `${LAB_COMMANDO:-~/.local/state/lab-commando}` (700/600), atomair schrijven, lezen zonder symlinks. Tests gebruiken een tijdelijke `LAB_COMMANDO` en `LAB_LEAD_STAAT`. |
+| Uitslag | Exit 0 bij `klaar`; de lead krijgt een korte regel in de inbox (≤ 512 B), de volle geredigeerde staart (20 regels) staat in `uitslag/<id>.json` en komt met `lees`. |
+
+De server en de runner importeren `@lab-bawuah/lab-commando` (`packages/lab-commando/src`), niet dit bestand.
+
 ## lab-lees.sh
 
 ```sh
