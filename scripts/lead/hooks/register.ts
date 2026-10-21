@@ -8,7 +8,7 @@
 //
 // Er worden nooit prompttekst, tool-invoer, antwoorden of transcripts bewaard.
 
-import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, statSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 
@@ -33,6 +33,8 @@ export type Rec = {
   rapport_om: number | null;
   rapport_in_beurt: boolean;
   vrij: boolean;
+  /** Tot wanneer de sessie op een achtergrondrun wacht (ms); tot dan geen idle- of 3×-melding. */
+  wacht_tot?: number | null;
   blokkades: number;
   ouder: string | null;
   agent_type: string | null;
@@ -233,6 +235,40 @@ export function leesOngelezen(staat: string, lead: string, max = MAX_INBOX_REGEL
     }
   }
   return { regels: regels.slice(0, max), meer: Math.max(0, regels.length - max), einde };
+}
+
+/**
+ * Leest de ongelezen regels en zet de offset in één stap vooruit. Een tweede lezer die tegelijk binnenkomt (Stop-hook en
+ * wekker) krijgt niets: een slotmap (mkdir is atomair) zorgt dat elke regel één keer wordt afgeleverd. Identieke regels
+ * (zelfde afzender en tekst) in één batch tellen eenmaal. Een slot ouder dan 10 s is van een gecrashte lezer.
+ */
+export function pakOngelezen(staat: string, lead: string, nu: number, max = MAX_INBOX_REGELS): { regels: InboxRegel[]; meer: number; einde: number } {
+  const leeg = { regels: [], meer: 0, einde: gelezenOffset(staat, lead) };
+  zorgVoorMappen(staat);
+  const slot = `${gelezenPad(staat, lead)}.slot`;
+  try {
+    mkdirSync(slot, { mode: 0o700 });
+  } catch {
+    try {
+      if (nu - statSync(slot).mtimeMs < 10_000) return leeg;
+      rmSync(slot, { recursive: true, force: true });
+      mkdirSync(slot, { mode: 0o700 });
+    } catch {
+      return leeg;
+    }
+  }
+  try {
+    const o = leesOngelezen(staat, lead, Number.MAX_SAFE_INTEGER);
+    if (o.einde > gelezenOffset(staat, lead)) zetGelezen(staat, lead, o.einde);
+    const gezien = new Set<string>();
+    const uniek = o.regels.filter((r) => {
+      const k = `${r.van}\u0000${r.tekst}`;
+      return gezien.has(k) ? false : (gezien.add(k), true);
+    });
+    return { regels: uniek.slice(0, max), meer: Math.max(0, uniek.length - max), einde: o.einde };
+  } finally {
+    rmSync(slot, { recursive: true, force: true });
+  }
 }
 
 export function tijd(ms: number): string {

@@ -17,7 +17,7 @@
 // Nooit opgeslagen: prompt, tool_input (behalve SendMessage.to en een boolean "vrij"),
 // last_assistant_message, transcripts. Geen netwerk, geen git, geen gh.
 
-import { type Omgeving, type Rec, dubbeleLeads, eigenLeadNaam, inboxGrootte, inboxMelding, leesOfMaak, leesOngelezen, leesRecord, lopendeSubagents, isKindProces, meldAdres, nieuwRecord, regelsTekst, schrijfRecord, staatMap, tmuxPanes, voorgangerInPane, zetGelezen, zetToestand } from "./register";
+import { type Omgeving, type Rec, dubbeleLeads, eigenLeadNaam, inboxGrootte, inboxMelding, leesOfMaak, leesRecord, lopendeSubagents, isKindProces, meldAdres, nieuwRecord, pakOngelezen, regelsTekst, schrijfRecord, staatMap, tmuxPanes, voorgangerInPane, zetToestand } from "./register";
 
 export type Uitslag = { code: number; stdout: string; stderr: string };
 export type Opties = {
@@ -40,6 +40,38 @@ const tekst = (v: unknown): string => (typeof v === "string" ? v : "");
 // Het register is de bron: env geeft alleen de beginwaarde (bij het eerste record).
 function leadNaamVan(env: Omgeving, rec: Rec | null): string {
   return env.LAB_AGENT_ROL === "lead" ? eigenLeadNaam(rec, env) : meldAdres(rec, env);
+}
+
+/** Laatste niet-lege regel zonder opmaaktekens aan de randen (`**vrij**`, `- vrij`, `> vrij.`). */
+function slotRegel(bericht: string): string {
+  const regel = bericht.split("\n").map((x) => x.trim()).filter(Boolean).at(-1) ?? "";
+  return regel.replace(/^[\s>*_`-]+/, "").replace(/[\s*_`]+$/, "");
+}
+
+/** "vrij" telt alleen als vaste slotregel: de laatste niet-lege regel is `vrij` (hoofdletters, opmaak, punt of uitroepteken mogen). */
+export function isVrijRegel(bericht: string): boolean {
+  return /^vrij[.!]?$/i.test(slotRegel(bericht));
+}
+
+export const WACHT_MAX_MS = 2 * 3600_000;
+
+/**
+ * Vaste slotregel `wacht op achtergrondrun tot ~HH:MM`: het moment (vandaag of morgen, lokale tijd) dat 0 tot 2 uur na `t`
+ * ligt. Een tijd die al voorbij is (12:30 om 12:31) of verder dan 2 uur weg (23:59 om 12:00) telt niet: null, dus normaal melden.
+ */
+export function wachtTot(bericht: string, t: number): number | null {
+  const m = /^wacht op achtergrondrun tot ~?(\d{1,2}):(\d{2})\.?$/i.exec(slotRegel(bericht));
+  if (!m) return null;
+  const [u, min] = [Number(m[1]), Number(m[2])];
+  if (u > 23 || min > 59) return null;
+  for (const dag of [0, 1]) {
+    const d = new Date(t);
+    d.setDate(d.getDate() + dag);
+    d.setHours(u, min, 0, 0);
+    const verschil = d.getTime() - t;
+    if (verschil > 0 && verschil <= WACHT_MAX_MS) return d.getTime();
+  }
+  return null;
 }
 
 export function gateReden(lead: string): string {
@@ -117,9 +149,8 @@ export async function verwerk(event: string, invoer: Invoer, env: Omgeving, opti
       r.einde = null;
       schrijfRecord(staat, r);
       if (isLead) {
-        const o = leesOngelezen(staat, lead);
+        const o = pakOngelezen(staat, lead, t);
         if (o.regels.length > 0) {
-          zetGelezen(staat, lead, o.einde);
           const uit = { hookSpecificOutput: { hookEventName: "UserPromptSubmit", additionalContext: `Meldingen van je sessies: ${regelsTekst(o)}` } };
           return { code: 0, stdout: JSON.stringify(uit), stderr: "" };
         }
@@ -158,7 +189,9 @@ export async function verwerk(event: string, invoer: Invoer, env: Omgeving, opti
       const r = laad();
       r.rapport_om = t;
       r.rapport_in_beurt = true;
-      if (/\bvrij\b/i.test(tekst(inv.message))) r.vrij = true;
+      const bericht = tekst(inv.message);
+      if (isVrijRegel(bericht)) r.vrij = true;
+      r.wacht_tot = wachtTot(bericht, t);
       schrijfRecord(staat, r);
       return LEEG;
     }
@@ -229,9 +262,8 @@ function stop(staat: string, r: Rec, invoer: Invoer, isLead: boolean, lead: stri
   if (isLead) {
     // H7: alleen regels die nieuw zijn sinds de laatste keer dat de lead ze zag (H2, H7 of H11).
     if (!actief) {
-      const o = leesOngelezen(staat, lead);
+      const o = pakOngelezen(staat, lead, t);
       if (o.regels.length > 0) {
-        zetGelezen(staat, lead, o.einde);
         const reden = `Nieuwe meldingen van je sessies: ${regelsTekst(o)}. Verwerk ze voordat je stopt.`;
         return { code: 0, stdout: JSON.stringify({ decision: "block", reason: reden }), stderr: "" };
       }
@@ -246,7 +278,9 @@ function stop(staat: string, r: Rec, invoer: Invoer, isLead: boolean, lead: stri
   // H6: gate voor agent, sublead en vervolg.
   const naam = naamVan(r);
   const wachtOpSubagents = lopendeSubagents(staat, r.id, t).length > 0;
-  const wilBlokkeren = lead !== "" && !actief && r.tools_in_beurt >= 1 && !r.rapport_in_beurt && !wachtOpSubagents;
+  const wachtOpRun = (r.wacht_tot ?? 0) > t;
+  const wilBlokkeren = lead !== "" && !actief && r.tools_in_beurt >= 1 && !r.rapport_in_beurt && !wachtOpSubagents && !wachtOpRun;
+  let stopte3 = false;
   if (wilBlokkeren) {
     if (r.blokkades < MAX_BLOKKADES) {
       r.blokkades += 1;
@@ -254,14 +288,19 @@ function stop(staat: string, r: Rec, invoer: Invoer, isLead: boolean, lead: stri
       return { code: 0, stdout: JSON.stringify({ decision: "block", reason: gateReden(lead) }), stderr: "" };
     }
     inboxMelding(staat, lead, naam, `${naam} stopte ${MAX_BLOKKADES}× zonder rapport`, t);
+    stopte3 = true;
+    r.blokkades = 0; // de volgende reeks begint opnieuw; anders komt de melding bij elke Stop terug
   }
   const toestand = r.rapport_in_beurt ? (r.vrij ? "vrij" : "klaar") : "idle";
+  // Idle is alleen nieuws bij een overgang: een sessie die idle was en zonder tools weer stopt, meldt niets.
+  const herhaaldIdle = toestand === "idle" && r.toestand === "idle" && r.tools_in_beurt === 0;
   zetToestand(r, toestand, t);
   r.tools_in_beurt = 0;
   r.rapport_in_beurt = false;
   schrijfRecord(staat, r);
   // Idle omdat de sessie op eigen lopende subagents wacht is ruis voor de lead; het register toont het wel.
-  if (lead && !(toestand === "idle" && wachtOpSubagents)) inboxMelding(staat, lead, naam, toestand === "vrij" ? `${naam} klaar en vrij` : toestand === "klaar" ? `${naam} klaar (rapport binnen)` : `${naam} is idle`, t);
+  const zwijg = toestand === "idle" && (wachtOpSubagents || wachtOpRun || stopte3 || herhaaldIdle);
+  if (lead && !zwijg) inboxMelding(staat, lead, naam, toestand === "vrij" ? `${naam} klaar en vrij` : toestand === "klaar" ? `${naam} klaar (rapport binnen)` : `${naam} is idle`, t);
   return LEEG;
 }
 
@@ -273,9 +312,8 @@ export async function wekker(staat: string, lead: string, nu: () => number, opti
   const begin = nu();
   for (;;) {
     if (inboxGrootte(staat, lead) > 0) {
-      const o = leesOngelezen(staat, lead);
+      const o = pakOngelezen(staat, lead, nu());
       if (o.regels.length > 0) {
-        zetGelezen(staat, lead, o.einde);
         return { code: 2, stdout: "", stderr: `Meldingen van je sessies: ${regelsTekst(o)}` };
       }
     }
