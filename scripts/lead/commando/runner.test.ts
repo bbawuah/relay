@@ -1,0 +1,519 @@
+import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { MAPPEN, zorgVoorMappen, type Akkoord, type Uitslag } from "./opslag";
+import { controleerMappen, leesSleutels, runnerCtx, valideerAkkoord, valideerSleutels, verwerk, verwerkAlles, type Opties, type Sleutels } from "./runner";
+import { challenge, verzoekHash, type Ctx, type Verzoek } from "./schema";
+import { soort } from "./soorten";
+import { maakAuthenticator, sleutelsVoor, type Authenticator } from "./webauthn-proef";
+import { maakCtx } from "../vraag-brian";
+
+// De runner in een wegwerpmap: tijdelijke LAB_COMMANDO, LAB_COMMANDO_KLOON en LAB_LEAD_STAAT, sleutelparen
+// uit crypto.subtle, nep-binaries (bash, git, Tailscale, echo) in een eigen map. Nooit de echte tailscale,
+// een git-remote of ~/.local/state. De klok is een vaste `nu`: 21 okt 2026 12:00 in Amsterdam.
+
+const NU = Date.parse("2026-10-21T10:00:00Z");
+const ORIGIN = "http://localhost:8399";
+const RPID = "localhost";
+const ENV_SLEUTELS = ["LAB_COMMANDO", "LAB_COMMANDO_KLOON", "LAB_LEAD_STAAT", "TMUX_PWA_LIVE"] as const;
+let oudeEnv: Record<string, string | undefined>;
+let dir: string;
+let map: string;
+let nepBin: string;
+let log: string;
+let auth: Authenticator;
+let sleutels: Sleutels;
+let ctx: Ctx;
+let teller = 0;
+
+const lees = (p: string) => readFileSync(p, "utf8");
+const uitslag = (id: string): Uitslag => JSON.parse(lees(join(map, MAPPEN.uitslag, `${id}.json`)));
+const inbox = (lead = "lead-proef") => {
+  const p = join(dir, "staat", "inbox", `${lead}.jsonl`);
+  return existsSync(p) ? lees(p).trim().split("\n").map((r) => JSON.parse(r) as { t: number; van: string; tekst: string }) : [];
+};
+const aanroepen = () => (existsSync(log) ? lees(log).trim().split("\n") : []);
+
+function nep(naam: string, script: string) {
+  writeFileSync(join(nepBin, naam), `#!/bin/sh\necho "${naam} $*" >> "${log}"\n${script}\n`);
+  chmodSync(join(nepBin, naam), 0o755);
+}
+
+function verzoek(over: Partial<Verzoek> = {}): Verzoek {
+  teller++;
+  return {
+    versie: 1,
+    id: `proef-${teller}`,
+    soort: "proef-echo",
+    params: { tekst: "hallo" },
+    waarom: "test",
+    door: "cm-runner",
+    lead: "lead-proef",
+    tijd: new Date(NU - 60_000).toISOString(),
+    verlooptS: Math.floor(NU / 1000) + 3600,
+    ...over,
+  };
+}
+
+type Leg = {
+  /** Wat de runner op schijf vindt (standaard het getekende verzoek). */
+  opSchijf?: Verzoek;
+  ctxBijTekenen?: Ctx;
+  hashInChallenge?: string;
+  verlooptS?: number;
+  teken?: Partial<Parameters<Authenticator["teken"]>[0]>;
+  door?: Authenticator;
+  akkoord?: Partial<Akkoord>;
+};
+
+/** Legt een verzoek en een akkoord neer zoals de server dat doet: met een assertion over challenge(id, hash, …). */
+async function leg(v: Verzoek, o: Leg = {}): Promise<Akkoord> {
+  const hash = verzoekHash(v, o.ctxBijTekenen ?? ctx);
+  const nonce = Buffer.from(crypto.getRandomValues(new Uint8Array(16))).toString("base64url");
+  const verlooptS = o.verlooptS ?? Math.floor(NU / 1000) + 300;
+  const assertion = await (o.door ?? auth).teken({
+    challenge: challenge(v.id, o.hashInChallenge ?? hash, nonce, verlooptS),
+    origin: ORIGIN,
+    rpID: RPID,
+    ...o.teken,
+  });
+  const a: Akkoord = { versie: 1, id: v.id, hash, nonce, verlooptS, apparaat: "iphone-proef", tijd: new Date(NU).toISOString(), assertion, ...o.akkoord };
+  writeFileSync(join(map, MAPPEN.verzoeken, `${v.id}.json`), JSON.stringify(o.opSchijf ?? v), { mode: 0o600 });
+  writeFileSync(join(map, MAPPEN.akkoord, `${v.id}.json`), JSON.stringify(a), { mode: 0o600 });
+  return a;
+}
+
+const opties = (over: Partial<Opties> = {}): Opties => ({ map, ctx, sleutels, nu: () => NU, ...over });
+
+beforeEach(async () => {
+  oudeEnv = Object.fromEntries(ENV_SLEUTELS.map((k) => [k, process.env[k]]));
+  dir = realpathSync(mkdtempSync(join(tmpdir(), "commando-runner-")));
+  map = join(dir, "commando");
+  nepBin = join(dir, "bin");
+  log = join(dir, "aanroepen.log");
+  mkdirSync(nepBin);
+  mkdirSync(join(dir, "kloon"));
+  process.env.LAB_COMMANDO = map;
+  process.env.LAB_COMMANDO_KLOON = join(dir, "kloon");
+  process.env.LAB_LEAD_STAAT = join(dir, "staat");
+  delete process.env.TMUX_PWA_LIVE;
+  zorgVoorMappen(map);
+  ctx = runnerCtx(false);
+  auth = await maakAuthenticator();
+  sleutels = sleutelsVoor([auth], RPID, [ORIGIN]);
+});
+afterEach(() => {
+  for (const k of ENV_SLEUTELS) if (oudeEnv[k] === undefined) delete process.env[k];
+  else process.env[k] = oudeEnv[k];
+  rmSync(dir, { recursive: true, force: true });
+});
+
+describe("runner: een geldig akkoord", () => {
+  test("draait één keer: uitslag klaar, log, grootboek, inbox, geen claim over", async () => {
+    const v = verzoek();
+    await leg(v);
+    const [u] = await verwerkAlles(opties());
+    expect(u).toMatchObject({ id: v.id, stand: "klaar", exit: 0, staart: ["hallo"] });
+    expect(uitslag(v.id).stand).toBe("klaar");
+    expect(lees(join(map, MAPPEN.uitvoer, `${v.id}.log`))).toBe("hallo\n");
+    expect(existsSync(join(map, MAPPEN.gebruikt, v.id))).toBe(true);
+    expect(existsSync(join(map, MAPPEN.akkoord, `${v.id}.json`))).toBe(false);
+    expect(await verwerkAlles(opties())).toEqual([]);
+    const regels = inbox();
+    expect(regels).toHaveLength(1);
+    expect(regels[0]!.van).toBe("commando-runner");
+    expect(regels[0]!.tekst).toContain(`commando proef-echo ${v.id}: klaar exit 0`);
+    expect(regels[0]!.tekst).toContain(`vraag-brian.ts lees ${v.id}`);
+    expect(Buffer.byteLength(JSON.stringify(regels[0]))).toBeLessThan(512);
+  });
+
+  test("tweemaal tegelijk claimen geeft één run", async () => {
+    const v = verzoek();
+    await leg(v);
+    let runs = 0;
+    const spawn: Opties["spawn"] = async () => {
+      runs++;
+      return { exit: 0, uitvoer: "ok\n" };
+    };
+    const uit = await Promise.all([verwerk(v.id, opties({ spawn })), verwerk(v.id, opties({ spawn }))]);
+    expect(uit.filter(Boolean)).toHaveLength(1);
+    expect(runs).toBe(1);
+  });
+
+  test("replay: hetzelfde akkoord opnieuw neergelegd draait niet nog eens", async () => {
+    const v = verzoek();
+    const a = await leg(v);
+    await verwerkAlles(opties());
+    writeFileSync(join(map, MAPPEN.akkoord, `${v.id}.json`), JSON.stringify(a));
+    let runs = 0;
+    expect(await verwerk(v.id, opties({ spawn: async () => (runs++, { exit: 0, uitvoer: "" }) }))).toBeNull();
+    expect(runs).toBe(0);
+    expect(uitslag(v.id).stand).toBe("klaar");
+  });
+
+  test("replay: met een bestaande uitslag (bv. geweigerd) draait niets en blijft de uitslag staan", async () => {
+    const v = verzoek();
+    await leg(v);
+    const geweigerd: Uitslag = { versie: 1, id: v.id, stand: "geweigerd", staart: [], tijd: new Date(NU).toISOString() };
+    writeFileSync(join(map, MAPPEN.uitslag, `${v.id}.json`), JSON.stringify(geweigerd));
+    expect(await verwerk(v.id, opties())).toBeNull();
+    expect(uitslag(v.id)).toEqual(geweigerd);
+    expect(existsSync(join(map, MAPPEN.gebruikt, v.id))).toBe(false);
+  });
+
+  test("replay: de id staat al in het grootboek", async () => {
+    const v = verzoek();
+    await leg(v);
+    writeFileSync(join(map, MAPPEN.gebruikt, v.id), "eerder\n");
+    expect(await verwerk(v.id, opties())).toBeNull();
+    expect(existsSync(join(map, MAPPEN.uitslag, `${v.id}.json`))).toBe(false);
+  });
+});
+
+/** Elke afwijzing: uitslag fout (of verlopen) met de reden, en er draait niets. */
+async function afgewezen(id: string, reden: RegExp, o: Partial<Opties> = {}, stand: Uitslag["stand"] = "fout") {
+  let runs = 0;
+  const u = await verwerk(id, opties({ spawn: async () => (runs++, { exit: 0, uitvoer: "" }), ...o }));
+  expect(runs).toBe(0);
+  expect(u?.stand).toBe(stand);
+  expect(u?.reden ?? "").toMatch(reden);
+  expect(uitslag(id).stand).toBe(stand);
+  expect(existsSync(join(map, MAPPEN.gebruikt, id))).toBe(false);
+  expect(existsSync(join(map, MAPPEN.akkoord, `${id}.json`))).toBe(false);
+}
+
+describe("runner: kanaries, elke afwijzing apart", () => {
+  test("akkoord verlopen", async () => {
+    const v = verzoek();
+    await leg(v, { verlooptS: Math.floor(NU / 1000) });
+    await afgewezen(v.id, /akkoord verlopen/, {}, "verlopen");
+  });
+  test("akkoord geldt te lang (niet door de server gemaakt)", async () => {
+    const v = verzoek();
+    await leg(v, { verlooptS: Math.floor(NU / 1000) + 3600 });
+    await afgewezen(v.id, /te lang/);
+  });
+  test("verzoek verlopen", async () => {
+    const v = verzoek({ verlooptS: Math.floor(NU / 1000) - 1 });
+    await leg(v);
+    await afgewezen(v.id, /verzoek verlopen/, {}, "verlopen");
+  });
+  test("params gewijzigd na het akkoord", async () => {
+    const v = verzoek();
+    await leg(v, { opSchijf: { ...v, params: { tekst: "anders" } } });
+    await afgewezen(v.id, /gewijzigd/);
+  });
+  test("lead gewijzigd na het akkoord", async () => {
+    const v = verzoek();
+    await leg(v, { opSchijf: { ...v, lead: "andere-lead" } });
+    await afgewezen(v.id, /gewijzigd/);
+  });
+  test("argv-sjabloon gewijzigd na het akkoord (andere clone, dus andere cwd)", async () => {
+    const v = verzoek({ soort: "tak-weg", params: { tak: "lead/x" } });
+    await leg(v, { ctxBijTekenen: { ...ctx, kloon: "/elders" } });
+    await afgewezen(v.id, /gewijzigd/, { nepBin });
+  });
+  test("akkoord.hash klopt, maar de handtekening is over een andere hash", async () => {
+    const v = verzoek();
+    await leg(v, { hashInChallenge: "0".repeat(64) });
+    await afgewezen(v.id, /handtekening/);
+  });
+  test("een andere sleutel (onbekende passkey)", async () => {
+    const v = verzoek();
+    await leg(v, { door: await maakAuthenticator() });
+    await afgewezen(v.id, /onbekende passkey/);
+  });
+  test("een andere sleutel onder de credential-id van Brian", async () => {
+    const v = verzoek();
+    const ander = await maakAuthenticator();
+    const a = await leg(v, { door: ander });
+    writeFileSync(join(map, MAPPEN.akkoord, `${v.id}.json`), JSON.stringify({ ...a, assertion: { ...a.assertion, credentialId: auth.credentialId } }));
+    await afgewezen(v.id, /handtekening/);
+  });
+  test("UV uit (geen Face ID)", async () => {
+    const v = verzoek();
+    await leg(v, { teken: { uv: false } });
+    await afgewezen(v.id, /handtekening|UV/i);
+  });
+  test("UP uit", async () => {
+    const v = verzoek();
+    await leg(v, { teken: { up: false } });
+    await afgewezen(v.id, /handtekening/);
+  });
+  test("verkeerde origin", async () => {
+    const v = verzoek();
+    await leg(v, { teken: { origin: "https://kwaad.example" } });
+    await afgewezen(v.id, /handtekening/);
+  });
+  test("verkeerde rpID", async () => {
+    const v = verzoek();
+    await leg(v, { teken: { rpID: "kwaad.example" } });
+    await afgewezen(v.id, /handtekening/);
+  });
+  test("type webauthn.create in plaats van get", async () => {
+    const v = verzoek();
+    await leg(v, { teken: { type: "webauthn.create" } });
+    await afgewezen(v.id, /handtekening/);
+  });
+  test("akkoord met een extra sleutel", async () => {
+    const v = verzoek();
+    const a = await leg(v);
+    writeFileSync(join(map, MAPPEN.akkoord, `${v.id}.json`), JSON.stringify({ ...a, argv: ["sh", "-c", "id"] }));
+    await afgewezen(v.id, /onbekende sleutel argv/);
+  });
+  test("id in het akkoord hoort niet bij de bestandsnaam", async () => {
+    const v = verzoek();
+    const a = await leg(v);
+    const w = verzoek();
+    await leg(w);
+    writeFileSync(join(map, MAPPEN.akkoord, `${w.id}.json`), JSON.stringify(a));
+    await afgewezen(w.id, /hoort niet bij de bestandsnaam/);
+  });
+  test("het akkoord is een symlink", async () => {
+    const v = verzoek();
+    await leg(v);
+    const p = join(map, MAPPEN.akkoord, `${v.id}.json`);
+    renameSync(p, join(dir, "echt.json"));
+    symlinkSync(join(dir, "echt.json"), p);
+    await afgewezen(v.id, /symlink/);
+  });
+  test("het verzoek is een symlink", async () => {
+    const v = verzoek();
+    await leg(v);
+    const p = join(map, MAPPEN.verzoeken, `${v.id}.json`);
+    renameSync(p, join(dir, "echt.json"));
+    symlinkSync(join(dir, "echt.json"), p);
+    await afgewezen(v.id, /symlink/);
+  });
+  test("een map is een symlink of te ruim: de runner begint niet", () => {
+    const akk = join(map, MAPPEN.akkoord);
+    rmSync(akk, { recursive: true });
+    mkdirSync(join(dir, "ander"), { mode: 0o700 });
+    symlinkSync(join(dir, "ander"), akk);
+    expect(() => controleerMappen(map)).toThrow(/geen gewone map/);
+    rmSync(akk);
+    mkdirSync(akk, { mode: 0o700 });
+    chmodSync(akk, 0o755);
+    expect(() => controleerMappen(map)).toThrow(/modus 755/);
+  });
+  test("onbekende soort (uitrol bestaat nog niet)", async () => {
+    const v = verzoek({ soort: "uitrol", params: { sha: "abc" } });
+    const a = await leg({ ...verzoek(), id: v.id });
+    writeFileSync(join(map, MAPPEN.verzoeken, `${v.id}.json`), JSON.stringify(v));
+    writeFileSync(join(map, MAPPEN.akkoord, `${v.id}.json`), JSON.stringify(a));
+    await afgewezen(v.id, /onbekende soort/);
+  });
+  test("proef-echo bestaat live niet", async () => {
+    const v = verzoek();
+    await leg(v);
+    await afgewezen(v.id, /onbekende soort proef-echo/, { ctx: runnerCtx(true) });
+  });
+  test("param die niet bij de soort past (main weghalen)", async () => {
+    const v = verzoek({ soort: "tak-weg", params: { tak: "main" } });
+    const a = await leg({ ...verzoek(), id: v.id });
+    writeFileSync(join(map, MAPPEN.verzoeken, `${v.id}.json`), JSON.stringify(v));
+    writeFileSync(join(map, MAPPEN.akkoord, `${v.id}.json`), JSON.stringify(a));
+    await afgewezen(v.id, /main en master/, { nepBin });
+  });
+  test("stiltevenster bij een zware soort", async () => {
+    const s = soort("proef-echo", ctx)!;
+    const was = s.zwaar;
+    s.zwaar = true; // fase 1 heeft nog geen zware soort; proef-echo speelt er even een
+    try {
+      const t = Date.parse("2026-10-21T04:00:00Z"); // 06:00 in Amsterdam
+      const v = verzoek();
+      await leg(v, { verlooptS: t / 1000 + 300 });
+      await afgewezen(v.id, /stiltevenster/, { nu: () => t });
+    } finally {
+      s.zwaar = was;
+    }
+  });
+  test("buiten het stiltevenster en niet zwaar: om 06:00 draait een lichte soort wel", async () => {
+    const t = Date.parse("2026-10-21T04:00:00Z"); // 06:00 in Amsterdam
+    const v = verzoek();
+    await leg(v, { verlooptS: t / 1000 + 300 });
+    expect((await verwerk(v.id, opties({ nu: () => t })))?.stand).toBe("klaar");
+  });
+  test("de afwijzing komt bij de lead aan", async () => {
+    const v = verzoek();
+    await leg(v, { teken: { uv: false } });
+    await verwerk(v.id, opties());
+    expect(inbox()[0]!.tekst).toMatch(new RegExp(`commando proef-echo ${v.id}: fout`));
+  });
+});
+
+describe("runner: test-stand raakt nooit een echte binary", () => {
+  test("tak-weg zonder --nep-bin weigert", async () => {
+    const v = verzoek({ soort: "tak-weg", params: { tak: "lead/x" } });
+    await leg(v);
+    await afgewezen(v.id, /zonder --nep-bin/);
+  });
+  test("tak-weg: eerst de clone op origin/main, dan push.sh --verwijder in de clone", async () => {
+    nep("git", "exit 0");
+    nep("bash", 'echo "push: remote tak $3 verwijderd"; echo "token=ghp_abcdefghijklmnopqrstuvwxyz0123456789"');
+    const v = verzoek({ soort: "tak-weg", params: { tak: "lead/x" } });
+    await leg(v);
+    const u = await verwerk(v.id, opties({ nepBin }));
+    expect(u).toMatchObject({ stand: "klaar", exit: 0 });
+    const kloon = join(dir, "kloon");
+    expect(aanroepen()).toEqual([
+      `git -C ${kloon} fetch -q origin +refs/heads/main:refs/remotes/origin/main`,
+      `git -C ${kloon} checkout -q --detach refs/remotes/origin/main`,
+      "bash scripts/lead/push.sh --verwijder lead/x",
+    ]);
+    expect(u!.staart[0]).toBe("push: remote tak lead/x verwijderd");
+    expect(u!.staart.join("\n")).not.toContain("ghp_");
+    expect(lees(join(map, MAPPEN.uitvoer, `${v.id}.log`))).not.toContain("ghp_");
+    expect(JSON.stringify(inbox())).not.toContain("ghp_");
+  });
+  test("tak-weg: faalt de fetch, dan draait push.sh niet", async () => {
+    nep("git", "echo 'fatal: geen netwerk' >&2; exit 128");
+    nep("bash", "exit 0");
+    const v = verzoek({ soort: "tak-weg", params: { tak: "lead/x" } });
+    await leg(v);
+    const u = await verwerk(v.id, opties({ nepBin }));
+    expect(u).toMatchObject({ stand: "fout" });
+    expect(u!.reden).toMatch(/git fetch in de clone faalde.*geen netwerk/);
+    expect(aanroepen().some((r) => r.startsWith("bash"))).toBe(false);
+  });
+  test("tailnet-open: een bezette https-poort wordt niet overschreven", async () => {
+    nep("Tailscale", `[ "$2" = status ] && echo '{"TCP":{"8450":{"HTTPS":true}},"Web":{"mini.ts.net:8450":{}}}'; exit 0`);
+    const v = verzoek({ soort: "tailnet-open", params: { https: "8450", app: "5173" } });
+    await leg(v);
+    const u = await verwerk(v.id, opties({ nepBin }));
+    expect(u).toMatchObject({ stand: "fout" });
+    expect(u!.reden).toMatch(/8450 staat al in tailscale serve/);
+    expect(aanroepen()).toEqual(["Tailscale serve status --json"]);
+  });
+  test("tailnet-open: een vrije poort gaat open", async () => {
+    nep("Tailscale", `[ "$2" = status ] && echo '{"TCP":{"443":{"HTTPS":true}}}'; exit 0`);
+    const v = verzoek({ soort: "tailnet-open", params: { https: "8450", app: "5173" } });
+    await leg(v);
+    expect(await verwerk(v.id, opties({ nepBin }))).toMatchObject({ stand: "klaar", exit: 0 });
+    expect(aanroepen()).toEqual(["Tailscale serve status --json", "Tailscale serve --bg --https=8450 http://127.0.0.1:5173"]);
+  });
+  test("tailnet-open: een onleesbare status faalt dicht", async () => {
+    nep("Tailscale", `[ "$2" = status ] && echo 'geen json'; exit 0`);
+    const v = verzoek({ soort: "tailnet-open", params: { https: "8450", app: "5173" } });
+    await leg(v);
+    expect((await verwerk(v.id, opties({ nepBin })))?.reden).toMatch(/geen JSON/);
+    expect(aanroepen()).toHaveLength(1);
+  });
+  test("tailnet-dicht en een exitcode die niet 0 is: fout met exit en staart", async () => {
+    nep("Tailscale", "echo 'serve: geen regel op 8450' >&2; exit 3");
+    const v = verzoek({ soort: "tailnet-dicht", params: { https: "8450" } });
+    await leg(v);
+    expect(await verwerk(v.id, opties({ nepBin }))).toMatchObject({ stand: "fout", exit: 3, staart: ["serve: geen regel op 8450"] });
+  });
+  test("een nep-binary die ontbreekt: fout, er draait niets", async () => {
+    const v = verzoek({ soort: "tailnet-dicht", params: { https: "8450" } });
+    await leg(v);
+    await afgewezen(v.id, /nep-binary Tailscale ontbreekt/, { nepBin });
+  });
+  test("timeout: het proces wordt gestopt en de uitslag is fout", async () => {
+    nep("Tailscale", "exec /bin/sleep 5");
+    const v = verzoek({ soort: "tailnet-dicht", params: { https: "8450" } });
+    await leg(v);
+    const u = await verwerk(v.id, opties({ nepBin, timeoutMs: 150 }));
+    expect(u?.stand).toBe("fout");
+    expect(u?.reden).toMatch(/gestopt met SIG/);
+  });
+});
+
+describe("runner: Ctx gelijk aan die van de server", () => {
+  test("live server (TMUX_PWA_LIVE=1) = runner --live, anders test-stand", () => {
+    expect(runnerCtx(true)).toEqual(maakCtx({ TMUX_PWA_LIVE: "1" }));
+    expect(runnerCtx(false)).toEqual(maakCtx({}));
+    expect(runnerCtx(true).test).toBe(false);
+    const v = verzoek({ soort: "tak-weg", params: { tak: "lead/x" } });
+    expect(verzoekHash(v, runnerCtx(true))).toBe(verzoekHash(v, maakCtx({ TMUX_PWA_LIVE: "1" })));
+    expect(verzoekHash(v, runnerCtx(false))).toBe(verzoekHash(v, maakCtx({})));
+  });
+});
+
+describe("passkeys.pub en akkoord: strikt lezen", () => {
+  const goed = (): Sleutels => sleutelsVoor([{ credentialId: "abc", publicKey: "def" } as Authenticator], "mini.tail1234.ts.net", ["https://mini.tail1234.ts.net"]);
+  test("goed formaat gaat door", () => {
+    expect(valideerSleutels(goed())).toEqual(goed());
+  });
+  test("extra sleutel, http-origin buiten localhost, lege lijst of geen base64url: weigert", () => {
+    expect(() => valideerSleutels({ ...goed(), privateKey: "x" })).toThrow(/onbekende sleutel/);
+    expect(() => valideerSleutels({ ...goed(), origins: ["http://mini.ts.net"] })).toThrow(/origin/);
+    expect(() => valideerSleutels({ ...goed(), sleutels: [] })).toThrow(/sleutels ongeldig/);
+    expect(() => valideerSleutels({ ...goed(), sleutels: [{ credentialId: "a b", publicKey: "x" }] })).toThrow(/credentialId/);
+  });
+  test("live: het bestand moet root-eigen en niet schrijfbaar voor anderen zijn", () => {
+    const p = join(dir, "pub", "passkeys.pub");
+    mkdirSync(join(dir, "pub"), { mode: 0o755 });
+    writeFileSync(p, JSON.stringify(goed()), { mode: 0o644 });
+    const uid = process.getuid!();
+    // de voorouders (tmp) zijn niet van deze uid, dus met eigenaar = uid faalt het al op de map erboven of eerder
+    expect(() => leesSleutels(p, uid + 1)).toThrow(/eigenaar uid/);
+    expect(leesSleutels(p, null)).toEqual(goed());
+    chmodSync(p, 0o666);
+    expect(() => leesSleutels(p, uid)).toThrow(/schrijfbaar|eigenaar/);
+    rmSync(p);
+    symlinkSync(join(dir, "elders"), p);
+    expect(() => leesSleutels(p, uid)).toThrow(/symlink/);
+  });
+  test("akkoord: een assertion met een extra veld of een id met een hoofdletter weigert", async () => {
+    const v = verzoek();
+    const a = await leg(v);
+    expect(valideerAkkoord(a)).toEqual(a);
+    expect(() => valideerAkkoord({ ...a, assertion: { ...a.assertion, extra: "x" } })).toThrow(/onbekende sleutel extra/);
+    expect(() => valideerAkkoord({ ...a, id: "Proef" })).toThrow(/id ongeldig/);
+    expect(() => valideerAkkoord({ ...a, verlooptS: "1" })).toThrow(/verlooptS/);
+  });
+});
+
+describe("runner-CLI", () => {
+  // HOME telt mee in de hash (env van de soort); alleen de test op de echte map krijgt een andere HOME.
+  const cli = (...args: string[]) => cliMet({}, ...args);
+  const cliMet = (env: Record<string, string>, ...args: string[]) => {
+    const p = Bun.spawnSync(["bun", join(import.meta.dir, "runner.ts"), ...args], {
+      env: { ...process.env, LAB_COMMANDO: "", ...env },
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+    return { code: p.exitCode, uit: p.stdout.toString(), err: p.stderr.toString() };
+  };
+  test("test-stand: verwerkt een akkoord in de tijdelijke map", async () => {
+    const v = verzoek({ verlooptS: Math.floor(Date.now() / 1000) + 3600, tijd: new Date().toISOString() });
+    const sl = join(dir, "sleutels.json");
+    writeFileSync(sl, JSON.stringify(sleutels));
+    await leg(v, { verlooptS: Math.floor(Date.now() / 1000) + 300 });
+    const r = cli("--map", map, "--sleutels", sl, "--eenmaal");
+    expect(r.err).toBe("");
+    expect(r.uit.trim()).toBe(`${v.id} klaar exit 0`);
+  });
+  test("de gebundelde runner (zoals in /usr/local/lib/lab-lead) verwerkt een akkoord en controleert de handtekening", async () => {
+    const bundel = join(dir, "commando-runner.js");
+    const b = Bun.spawnSync(["bun", "build", join(import.meta.dir, "runner.ts"), "--target=bun", "--outfile", bundel], { stdout: "pipe", stderr: "pipe" });
+    expect(b.exitCode).toBe(0);
+    const sl = join(dir, "sleutels.json");
+    writeFileSync(sl, JSON.stringify(sleutels));
+    const nuS = Math.floor(Date.now() / 1000);
+    const goed = verzoek({ verlooptS: nuS + 3600, tijd: new Date().toISOString() });
+    const kwaad = verzoek({ verlooptS: nuS + 3600, tijd: new Date().toISOString() });
+    await leg(goed, { verlooptS: nuS + 300 });
+    await leg(kwaad, { verlooptS: nuS + 300, teken: { uv: false } });
+    const p = Bun.spawnSync(["bun", bundel, "--map", map, "--sleutels", sl], { env: { ...process.env, LAB_COMMANDO: "" }, stdout: "pipe", stderr: "pipe" });
+    expect(p.stderr.toString()).toBe("");
+    const uit = p.stdout.toString().trim().split("\n");
+    expect(uit).toHaveLength(2);
+    expect(uit).toContain(`${goed.id} klaar exit 0`);
+    expect(uit.find((r) => r.startsWith(`${kwaad.id} `))).toMatch(/ fout \(handtekening/);
+  });
+  test("test-stand op de echte map weigert", () => {
+    const r = cliMet({ HOME: dir }, "--map", join(dir, ".local/state/lab-commando"), "--sleutels", join(dir, "x"));
+    expect(r.code).toBe(1);
+    expect(r.err).toMatch(/echte map/);
+    expect(existsSync(join(dir, ".local/state/lab-commando"))).toBe(false);
+  });
+  test("--live neemt geen --map of --sleutels; onbekende optie; zonder --live geen standaardpaden", () => {
+    expect(cli("--live", "--map", map).err).toMatch(/--live neemt geen/);
+    expect(cli("--vrij").err).toMatch(/onbekende optie --vrij/);
+    expect(cli("--map", map).err).toMatch(/--map en --sleutels verplicht/);
+  });
+});
