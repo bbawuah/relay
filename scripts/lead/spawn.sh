@@ -46,19 +46,32 @@ if [ -n "$meerdere" ]; then
   [ -z "$naam$opdracht$vervolg" ] && [ "$sublead" = 0 ] || fout "--meerdere sluit --naam, --opdracht, --vervolg en --sublead uit"
   [ -f "$meerdere" ] || fout "lijst bestaat niet: $meerdere"
   zelf="${BASH_SOURCE[0]}"
-  uitmap=$(mktemp -d "${TMPDIR:-/tmp}/spawn-meerdere.XXXXXX")
-  namen=() pids=()
+  # Eerst de hele lijst valideren, dan pas starten: een kapotte regel halverwege laat geen halve reeks of temp-map achter.
+  namen=() opdrachten=() modellen=()
+  regelnr=0
   while read -r n o m extra; do
+    regelnr=$((regelnr + 1))
     case ${n:-} in ""|"#"*) continue ;; esac
-    [ -n "${o:-}" ] && [ -z "${extra:-}" ] || fout "regel '$n $o $m ${extra:-}' in $meerdere: verwacht 'naam opdrachtbestand [model]'"
-    args=(--naam "$n" --opdracht "$o" --map "$map")
-    [ -z "${m:-$model}" ] || args+=(--model "${m:-$model}")
-    [ -z "$lead" ] || args+=(--lead "$lead")
-    [ "$droog" = 0 ] || args+=(--droog)
-    bash "$zelf" "${args[@]}" >"$uitmap/$n.uit" 2>"$uitmap/$n.fout" &
-    namen+=("$n") pids+=($!)
+    [ -n "${o:-}" ] && [ -z "${extra:-}" ] || fout "$meerdere regel $regelnr: verwacht 'naam opdrachtbestand [model]'"
+    [[ $n =~ ^[A-Za-z0-9._-]+$ ]] || fout "$meerdere regel $regelnr: naam '$n' mag alleen letters, cijfers, punt, streepje en underscore bevatten"
+    for eerder in ${namen[@]+"${namen[@]}"}; do
+      [ "$eerder" != "$n" ] || fout "$meerdere regel $regelnr: dubbele naam '$n'; er is nog niets gestart"
+    done
+    [ -f "$o" ] || fout "$meerdere regel $regelnr: opdrachtbestand bestaat niet: $o; er is nog niets gestart"
+    case ${m:-$model} in ""|sonnet|opus) ;; *) fout "$meerdere regel $regelnr: model moet sonnet of opus zijn, niet '${m:-$model}'" ;; esac
+    namen+=("$n") opdrachten+=("$o") modellen+=("${m:-$model}")
   done <"$meerdere"
   [ "${#namen[@]}" -gt 0 ] || fout "lijst $meerdere bevat geen sessies"
+  uitmap=$(mktemp -d "${TMPDIR:-/tmp}/spawn-meerdere.XXXXXX")
+  pids=()
+  for i in "${!namen[@]}"; do
+    args=(--naam "${namen[$i]}" --opdracht "${opdrachten[$i]}" --map "$map")
+    [ -z "${modellen[$i]}" ] || args+=(--model "${modellen[$i]}")
+    [ -z "$lead" ] || args+=(--lead "$lead")
+    [ "$droog" = 0 ] || args+=(--droog)
+    bash "$zelf" "${args[@]}" >"$uitmap/${namen[$i]}.uit" 2>"$uitmap/${namen[$i]}.fout" &
+    pids+=($!)
+  done
   mislukt=0
   for i in "${!namen[@]}"; do
     n=${namen[$i]} rc=0
