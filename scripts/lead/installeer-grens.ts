@@ -39,7 +39,8 @@ const q = (s: string) => `'${s.replaceAll("'", `'\\''`)}'`;
 
 function git(repo: string, args: string[]): Buffer {
   const p = spawnSync("git", ["-C", repo, ...args], { env: schoneEnv(), maxBuffer: 16 * 1024 * 1024 });
-  if (p.status !== 0) throw new Error(`git ${args.join(" ")}: ${p.stderr.toString().trim() || `status ${p.status}`}`);
+  // p.error: bv. ENOBUFS als de uitvoer groter is dan maxBuffer (dan is status null en stderr leeg)
+  if (p.status !== 0) throw new Error(`git ${args.join(" ")}: ${p.stderr.toString().trim() || p.error?.message || `status ${p.status}`}`);
   return p.stdout;
 }
 
@@ -58,7 +59,8 @@ export function bouwRunner(repo: string): { pad: string; sha: string; bun: strin
   const map = mkdtempSync(path.join(tmpdir(), "commando-runner-bouw-"));
   const bron = path.join(map, "bron");
   mkdirSync(bron);
-  writeFileSync(path.join(map, "bron.tar"), git(repo, ["archive", "--format=tar", ORIGIN_MAIN]));
+  // Direct naar het bestand, niet via stdout: het archief van de hele repo is groter dan elke vaste buffer.
+  git(repo, ["archive", "--format=tar", "-o", path.join(map, "bron.tar"), ORIGIN_MAIN]);
   draai(["tar", "-xf", path.join(map, "bron.tar"), "-C", bron], map);
   if (existsSync(path.join(bron, "package.json"))) draai(["bun", "install", "--frozen-lockfile", "--ignore-scripts", "--silent"], bron);
   const pad = path.join(map, RUNNER);

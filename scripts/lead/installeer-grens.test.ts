@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { createHash } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import { chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -206,6 +206,14 @@ describe("installeer-grens.ts: de commando-runner", () => {
     const b = bouwRunner(repo);
     expect(a.sha).toBe(b.sha);
     expect(readFileSync(a.pad, "utf8")).toContain('console.log("runner")');
+  });
+  test("een archief groter dan 16 MB (zoals de echte repo, 23,7 MB) bouwt gewoon", () => {
+    // willekeurige bytes comprimeren niet: het tar-archief is dan echt groter dan de oude buffer van 16 MB
+    writeFileSync(join(repo, "groot.bin"), randomBytes(17 * 1024 * 1024));
+    git("add", "groot.bin");
+    git("-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "-m", "groot");
+    git("update-ref", "refs/remotes/origin/main", "HEAD");
+    expect(readFileSync(bouwRunner(repo).pad, "utf8")).toContain('console.log("runner")');
   });
   test("bouwt uit origin/main, niet uit de werkkopie", () => {
     const voor = bouwRunner(repo).sha;
