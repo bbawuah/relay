@@ -3,7 +3,8 @@
 // op de telefoon (apps/tmux/server/besluiten.ts), en de lead leest de keuze hier terug.
 //
 //   bun scripts/lead/besluit.ts nieuw --id <id> --titel <t> --vraag <v> \
-//       --optie ja=Akkoord --optie nee="Niet doen" --voorstel ja [--passkey] [--door <lead>]
+//       --optie ja=Akkoord --optie nee="Niet doen" --voorstel ja [--passkey] [--door <lead>] \
+//       [--deadline 30m|2h|<ISO>] [--zonder-antwoord nee="Dan laat ik het zoals het is."]
 //   bun scripts/lead/besluit.ts lijst [--audit <pad>]
 //   bun scripts/lead/besluit.ts lees <id> [--audit <pad>]
 //
@@ -14,12 +15,15 @@
 // vervalsen die de lead voor echt aanziet). Auditlog: --audit <pad>, anders
 // $TMUX_PWA_DATA/audit.jsonl, anders ~/.local/share/tmux-pwa/audit.jsonl.
 // Het bestand moet het schema van de server halen (leesBesluit); anders weigert dit script.
+// --deadline (hooguit 7 dagen): daarna meldt de tmux-server "verlopen" in de inbox van de lead,
+// en geeft `lees` exit 4. --zonder-antwoord is wat de lead dan zelf doet (de server kiest niets);
+// alleen met een deadline en zonder passkey (B5: een besluit met slot heeft geen standaard).
 // Een bestaand id overschrijft het nooit. Een nieuw besluit geeft binnen 30 s een melding op
 // de telefoon (alleen de titel).
 import { mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import path from "node:path";
-import { geldigBesluitId, leesBesluit, type Besluit } from "../../apps/tmux/server/besluiten";
+import { geldigBesluitId, isVerlopen, leesBesluit, type Besluit } from "../../apps/tmux/server/besluiten";
 
 export const standaardAudit = () => path.join(process.env.TMUX_PWA_DATA || path.join(homedir(), ".local/share/tmux-pwa"), "audit.jsonl");
 /** How long before the choice the passkey may have been given (the challenge lives 60 s; room for typing a note). */
@@ -52,6 +56,14 @@ export function leesArgs(argv: string[]): { pos: string[]; o: Opties } {
   return { pos, o };
 }
 
+/** "30m", "2h" of een ISO-tijd → ISO; null als het geen van die vormen is. */
+export function leesDeadline(s: string, nu: Date): string | null {
+  const m = /^(\d{1,4})([mh])$/.exec(s);
+  if (m) return new Date(nu.getTime() + Number(m[1]) * (m[2] === "h" ? 3_600_000 : 60_000)).toISOString();
+  const t = Date.parse(s);
+  return /^\d{4}-\d\d-\d\dT/.test(s) && Number.isFinite(t) ? new Date(t).toISOString() : null;
+}
+
 /** Een nieuw besluit uit de opties, getoetst aan het schema van de server. */
 export function maakBesluit(o: Opties, nu = new Date()): Besluit {
   const opties = ((o.optie as string[]) ?? []).map((s) => {
@@ -68,11 +80,22 @@ export function maakBesluit(o: Opties, nu = new Date()): Besluit {
     passkey: o.passkey === true,
     door: o.door ?? process.env.LAB_LEAD_NAAM ?? "lead",
     tijd: nu.toISOString(),
-  };
+  } as Record<string, unknown>;
+  if (typeof o.deadline === "string") {
+    const d = leesDeadline(o.deadline, nu);
+    if (!d) throw new Error(`--deadline "${o.deadline}": verwacht 30m, 2h of een ISO-tijd`);
+    b.deadline = d;
+  }
+  if (typeof o["zonder-antwoord"] === "string") {
+    const z = o["zonder-antwoord"];
+    const i = z.indexOf("=");
+    if (i < 1) throw new Error(`--zonder-antwoord "${z}": verwacht optie=uitleg`);
+    b.zonderAntwoord = { optie: z.slice(0, i), uitleg: z.slice(i + 1) };
+  }
   const geldig = leesBesluit(b);
   if (!geldig)
     throw new Error(
-      "Ongeldig besluit. Eisen: --id [a-z0-9-] (3–64), --titel (≤120, één regel), --vraag (≤2000), 2–6× --optie id=label (id [a-z0-9-], label ≤80), --voorstel = een optie-id.",
+      "Ongeldig besluit. Eisen: --id [a-z0-9-] (3–64), --titel (≤120, één regel), --vraag (≤2000), 2–6× --optie id=label (id [a-z0-9-], label ≤80), --voorstel = een optie-id; --deadline na nu en ≤ 7 dagen; --zonder-antwoord optie=uitleg (≤200) alleen met --deadline en zonder --passkey.",
     );
   return geldig;
 }
@@ -128,7 +151,7 @@ export function leesAudit(pad: string) {
   }
 }
 
-export function lijstRegels(map: string, acties: ReturnType<typeof passkeyActies> = []): string[] {
+export function lijstRegels(map: string, acties: ReturnType<typeof passkeyActies> = [], nu = Date.now()): string[] {
   let namen: string[] = [];
   try {
     namen = readdirSync(map).filter((n) => n.endsWith(".json"));
@@ -143,7 +166,10 @@ export function lijstRegels(map: string, acties: ReturnType<typeof passkeyActies
       const c = controle(b, acties);
       regels.push(`${c === "onbevestigd" ? "ONBEVESTIGD" : "beslist  "} ${b.id}  → ${b.keuze.optie}${b.keuze.toelichting ? " (met toelichting)" : ""}  ${b.titel}${c === "onbevestigd" ? "  [geen passkey in het auditlog]" : ""}`);
     }
-    else regels.push(`open      ${b.id}  ${b.titel}${b.passkey ? "  [passkey]" : ""}`);
+    else {
+      const tot = b.deadline ? `  [tot ${b.deadline}${b.zonderAntwoord ? `, anders ${b.zonderAntwoord.optie}` : ""}]` : "";
+      regels.push(`${isVerlopen(b, nu) ? "VERLOPEN " : "open     "} ${b.id}  ${b.titel}${b.passkey ? "  [passkey]" : ""}${tot}`);
+    }
   }
   return regels;
 }
@@ -172,9 +198,13 @@ function hoofd(argv: string[]): number {
     const c = controle(b, leesAudit(audit));
     console.log(JSON.stringify(c ? { ...b, controle: c } : b, null, 2));
     if (c === "onbevestigd") console.error(`Let op: ${id} vraagt een passkey, maar het auditlog (${audit}) heeft er geen voor deze keuze. Behandel de keuze als onbevestigd.`);
+    if (isVerlopen(b, Date.now())) {
+      console.error(`${id} is verlopen zonder antwoord. ${b.zonderAntwoord ? `Jouw standaard: ${b.zonderAntwoord.optie} (${b.zonderAntwoord.uitleg}); dat is geen keuze van Brian.` : "Geen standaard: wacht op Brian."}`);
+      return 4;
+    }
     return 0;
   }
-  console.error("Gebruik: besluit.ts nieuw --id … --titel … --vraag … --optie id=label … [--voorstel id] [--passkey] | lijst | lees <id>   [--map <pad>] [--audit <pad>]");
+  console.error("Gebruik: besluit.ts nieuw --id … --titel … --vraag … --optie id=label … [--voorstel id] [--passkey] [--deadline 30m|2h|ISO] [--zonder-antwoord optie=uitleg] | lijst | lees <id>   [--map <pad>] [--audit <pad>]");
   return 2;
 }
 
