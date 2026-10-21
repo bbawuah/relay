@@ -20,8 +20,7 @@ import { join } from "node:path";
 import { type Akkoord, commandoMap, kloonPad, leesGewoonBestand, MAPPEN, schrijfAtomair, type Stand, type Uitslag, zorgVoorMappen } from "./commando/opslag";
 import { redigeer } from "./commando/redactie";
 import { afgeleid, type Ctx, valideerVerzoek, type Verzoek, verzoekHash } from "./commando/schema";
-import { herken, soort, soorten } from "./commando/soorten";
-import { inStiltevenster } from "../stiltevenster";
+import { herken, soort, soorten, stilteReden } from "./commando/soorten";
 
 export const VERZOEK_GELDIG_S = 24 * 3600;
 export const MAX_OPEN_PER_INDIENER = 5;
@@ -33,12 +32,6 @@ export class AfwijsFout extends Error {}
 export const maakCtx = (env: Record<string, string | undefined> = process.env): Ctx => ({ kloon: kloonPad(), test: !env.TMUX_PWA_LIVE });
 
 const nuS = (nu: number): number => Math.floor(nu / 1000);
-
-/** Is dit een zware soort die nu niet mag (stiltevenster)? Geeft de reden of null. Voor server en runner. */
-export function stilteReden(soortId: string, ctx: Pick<Ctx, "test">, nu: Date = new Date()): string | null {
-  const s = soort(soortId, ctx);
-  return s?.zwaar && inStiltevenster(nu) ? "stiltevenster 05:00–07:15: geen zware runs" : null;
-}
 
 function leesJson<T>(pad: string): T | null {
   try {
@@ -258,7 +251,7 @@ async function main(argv: string[]): Promise<number> {
     if (o.droog) {
       const s = soort(soortId, ctx)!;
       const a = afgeleid(r.verzoek, ctx);
-      console.log(JSON.stringify({ verzoek: r.verzoek, hash: r.hash, kaart: s.wat(params), argv: a.argv, cwd: a.cwd, risico: s.risico }, null, 2));
+      console.log(JSON.stringify({ verzoek: r.verzoek, hash: r.hash, kaart: s.wat(params), argv: a.argv, cwd: a.cwd, risico: s.risico, stilte: stilteReden(soortId, ctx) }, null, 2));
     } else console.log(r.id);
     return 0;
   } catch (e) {

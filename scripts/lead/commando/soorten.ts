@@ -2,6 +2,7 @@
 // Gedeeld door CLI, server en runner. Een agent vraagt een soort met parameters; argv, cwd en env
 // maakt altijd deze module. Geen vrije commando's, geen shell.
 import { homedir } from "node:os";
+import { inStiltevenster } from "../../stiltevenster";
 import type { Ctx } from "./schema";
 
 export type Risico = "laag" | "midden" | "hoog";
@@ -36,6 +37,15 @@ const POORT = /^[1-9][0-9]{3,4}$/;
 const PAD = "/opt/homebrew/bin:/usr/bin:/bin";
 
 const vasteEnv = (): Record<string, string> => ({ PATH: PAD, HOME: homedir(), LANG: "en_US.UTF-8" });
+
+/** De https-poorten die een tailnet-regel via de kaart mag krijgen of verliezen (de runner toetst ook `tailscale serve status`). */
+const HTTPS_BEREIK: readonly [number, number] = [8440, 8459];
+
+function httpsFout(w: string): string | null {
+  const n = Number(w);
+  if (n < HTTPS_BEREIK[0] || n > HTTPS_BEREIK[1]) return `https-poort moet in ${HTTPS_BEREIK[0]}–${HTTPS_BEREIK[1]} liggen`;
+  return poortFout("https-poort", w, BEZETTE_HTTPS);
+}
 
 function poortFout(naam: string, w: string, ook: readonly number[] = []): string | null {
   const n = Number(w);
@@ -81,7 +91,7 @@ const tailnetOpen: Soort = {
   uitvoer: "toon",
   maxPerDag: 10,
   timeoutMs: 30_000,
-  extraCheck: (p) => poortFout("https-poort", p.https!, BEZETTE_HTTPS) ?? poortFout("app-poort", p.app!),
+  extraCheck: (p) => httpsFout(p.https!) ?? poortFout("app-poort", p.app!),
   uitArgv: (a) => {
     const m = /^--https=(\d+)$/.exec(a[3] ?? "");
     const u = /^http:\/\/127\.0\.0\.1:(\d+)$/.exec(a[4] ?? "");
@@ -101,7 +111,7 @@ const tailnetDicht: Soort = {
   uitvoer: "toon",
   maxPerDag: 10,
   timeoutMs: 30_000,
-  extraCheck: (p) => poortFout("https-poort", p.https!, BEZETTE_HTTPS),
+  extraCheck: (p) => httpsFout(p.https!),
   uitArgv: (a) => {
     const m = /^--https=(\d+)$/.exec(a[2] ?? "");
     return a.length === 4 && a[0] === TAILSCALE && a[1] === "serve" && a[3] === "off" && m ? { https: m[1]! } : null;
@@ -132,6 +142,16 @@ export function soorten(ctx: Pick<Ctx, "test">): readonly Soort[] {
 
 export function soort(id: string, ctx: Pick<Ctx, "test">): Soort | undefined {
   return soorten(ctx).find((s) => s.id === id);
+}
+
+/** Mag deze soort nu? Zware soorten niet in het stiltevenster (05:00–07:15). Geeft de reden of null. Voor server en runner. */
+export function stilteReden(soortId: string, ctx: Pick<Ctx, "test">, nu: Date = new Date()): string | null {
+  const s = soort(soortId, ctx);
+  return s ? stilteVoor(s, nu) : null;
+}
+
+export function stilteVoor(s: Pick<Soort, "zwaar">, nu: Date = new Date()): string | null {
+  return s.zwaar && inStiltevenster(nu) ? "stiltevenster 05:00–07:15: geen zware runs" : null;
 }
 
 /** De soort waarvan de sjabloon dit argv precies maakt, met de params; anders null. */
