@@ -57,7 +57,7 @@
 import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import path from "node:path";
-import { aantalSlots, echteOmgeving, neemSlot } from "./e2e-slot";
+import { aantalSlots, echteOmgeving, neemSlot, SLOT_WACHT_MAX, slotPrio } from "./e2e-slot";
 import { ongebruikt, sleutels as dsSleutels, zoek as dsZoek } from "./ds-regels";
 import { beschrijf as ekBeschrijf, nieuweTreffers as ekNieuw, OPLOSSING as EK_OPLOSSING, sleutel as ekSleutel, zoek as ekZoek } from "./echte-klok";
 import { beschrijf as ttBeschrijf, nieuweTreffers as ttNieuw, OPLOSSING as TT_OPLOSSING, sleutel as ttSleutel, zoek as ttZoek } from "./test-tenant";
@@ -477,7 +477,7 @@ export async function stapE2e(ctx: Context, dep: E2eAfhankelijk = {}): Promise<R
   // binnen een run blijft turbo op --concurrency=1.
   let slot: Awaited<ReturnType<typeof neemSlot>>;
   try {
-    slot = await (dep.neemSlot ?? (() => neemSlot(echteOmgeving(process.cwd()), aantalSlots())))();
+    slot = await (dep.neemSlot ?? (() => neemSlot(echteOmgeving(process.cwd()), aantalSlots(), SLOT_WACHT_MAX, slotPrio())))();
   } catch (e) {
     return { status: "FOUT", detail: (e as Error).message };
   }
