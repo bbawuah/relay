@@ -52,7 +52,8 @@
 // e2e FOUT in plaats van stil overgeslagen; gebruik dan --zonder-e2e.
 //
 // Een groene volledige run op een schone werkkopie laat een stempel achter in
-// ~/.cache/lab-bawuah/poort/<sha>.json, voor de uitrolscripts (besluit 10, later).
+// ~/.cache/lab-bawuah/poort/<sha>.json. scripts/lead/merge.sh eist zo'n stempel op de patch
+// van de PR (geen merge zonder de geraakte e2e); later ook de uitrolscripts (besluit 10).
 
 import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
@@ -581,7 +582,7 @@ async function poort(o: Opties): Promise<number> {
     mkdirSync(map, { recursive: true });
     writeFileSync(
       path.join(map, `${sha}.json`),
-      JSON.stringify({ sha, modus: o.alles ? "alles" : "affected", base: ctx.base, tijd: new Date().toISOString() }) + "\n",
+      JSON.stringify({ sha, groen: true, modus: o.alles ? "alles" : "affected", base: ctx.base, tijd: new Date().toISOString() }) + "\n",
     );
   }
   return fouten;
