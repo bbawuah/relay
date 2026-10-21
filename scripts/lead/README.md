@@ -23,6 +23,8 @@ scripts/lead/spawn.sh --naam w2 --opdracht ~/vault-b-status/werkwijze-b/CONTRACT
 scripts/lead/spawn.sh --naam w2 --opdracht opdracht.md --lead labbawuah-1c --droog
 ```
 
+Veel sessies tegelijk: `spawn.sh --meerdere lijst.txt --lead <n> [--model ..] [--map ..]`, met per regel `naam opdrachtbestand [sonnet|opus]`. Alle sessies starten parallel (een lus van tien liep tegen de time-out van 600 s en de laatste kreeg zijn startregel niet). De hele lijst wordt eerst gevalideerd (dubbele naam, kapotte regel, ontbrekend opdrachtbestand, ongeldig model): bij een fout start er niets. Het eindoordeel is luid: exit 1 en per mislukte sessie een regel `MISLUKT <naam>` met de reden, bijvoorbeeld "geen tool-aanroep" als de startregel niet aankwam.
+
 | Optie | Betekenis |
 |---|---|
 | `--naam <n>` | Naam van de sessie (`claude -n <n>`). Alleen letters, cijfers, `.`, `_` en `-`. |
