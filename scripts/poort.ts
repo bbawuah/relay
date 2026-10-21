@@ -51,8 +51,8 @@
 // aantal FOUT. Het stiltevenster (05:00–07:15) geldt voor de e2e-stap: daarin is
 // e2e FOUT in plaats van stil overgeslagen; gebruik dan --zonder-e2e.
 //
-// Een groene volledige run op een schone werkkopie laat een stempel achter in
-// ~/.cache/lab-bawuah/poort/<sha>.json. scripts/lead/merge.sh eist zo'n stempel op de patch
+// Een groene volledige run (geen --ci) op een schone werkkopie, met dezelfde HEAD bij start en eind,
+// laat een stempel achter in ~/.cache/lab-bawuah/poort/<sha>.json. scripts/lead/merge.sh eist zo'n stempel op de patch
 // van de PR (geen merge zonder de geraakte e2e); later ook de uitrolscripts (besluit 10).
 
 import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, renameSync, rmSync, writeFileSync } from "node:fs";
@@ -544,6 +544,8 @@ async function poort(o: Opties): Promise<number> {
   } else console.log("poort: alles");
 
   const stapBase = () => ctx.base ?? kiesBase(o.base).sha;
+  // HEAD en schoon-zijn bij de start: de stempel hoort bij wat getest is, niet bij wat er aan het eind staat
+  const start = { sha: git("rev-parse", "HEAD"), schoon: git("status", "--porcelain") === "" };
   const begin = Date.now();
   let fouten = 0;
   for (const s of STAPPEN) {
@@ -575,9 +577,11 @@ async function poort(o: Opties): Promise<number> {
   }
   console.log(`poort: ${fouten ? `${fouten} FOUT` : "groen"} in ${duur(Date.now() - begin)}`);
 
-  // Stempel: alleen voor een volledige, groene run op een schone werkkopie.
-  if (!fouten && !o.alleen && !o.zonderE2e && git("status", "--porcelain") === "") {
-    const sha = git("rev-parse", "HEAD");
+  const eind = { sha: git("rev-parse", "HEAD"), schoon: git("status", "--porcelain") === "" };
+  const waarom = geenStempel(fouten, o, start, eind);
+  if (waarom) console.log(`poort: geen stempel (${waarom})`);
+  else {
+    const sha = start.sha;
     const map = path.join(homedir(), ".cache/lab-bawuah/poort");
     mkdirSync(map, { recursive: true });
     writeFileSync(
@@ -586,6 +590,22 @@ async function poort(o: Opties): Promise<number> {
     );
   }
   return fouten;
+}
+
+/** Waarom deze run geen stempel krijgt, of null: alleen een volledige, groene run (geen --ci, die
+ * taken overslaat) op een werkkopie die bij de start én het eind schoon is, op dezelfde HEAD. */
+export function geenStempel(
+  fouten: number,
+  o: Pick<Opties, "alleen" | "zonderE2e" | "ci">,
+  start: { sha: string; schoon: boolean },
+  eind: { sha: string; schoon: boolean },
+): string | null {
+  if (fouten) return "niet groen";
+  if (o.alleen || o.zonderE2e) return "niet volledig";
+  if (o.ci) return "--ci slaat taken over";
+  if (!start.schoon || !eind.schoon) return "werkkopie niet schoon";
+  if (start.sha !== eind.sha) return `HEAD veranderde tijdens de run (${start.sha.slice(0, 7)} → ${eind.sha.slice(0, 7)})`;
+  return null;
 }
 
 // ── Baseline schrijven ──────────────────────────────────────────────────────
