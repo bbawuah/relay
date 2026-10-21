@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
-import { afgeleid, challenge, type Ctx, valideerVerzoek, type Verzoek, verzoekHash } from "./schema";
+import type { Uitslag } from "./opslag";
+import { afgeleid, challenge, type Ctx, geldigId, valideerUitslag, valideerVerzoek, type Verzoek, verzoekHash } from "./schema";
 
 const ctx: Ctx = { kloon: "/kloon", test: true };
 const basis: Verzoek = {
@@ -29,7 +30,7 @@ describe("valideerVerzoek", () => {
   });
 
   test("stuur-, bidi- en zero-width-tekens in elke tekst", () => {
-    const slecht = [0, 10, 9, 27, 127, 0x202e, 0x2066, 0x200b, 0xfeff, 0x2028].map((c) => String.fromCodePoint(c));
+    const slecht = [0, 10, 9, 27, 127, 0x202e, 0x2066, 0x200b, 0xfeff, 0x2028, 0x061c, 0x180e].map((c) => String.fromCodePoint(c));
     for (const c of slecht) {
       expect(() => valideerVerzoek(met({ waarom: `a${c}b` }))).toThrow("stuur");
       expect(() => valideerVerzoek(met({ params: { tak: `a${c}b` } }))).toThrow("stuur");
@@ -53,6 +54,26 @@ describe("valideerVerzoek", () => {
     expect(() => valideerVerzoek(met({ lead: "" }))).toThrow("lead");
     expect(() => valideerVerzoek(met({ tijd: "gisteren" }))).toThrow("tijd");
     for (const v of [0, -1, 1.5, "100", null]) expect(() => valideerVerzoek(met({ verlooptS: v }))).toThrow("verlooptS");
+  });
+});
+
+describe("geldigId en valideerUitslag", () => {
+  test("geldigId", () => {
+    expect(geldigId("tak-weg-k3f9a2")).toBe(true);
+    for (const id of ["../x", "ab", "A-bc", "a/b", "x\0y", 5, null, undefined, "a".repeat(65)]) expect(geldigId(id)).toBe(false);
+  });
+
+  const goed: Uitslag = { versie: 1, id: "tak-weg-k3f9a2", stand: "klaar", exit: 0, staart: ["ok"], tijd: "2026-10-21T10:00:00Z" };
+  test("een goede uitslag komt terug", () => {
+    expect(valideerUitslag(goed, "tak-weg-k3f9a2")).toEqual(goed);
+    expect(valideerUitslag({ ...goed, reden: "r", exit: undefined }, "tak-weg-k3f9a2").stand).toBe("klaar");
+  });
+
+  test("afwijkingen gooien", () => {
+    const id = "tak-weg-k3f9a2";
+    for (const x of [null, [], "x", { ...goed, id: "ander-id" }, { ...goed, versie: 2 }, { ...goed, stand: "open" }, { ...goed, exit: 1.5 }, { ...goed, staart: [1] }, { ...goed, staart: Array(101).fill("x") }, { ...goed, extra: 1 }, { ...goed, tijd: 5 }, { ...goed, reden: "x".repeat(501) }]) {
+      expect(() => valideerUitslag(x, id)).toThrow();
+    }
   });
 });
 

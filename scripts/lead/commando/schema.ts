@@ -1,6 +1,7 @@
 // Het verzoek van een agent, de afgeleide uitvoering en de hash/challenge waar het akkoord over gaat.
 // Er staat geen argv, cwd of env in het verzoek: die leidt `afgeleid` uit de soort af.
 import { createHash } from "node:crypto";
+import type { Uitslag } from "./opslag";
 import { STUUR_KLASSE } from "./redactie";
 import { soort } from "./soorten";
 
@@ -61,6 +62,26 @@ export function valideerVerzoek(x: unknown): Verzoek {
   if (Number.isNaN(Date.parse(tijd))) throw new Error("tijd is geen datum");
   if (typeof o.verlooptS !== "number" || !Number.isInteger(o.verlooptS) || o.verlooptS <= 0) throw new Error("verlooptS is geen geheel getal in seconden");
   return { versie: 1, id, soort: s, params, waarom, door, lead, tijd, verlooptS: o.verlooptS };
+}
+
+/** Is dit een id zoals een verzoek er een heeft? Toets dit vóór een id in een pad komt. */
+export const geldigId = (id: unknown): id is string => typeof id === "string" && ID.test(id);
+
+const STANDEN = ["geweigerd", "bezig", "klaar", "fout", "verlopen"];
+
+/** Strikte controle van een uitslag-bestand voor het opgegeven id; gooit bij elke afwijking. */
+export function valideerUitslag(x: unknown, id: string): Uitslag {
+  if (!x || typeof x !== "object" || Array.isArray(x)) throw new Error("uitslag is geen object");
+  const o = x as Record<string, unknown>;
+  for (const k of Object.keys(o)) if (!["versie", "id", "stand", "exit", "staart", "reden", "tijd"].includes(k)) throw new Error(`onbekende sleutel in uitslag: ${k}`);
+  if (o.versie !== 1) throw new Error("uitslag: versie moet 1 zijn");
+  if (o.id !== id) throw new Error("uitslag: id komt niet overeen met de bestandsnaam");
+  if (typeof o.stand !== "string" || !STANDEN.includes(o.stand)) throw new Error("uitslag: ongeldige stand");
+  if (o.exit !== undefined && (typeof o.exit !== "number" || !Number.isInteger(o.exit))) throw new Error("uitslag: exit is geen geheel getal");
+  if (!Array.isArray(o.staart) || o.staart.length > 100 || o.staart.some((r) => typeof r !== "string" || r.length > 2048)) throw new Error("uitslag: ongeldige staart");
+  if (o.reden !== undefined && (typeof o.reden !== "string" || o.reden.length > 500)) throw new Error("uitslag: ongeldige reden");
+  if (typeof o.tijd !== "string" || o.tijd.length > 40) throw new Error("uitslag: ongeldige tijd");
+  return o as unknown as Uitslag;
 }
 
 /** argv, cwd en env zoals de runner ze maakt. Gooit bij een onbekende soort of een param die niet past. */

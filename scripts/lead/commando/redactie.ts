@@ -24,7 +24,7 @@ const ANSI = /\u001b\[[0-?]*[ -/]*[@-~]|\u001b\][^\u0007\u001b]*(?:\u0007|\u001b
 // Stuurtekens (behalve \n en \t), soft hyphen, zero-width en bidi-tekens. Uit codepunten opgebouwd,
 // zodat er geen rauwe onzichtbare tekens in de bron staan.
 const STUUR_BEREIKEN: ReadonlyArray<readonly [number, number]> = [
-  [0, 8], [11, 31], [127, 159], [173, 173], [8203, 8207], [8232, 8238], [8288, 8297], [65279, 65279],
+  [0, 8], [11, 31], [127, 159], [173, 173], [1564, 1564], [6158, 6158], [8203, 8207], [8232, 8238], [8288, 8297], [65279, 65279],
 ];
 const esc = (n: number): string => `\\u${n.toString(16).padStart(4, "0")}`;
 /** Een regex-tekenklasse (als tekst) met alle verboden stuur- en bidi-tekens; ook voor het schema. */

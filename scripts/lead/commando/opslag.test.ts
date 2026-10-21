@@ -1,5 +1,5 @@
 import { afterAll, describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { commandoMap, kloonPad, leesGewoonBestand, MAPPEN, schrijfAtomair, zorgVoorMappen } from "./opslag";
@@ -68,6 +68,49 @@ describe("opslag", () => {
     expect(leesGewoonBestand(groot, 100)).toHaveLength(100);
     writeFileSync(path.join(dir, "standaard.txt"), "x".repeat(64 * 1024 + 1));
     expect(() => leesGewoonBestand(path.join(dir, "standaard.txt"))).toThrow("te groot");
+  });
+
+  test("een symlink als basismap (boven de soortmap) wordt geweigerd", () => {
+    const echt = path.join(dir, "echte-basis");
+    mkdirSync(path.join(echt, "verzoeken"), { recursive: true });
+    writeFileSync(path.join(echt, "verzoeken", "f.json"), "{}");
+    const link = path.join(dir, "link-basis");
+    symlinkSync(echt, link);
+    expect(() => leesGewoonBestand(path.join(link, "verzoeken", "f.json"))).toThrow("symlink");
+  });
+
+  test("een FIFO laat de lezer niet hangen", () => {
+    const fifo = path.join(dir, "pijp");
+    expect(Bun.spawnSync(["mkfifo", fifo]).exitCode).toBe(0);
+    expect(() => leesGewoonBestand(fifo)).toThrow("geen gewoon bestand");
+  });
+
+  test("zorgVoorMappen zet een bestaande, te ruime map alsnog op 700", () => {
+    const basis = path.join(dir, "ruim");
+    zorgVoorMappen(basis);
+    chmodSync(basis, 0o755);
+    chmodSync(path.join(basis, MAPPEN.akkoord), 0o777);
+    zorgVoorMappen(basis);
+    expect(statSync(basis).mode & 0o777).toBe(0o700);
+    expect(statSync(path.join(basis, MAPPEN.akkoord)).mode & 0o777).toBe(0o700);
+  });
+
+  test("schrijfAtomair gebruikt een nieuw tmp-bestand (wx): een bestaand tmp-bestand of symlink wordt niet gevolgd", () => {
+    const basis = path.join(dir, "wx");
+    zorgVoorMappen(basis);
+    const doel = path.join(basis, MAPPEN.verzoeken, "z.json");
+    const buiten = path.join(dir, "buiten-doel.txt");
+    writeFileSync(buiten, "onaangeroerd");
+    const oud = Math.random;
+    Math.random = () => 0.123456789;
+    try {
+      const tmp = `${doel}.tmp.${process.pid}.${(0.123456789).toString(36).slice(2, 8)}`;
+      symlinkSync(buiten, tmp);
+      expect(() => schrijfAtomair(doel, "nieuw")).toThrow();
+    } finally {
+      Math.random = oud;
+    }
+    expect(readFileSync(buiten, "utf8")).toBe("onaangeroerd");
   });
 
   test("een ontbrekend bestand gooit", () => {

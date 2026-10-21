@@ -1,11 +1,11 @@
 import { afterAll, describe, expect, test } from "bun:test";
-import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { MAPPEN, schrijfAtomair, type Akkoord, type Uitslag } from "./commando/opslag";
 import { verzoekHash } from "./commando/schema";
 import {
-  AfwijsFout, alleVerzoeken, dien, duurMs, leesArgs, LimietFout, leesVerzoek, MAX_OPEN_PER_INDIENER, MAX_OPEN_TOTAAL, stand, trekIn, uitslagTekst, VERZOEK_GELDIG_S, wacht,
+  afgewezenRegel, AfwijsFout, alleVerzoeken, dien, OnbekendFout, verzoekPad, duurMs, leesArgs, LimietFout, leesVerzoek, MAX_OPEN_PER_INDIENER, MAX_OPEN_TOTAAL, stand, trekIn, uitslagTekst, VERZOEK_GELDIG_S, wacht,
 } from "./vraag-brian";
 
 const wortel = mkdtempSync(path.join(tmpdir(), "vraag-brian-"));
@@ -117,13 +117,68 @@ describe("stand", () => {
     expect(stand(basis, r.id, NU)).toMatchObject({ stand: "klaar", uitslag: { exit: 0, staart: ["ok"] } });
   });
 
-  test("een onbekend id is open, nooit een fout", () => {
-    expect(stand(nieuweMap(), "bestaat-niet", NU).stand).toBe("open");
+  test("een onbekend of ongeldig id is onbekend, niet open", () => {
+    expect(stand(nieuweMap(), "bestaat-niet", NU).stand).toBe("onbekend");
+    expect(stand(nieuweMap(), "../x", NU).stand).toBe("onbekend");
+  });
+
+  test("een ongeldige uitslag is fout, geen vertrouwd bestand", () => {
+    const basis = nieuweMap();
+    const r = dien2(basis);
+    const pad = path.join(basis, MAPPEN.uitslag, `${r.id}.json`);
+    const slecht: unknown[] = [
+      { versie: 1, id: "ander-id", stand: "klaar", staart: [], tijd: "t" },
+      { versie: 1, id: r.id, stand: "open", staart: [], tijd: "t" },
+      { versie: 1, id: r.id, stand: "klaar", staart: "geen lijst", tijd: "t" },
+      { versie: 1, id: r.id, stand: "klaar", staart: [], tijd: "t", extra: 1 },
+      { versie: 1, id: r.id, stand: "klaar", exit: "0", staart: [], tijd: "t" },
+      "tekst",
+    ];
+    for (const u of slecht) {
+      schrijfAtomair(pad, JSON.stringify(u));
+      expect([u, stand(basis, r.id, NU).stand]).toEqual([u, "fout"]);
+    }
+    schrijfAtomair(pad, "{kapot");
+    expect(stand(basis, r.id, NU).uitslag?.reden).toContain("ongeldige uitslag");
+  });
+
+  test("een verzoek waarvan het id niet bij de bestandsnaam hoort, bestaat niet", () => {
+    const basis = nieuweMap();
+    const r = dien2(basis);
+    const ander = "tak-weg-aaaaaa";
+    schrijfAtomair(path.join(basis, MAPPEN.verzoeken, `${ander}.json`), JSON.stringify(r.verzoek));
+    expect(leesVerzoek(basis, ander)).toBeNull();
+    expect(stand(basis, ander, NU).stand).toBe("onbekend");
+    expect(alleVerzoeken(basis).map((v) => v.id)).toEqual([r.id]);
   });
 
   test("uitslagTekst toont stand, exit, reden en staart", () => {
     expect(uitslagTekst("x-1", { stand: "fout", uitslag: { versie: 1, id: "x-1", stand: "fout", exit: 1, staart: ["a", "b"], reden: "kapot", tijd: "t" } })).toBe("x-1: fout (exit 1) – kapot\na\nb");
     expect(uitslagTekst("x-1", { stand: "open" })).toBe("x-1: open");
+  });
+});
+
+describe("path traversal", () => {
+  const slechteIds = ["../../buiten", "../x", "a/b", "/etc/passwd", "..", "ab", "A-bc", "x\0y", "x.json", "a".repeat(65), ""];
+
+  test("verzoekPad, leesVerzoek en stand lezen nooit buiten de map", () => {
+    const basis = nieuweMap();
+    // een geldig uitziend bestand buiten de commando-map, dat een traversal-id zou kunnen bereiken
+    const buiten = path.join(wortel, "buiten.json");
+    writeFileSync(buiten, JSON.stringify({ versie: 1, id: "buiten", stand: "klaar", staart: ["geheim"], tijd: "t" }));
+    for (const id of slechteIds) {
+      expect(() => verzoekPad(basis, id)).toThrow(OnbekendFout);
+      expect(leesVerzoek(basis, id)).toBeNull();
+      expect([id, stand(basis, id, NU).stand]).toEqual([id, "onbekend"]);
+    }
+  });
+
+  test("trekIn en wacht weigeren een ongeldig id", async () => {
+    const basis = nieuweMap();
+    for (const id of slechteIds) {
+      expect(() => trekIn(basis, id, "cm-kern", NU)).toThrow(OnbekendFout);
+      expect((await wacht(basis, id, 1000, () => NU, async () => {})).stand).toBe("onbekend");
+    }
   });
 });
 
@@ -178,6 +233,30 @@ describe("wacht", () => {
   });
 });
 
+describe("afgewezen.jsonl", () => {
+  const geheim = `${"gh" + "p_"}${"a1".repeat(15)}`;
+
+  test("het argv wordt geredigeerd", () => {
+    const r = JSON.parse(afgewezenRegel(NU, "cm-kern", "lead", "geen soort", { argv: ["curl", "-H", `Authorization: Bearer ${geheim}`, `--token=${geheim}`] }));
+    expect(JSON.stringify(r)).not.toContain(geheim);
+    expect(r.wat.argv[0]).toBe("curl");
+  });
+
+  test("elke regel blijft onder 1 KB, ook met een enorm argv", () => {
+    const regel = afgewezenRegel(NU, "cm-kern", "lead", "r".repeat(5000), { argv: Array.from({ length: 200 }, (_, i) => `argument-${i}-${"x ".repeat(20)}`) });
+    expect(Buffer.byteLength(regel)).toBeLessThan(1024);
+    expect(JSON.parse(regel)).toMatchObject({ t: NU, door: "cm-kern" });
+    expect(Buffer.byteLength(afgewezenRegel(NU, "d", "l", "r", { argv: ["é".repeat(3000)] }))).toBeLessThan(1024);
+  });
+
+  test("dien --droog schrijft ook bij een afwijzing niets", () => {
+    const basis = nieuweMap();
+    expect(() => dien2(basis, { droog: true, params: { tak: "main" } })).toThrow(AfwijsFout);
+    expect(() => dien2(basis, { droog: true, soort: "uitrol", params: {} })).toThrow(AfwijsFout);
+    expect(existsSync(basis)).toBe(false);
+  });
+});
+
 describe("argumenten", () => {
   test("leesArgs: positioneel, --naam waarde, vlaggen en alles na --", () => {
     expect(leesArgs(["tak-weg", "--tak", "lead/x", "--waarom", "w", "--droog"])).toEqual({ pos: ["tak-weg"], o: { tak: "lead/x", waarom: "w", droog: true }, na: null });
@@ -227,7 +306,7 @@ describe("CLI", () => {
     const basis = nieuweMap();
     expect(draai(basis, ["tak-weg", "--tak", "lead/x", "--waarom", "w"], { LAB_AGENT_ROL: "" }).code).toBe(1);
     expect(draai(basis, ["trek-in", "x-123"], { LAB_AGENT_ROL: "" }).code).toBe(1);
-    expect(draai(basis, ["lees", "x-123"], { LAB_AGENT_ROL: "" }).code).toBe(0);
+    expect(draai(basis, ["lees", "x-123"], { LAB_AGENT_ROL: "" }).code).toBe(2); // lezen mag zonder rol; het id is onbekend
     expect(alleVerzoeken(basis)).toEqual([]);
   });
 
@@ -272,6 +351,23 @@ describe("CLI", () => {
     expect(j.argv).toEqual(["bash", "scripts/lead/push.sh", "--verwijder", "lead/x"]);
     expect(j.kaart).toContain("lead/x");
     expect(j.risico).toBe("midden");
+    expect(existsSync(basis)).toBe(false);
+  });
+
+  test("lees/wacht/trek-in met een traversal-id of onbekend id: exit 2, niets gelezen", () => {
+    const basis = nieuweMap();
+    writeFileSync(path.join(wortel, "buiten.json"), JSON.stringify({ versie: 1, id: "buiten", stand: "klaar", staart: ["geheim"], tijd: "t" }));
+    for (const args of [["lees", "../../buiten", "--json"], ["lees", "bestaat-niet"], ["wacht", "../x"], ["wacht", "bestaat-niet", "--max", "1s"], ["trek-in", "../x"], ["trek-in", "bestaat-niet"]]) {
+      const r = draai(basis, args);
+      expect([args, r.code]).toEqual([args, 2]);
+      expect(r.uit + r.fout).not.toContain("geheim");
+    }
+  });
+
+  test("--droog met een argv dat geen soort maakt: exit 2 en niets op schijf", () => {
+    const basis = nieuweMap();
+    expect(draai(basis, ["--waarom", "w", "--droog", "--", "rm", "-rf", "/"]).code).toBe(2);
+    expect(draai(basis, ["uitrol", "--waarom", "w", "--droog"]).code).toBe(2);
     expect(existsSync(basis)).toBe(false);
   });
 

@@ -1,7 +1,7 @@
 // Opslag van de commando-knop: verzoeken, akkoorden, uitslagen en uitvoer als gewone bestanden.
 // Map: ${LAB_COMMANDO:-~/.local/state/lab-commando} (700; bestanden 600). Schrijven is atomair
 // (tmp + rename); lezen weigert symlinks, ook op de map, en te grote bestanden.
-import { closeSync, constants, fstatSync, lstatSync, mkdirSync, openSync, readSync, renameSync, writeFileSync } from "node:fs";
+import { chmodSync, closeSync, constants, fstatSync, lstatSync, mkdirSync, openSync, readSync, renameSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 
@@ -36,24 +36,28 @@ export interface Uitslag {
 }
 
 export function zorgVoorMappen(basis: string = commandoMap()): void {
-  mkdirSync(basis, { recursive: true, mode: 0o700 });
-  for (const m of Object.values(MAPPEN)) mkdirSync(join(basis, m), { recursive: true, mode: 0o700 });
+  // mkdir laat een bestaande map ongemoeid; chmod zet hem alsnog op 700
+  for (const d of [basis, ...Object.values(MAPPEN).map((m) => join(basis, m))]) {
+    mkdirSync(d, { recursive: true, mode: 0o700 });
+    chmodSync(d, 0o700);
+  }
 }
 
 export function schrijfAtomair(pad: string, inhoud: string): void {
   mkdirSync(dirname(pad), { recursive: true, mode: 0o700 });
   const tmp = `${pad}.tmp.${process.pid}.${Math.random().toString(36).slice(2, 8)}`;
-  writeFileSync(tmp, inhoud, { mode: 0o600 });
+  writeFileSync(tmp, inhoud, { mode: 0o600, flag: "wx" });
   renameSync(tmp, pad);
 }
 
 /** Leest een gewoon bestand: geen symlink op het bestand of de map, hooguit `max` bytes. Gooit anders. */
 export function leesGewoonBestand(pad: string, max = 64 * 1024): string {
-  if (lstatSync(dirname(pad)).isSymbolicLink()) throw new Error(`map is een symlink: ${dirname(pad)}`);
+  // de map van het bestand én de basismap erboven (<basis>/<soortmap>/<bestand>) mogen geen symlink zijn
+  for (const d of [dirname(pad), dirname(dirname(pad))]) if (lstatSync(d).isSymbolicLink()) throw new Error(`map is een symlink: ${d}`);
   const l = lstatSync(pad);
   if (l.isSymbolicLink()) throw new Error(`bestand is een symlink: ${pad}`);
   if (!l.isFile()) throw new Error(`geen gewoon bestand: ${pad}`);
-  const fd = openSync(pad, constants.O_RDONLY | constants.O_NOFOLLOW);
+  const fd = openSync(pad, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK); // NONBLOCK: een FIFO laat de open niet hangen
   try {
     const st = fstatSync(fd);
     if (!st.isFile()) throw new Error(`geen gewoon bestand: ${pad}`);

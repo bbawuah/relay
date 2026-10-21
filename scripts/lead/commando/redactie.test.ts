@@ -37,7 +37,7 @@ describe("redigeer", () => {
   });
 
   test("haalt stuur-, bidi- en zero-width-tekens weg, houdt \\n en \\t", () => {
-    const slecht = [0, 7, 127, 0x202e, 0x200b, 0xfeff, 0x2066].map((c) => String.fromCodePoint(c)).join("");
+    const slecht = [0, 7, 127, 0x202e, 0x200b, 0xfeff, 0x2066, 0x061c, 0x180e].map((c) => String.fromCodePoint(c)).join("");
     expect(redigeer(`a${slecht}b\n\tc`)).toBe("ab\n\tc");
   });
 

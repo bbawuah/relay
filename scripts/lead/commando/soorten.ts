@@ -145,13 +145,15 @@ export function soort(id: string, ctx: Pick<Ctx, "test">): Soort | undefined {
 }
 
 /** Mag deze soort nu? Zware soorten niet in het stiltevenster (05:00–07:15). Geeft de reden of null. Voor server en runner. */
-export function stilteReden(soortId: string, ctx: Pick<Ctx, "test">, nu: Date = new Date()): string | null {
-  const s = soort(soortId, ctx);
-  return s ? stilteVoor(s, nu) : null;
+export function stilteReden(s: Soort, ctx: Pick<Ctx, "test">, nu: Date = new Date()): string | null {
+  if (!soort(s.id, ctx)) return `onbekende soort: ${s.id}`;
+  return s.zwaar && inStiltevenster(nu) ? "stiltevenster 05:00–07:15: geen zware runs" : null;
 }
 
-export function stilteVoor(s: Pick<Soort, "zwaar">, nu: Date = new Date()): string | null {
-  return s.zwaar && inStiltevenster(nu) ? "stiltevenster 05:00–07:15: geen zware runs" : null;
+/** Zelfde, op soort-id. Een onbekende soort geeft een reden, nooit null. */
+export function stilteVoor(soortId: string, ctx: Pick<Ctx, "test">, nu: Date = new Date()): string | null {
+  const s = soort(soortId, ctx);
+  return s ? stilteReden(s, ctx, nu) : `onbekende soort: ${soortId}`;
 }
 
 /** De soort waarvan de sjabloon dit argv precies maakt, met de params; anders null. */

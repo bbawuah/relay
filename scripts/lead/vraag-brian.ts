@@ -15,12 +15,12 @@
 // Map: LAB_COMMANDO, anders ~/.local/state/lab-commando. Exit: 0 ok, 2 onbekende soort of verkeerde param
 // (komt in afgewezen.jsonl), 3 geweigerd door een limiet, 1 andere fout.
 import { randomBytes } from "node:crypto";
-import { appendFileSync, readdirSync } from "node:fs";
+import { appendFileSync, existsSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import { type Akkoord, commandoMap, kloonPad, leesGewoonBestand, MAPPEN, schrijfAtomair, type Stand, type Uitslag, zorgVoorMappen } from "./commando/opslag";
 import { redigeer } from "./commando/redactie";
-import { afgeleid, type Ctx, valideerVerzoek, type Verzoek, verzoekHash } from "./commando/schema";
-import { herken, soort, soorten, stilteReden } from "./commando/soorten";
+import { afgeleid, type Ctx, geldigId, valideerUitslag, valideerVerzoek, type Verzoek, verzoekHash } from "./commando/schema";
+import { herken, soort, soorten, stilteVoor } from "./commando/soorten";
 
 export const VERZOEK_GELDIG_S = 24 * 3600;
 export const MAX_OPEN_PER_INDIENER = 5;
@@ -28,6 +28,8 @@ export const MAX_OPEN_TOTAAL = 20;
 
 export class LimietFout extends Error {}
 export class AfwijsFout extends Error {}
+/** Geen of een ongeldig id: exit 2. */
+export class OnbekendFout extends Error {}
 
 export const maakCtx = (env: Record<string, string | undefined> = process.env): Ctx => ({ kloon: kloonPad(), test: !env.TMUX_PWA_LIVE });
 
@@ -41,26 +43,46 @@ function leesJson<T>(pad: string): T | null {
   }
 }
 
-export function verzoekPad(basis: string, id: string): string {
-  return join(basis, MAPPEN.verzoeken, `${id}.json`);
+/** Gooit bij een id dat niet [a-z0-9-]{3,64} is, zodat er nooit een pad uit een ongetoetst id komt. */
+function eisId(id: string): string {
+  if (!geldigId(id)) throw new OnbekendFout(`ongeldig id: ${JSON.stringify(String(id).slice(0, 80))}`);
+  return id;
 }
 
+export function verzoekPad(basis: string, id: string): string {
+  return join(basis, MAPPEN.verzoeken, `${eisId(id)}.json`);
+}
+
+/** Het verzoek met dit id; null als het niet bestaat, niet klopt of een ander id in zich heeft dan de bestandsnaam. */
 export function leesVerzoek(basis: string, id: string): Verzoek | null {
+  if (!geldigId(id)) return null;
   const j = leesJson<unknown>(verzoekPad(basis, id));
   try {
-    return j ? valideerVerzoek(j) : null;
+    const v = j ? valideerVerzoek(j) : null;
+    return v && v.id === id ? v : null;
   } catch {
     return null;
   }
 }
 
-export function stand(basis: string, id: string, nu: number): { stand: Stand; uitslag?: Uitslag } {
-  const u = leesJson<Uitslag>(join(basis, MAPPEN.uitslag, `${id}.json`));
-  if (u) return { stand: u.stand, uitslag: u };
+export type StandOfOnbekend = Stand | "onbekend";
+
+/** De stand van een verzoek. "onbekend" als er geen verzoek, akkoord of uitslag bij dit id is (of het id ongeldig is). */
+export function stand(basis: string, id: string, nu: number): { stand: StandOfOnbekend; uitslag?: Uitslag } {
+  if (!geldigId(id)) return { stand: "onbekend" };
+  const uPad = join(basis, MAPPEN.uitslag, `${id}.json`);
+  if (existsSync(uPad)) {
+    try {
+      const u = valideerUitslag(JSON.parse(leesGewoonBestand(uPad)), id);
+      return { stand: u.stand, uitslag: u };
+    } catch (e) {
+      return { stand: "fout", uitslag: { versie: 1, id, stand: "fout", staart: [], reden: `ongeldige uitslag: ${(e as Error).message}`.slice(0, 500), tijd: new Date(nu).toISOString() } };
+    }
+  }
   if (leesJson<Akkoord>(join(basis, MAPPEN.akkoord, `${id}.json`))) return { stand: "bezig" };
   const v = leesVerzoek(basis, id);
-  if (v && nuS(nu) >= v.verlooptS) return { stand: "verlopen" };
-  return { stand: "open" };
+  if (!v) return { stand: "onbekend" };
+  return nuS(nu) >= v.verlooptS ? { stand: "verlopen" } : { stand: "open" };
 }
 
 export function alleVerzoeken(basis: string): Verzoek[] {
@@ -76,9 +98,34 @@ export function alleVerzoeken(basis: string): Verzoek[] {
   });
 }
 
-function afwijzen(basis: string, nu: number, door: string, lead: string, reden: string, wat: unknown): never {
-  zorgVoorMappen(basis);
-  appendFileSync(join(basis, "afgewezen.jsonl"), `${JSON.stringify({ t: nu, door, lead, reden, wat })}\n`, { mode: 0o600 });
+const MAX_AFGEWEZEN_BYTES = 1024;
+
+/** Alle teksten in `x` door de redactie (het argv van een afgewezen verzoek kan een geheim bevatten). */
+function redigeerDiep(x: unknown): unknown {
+  if (typeof x === "string") return redigeer(x);
+  if (Array.isArray(x)) return x.map(redigeerDiep);
+  if (x && typeof x === "object") return Object.fromEntries(Object.entries(x).map(([k, v]) => [redigeer(k), redigeerDiep(v)]));
+  return x;
+}
+
+/** Eén regel voor afgewezen.jsonl: geredigeerd en hooguit 1 KB (`wat` wordt dan een afgekapte tekst). */
+export function afgewezenRegel(nu: number, door: string, lead: string, reden: string, wat: unknown): string {
+  const kop = { t: nu, door: redigeer(door), lead: redigeer(lead), reden: redigeer(reden).slice(0, 300) };
+  const regel = JSON.stringify({ ...kop, wat: redigeerDiep(wat) });
+  if (Buffer.byteLength(regel) < MAX_AFGEWEZEN_BYTES) return regel;
+  let w = JSON.stringify(redigeerDiep(wat));
+  for (;;) {
+    const r = JSON.stringify({ ...kop, wat: w });
+    if (Buffer.byteLength(r) < MAX_AFGEWEZEN_BYTES || w.length === 0) return r;
+    w = w.slice(0, Math.max(0, w.length - Math.max(1, Math.ceil((Buffer.byteLength(r) - MAX_AFGEWEZEN_BYTES) / 2))));
+  }
+}
+
+function afwijzen(basis: string, nu: number, door: string, lead: string, reden: string, wat: unknown, droog = false): never {
+  if (!droog) {
+    zorgVoorMappen(basis);
+    appendFileSync(join(basis, "afgewezen.jsonl"), `${afgewezenRegel(nu, door, lead, reden, wat)}\n`, { mode: 0o600 });
+  }
   throw new AfwijsFout(reden);
 }
 
@@ -98,7 +145,7 @@ export interface Indienen {
 export function dien(i: Indienen): { id: string; verzoek: Verzoek; hash: string; nieuw: boolean } {
   const wat = { soort: i.soort, params: i.params };
   const s = soort(i.soort, i.ctx);
-  if (!s) return afwijzen(i.basis, i.nu, i.door, i.lead, `onbekende soort: ${i.soort}`, wat);
+  if (!s) return afwijzen(i.basis, i.nu, i.door, i.lead, `onbekende soort: ${i.soort}`, wat, i.droog);
   const maakId = () => `${s.id}-${randomBytes(3).toString("hex")}`;
   const v: Verzoek = {
     versie: 1, id: maakId(), soort: s.id, params: i.params, waarom: i.waarom, door: i.door, lead: i.lead,
@@ -109,7 +156,7 @@ export function dien(i: Indienen): { id: string; verzoek: Verzoek; hash: string;
     valideerVerzoek(v);
     hash = verzoekHash(v, i.ctx);
   } catch (e) {
-    return afwijzen(i.basis, i.nu, i.door, i.lead, (e as Error).message, wat);
+    return afwijzen(i.basis, i.nu, i.door, i.lead, (e as Error).message, wat, i.droog);
   }
   const bestaand = alleVerzoeken(i.basis);
   const open = bestaand.filter((b) => stand(i.basis, b.id, i.nu).stand === "open");
@@ -128,8 +175,9 @@ export function dien(i: Indienen): { id: string; verzoek: Verzoek; hash: string;
 
 /** Trekt een eigen, nog open verzoek in (schrijft een uitslag, zodat de runner het nooit uitvoert). */
 export function trekIn(basis: string, id: string, door: string, nu: number): void {
+  eisId(id);
   const v = leesVerzoek(basis, id);
-  if (!v) throw new Error(`onbekend verzoek: ${id}`);
+  if (!v) throw new OnbekendFout(`onbekend verzoek: ${id}`);
   if (v.door !== door) throw new Error(`${id} is van ${v.door}, niet van ${door}`);
   const st = stand(basis, id, nu).stand;
   if (st !== "open") throw new Error(`${id} staat op ${st}; intrekken kan alleen zolang het open is`);
@@ -137,10 +185,10 @@ export function trekIn(basis: string, id: string, door: string, nu: number): voi
   schrijfAtomair(join(basis, MAPPEN.uitslag, `${id}.json`), `${JSON.stringify(u, null, 2)}\n`);
 }
 
-const EINDSTANDEN: Stand[] = ["geweigerd", "klaar", "fout", "verlopen"];
+const EINDSTANDEN: StandOfOnbekend[] = ["geweigerd", "klaar", "fout", "verlopen", "onbekend"];
 
-/** Blokkeert tot er een uitslag is (of de tijd om is). `slaap` en `nu` zijn injecteerbaar voor tests. */
-export async function wacht(basis: string, id: string, maxMs: number, nu: () => number = Date.now, slaap: (ms: number) => Promise<void> = (ms) => Bun.sleep(ms)): Promise<{ stand: Stand; uitslag?: Uitslag; teLaat: boolean }> {
+/** Blokkeert tot er een uitslag is (of de tijd om is); een onbekend id is meteen een eindstand. `slaap` en `nu` zijn injecteerbaar voor tests. */
+export async function wacht(basis: string, id: string, maxMs: number, nu: () => number = Date.now, slaap: (ms: number) => Promise<void> = (ms) => Bun.sleep(ms)): Promise<{ stand: StandOfOnbekend; uitslag?: Uitslag; teLaat: boolean }> {
   const start = nu();
   for (;;) {
     const s = stand(basis, id, nu());
@@ -184,9 +232,9 @@ function soortenTekst(ctx: Ctx): string {
     Object.entries(s.params).map(([k, r]) => `    --${k}  ${r}`).join("\n")).join("\n");
 }
 
-export function uitslagTekst(id: string, s: { stand: Stand; uitslag?: Uitslag }): string {
+export function uitslagTekst(id: string, s: { stand: StandOfOnbekend; uitslag?: Uitslag }): string {
   const u = s.uitslag;
-  return [`${id}: ${s.stand}${u?.exit !== undefined ? ` (exit ${u.exit})` : ""}${u?.reden ? ` – ${redigeer(u.reden)}` : ""}`, ...(u?.staart ?? [])].join("\n");
+  return [`${redigeer(id).slice(0, 80)}: ${s.stand}${u?.exit !== undefined ? ` (exit ${u.exit})` : ""}${u?.reden ? ` – ${redigeer(u.reden)}` : ""}`, ...(u?.staart ?? [])].join("\n");
 }
 
 async function main(argv: string[]): Promise<number> {
@@ -202,14 +250,14 @@ async function main(argv: string[]): Promise<number> {
   if (cmd === "lees") {
     if (!pos[1]) throw new Error("gebruik: lees <id> [--json]");
     const s = stand(basis, pos[1], nu);
-    console.log(o.json ? JSON.stringify({ id: pos[1], ...s }) : uitslagTekst(pos[1], s));
-    return 0;
+    console.log(o.json ? JSON.stringify({ id: redigeer(pos[1]).slice(0, 80), ...s }) : uitslagTekst(pos[1], s));
+    return s.stand === "onbekend" ? 2 : 0;
   }
   if (cmd === "wacht") {
     if (!pos[1]) throw new Error("gebruik: wacht <id> [--max 30m]");
     const r = await wacht(basis, pos[1], duurMs(typeof o.max === "string" ? o.max : "30m"));
     console.log(uitslagTekst(pos[1], r));
-    return r.teLaat ? 1 : r.stand === "klaar" ? 0 : 1;
+    return r.stand === "onbekend" ? 2 : r.teLaat ? 1 : r.stand === "klaar" ? 0 : 1;
   }
   const rol = process.env.LAB_AGENT_ROL;
   const naam = process.env.LAB_AGENT_NAAM || process.env.LAB_LEAD_NAAM || "";
@@ -231,7 +279,7 @@ async function main(argv: string[]): Promise<number> {
     const h = herken(na, ctx);
     if (!h) {
       try {
-        afwijzen(basis, nu, door, lead, "geen soort maakt dit argv", { argv: na });
+        afwijzen(basis, nu, door, lead, "geen soort maakt dit argv", { argv: na }, o.droog === true);
       } catch {
         // de melding volgt hieronder
       }
@@ -251,7 +299,7 @@ async function main(argv: string[]): Promise<number> {
     if (o.droog) {
       const s = soort(soortId, ctx)!;
       const a = afgeleid(r.verzoek, ctx);
-      console.log(JSON.stringify({ verzoek: r.verzoek, hash: r.hash, kaart: s.wat(params), argv: a.argv, cwd: a.cwd, risico: s.risico, stilte: stilteReden(soortId, ctx) }, null, 2));
+      console.log(JSON.stringify({ verzoek: r.verzoek, hash: r.hash, kaart: s.wat(params), argv: a.argv, cwd: a.cwd, risico: s.risico, stilte: stilteVoor(soortId, ctx) }, null, 2));
     } else console.log(r.id);
     return 0;
   } catch (e) {
@@ -271,8 +319,8 @@ if (import.meta.main) {
   main(process.argv.slice(2)).then(
     (c) => process.exit(c),
     (e) => {
-      console.error((e as Error).message);
-      process.exit(1);
+      console.error(redigeer((e as Error).message));
+      process.exit(e instanceof OnbekendFout ? 2 : 1);
     },
   );
 }

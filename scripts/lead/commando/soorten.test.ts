@@ -122,19 +122,29 @@ describe("herken", () => {
 });
 
 describe("stiltevenster", () => {
-  test("fase 1 heeft geen zware soort, dus nooit een reden; een onbekende soort ook niet", () => {
-    for (const nu of ["2026-10-21T04:59:00+02:00", "2026-10-21T05:00:00+02:00", "2026-10-21T07:14:00+02:00", "2026-10-21T07:15:00+02:00"]) {
-      expect(stilteReden("tak-weg", ctx, new Date(nu))).toBeNull();
-    }
-    expect(stilteReden("bestaat-niet", ctx, new Date("2026-10-21T06:00:00+02:00"))).toBeNull();
+  const takWeg = soort("tak-weg", ctx)!;
+  const zwaar = { ...takWeg, zwaar: true };
+  const tijd = (s: typeof takWeg, t: string) => stilteReden(s, ctx, new Date(`2026-10-21T${t}:00+02:00`));
+
+  test("een niet-zware soort heeft nooit een reden", () => {
+    for (const t of ["04:59", "05:00", "06:00", "07:14", "07:15"]) expect(tijd(takWeg, t)).toBeNull();
   });
 
   test("een zware soort mag niet van 05:00 tot 07:15 (Amsterdam)", () => {
-    const tijd = (t: string) => stilteVoor({ zwaar: true }, new Date(`2026-10-21T${t}:00+02:00`));
-    expect(tijd("04:59")).toBeNull();
-    expect(tijd("05:00")).toContain("stiltevenster");
-    expect(tijd("07:14")).toContain("stiltevenster");
-    expect(tijd("07:15")).toBeNull();
-    expect(stilteVoor({ zwaar: false }, new Date("2026-10-21T06:00:00+02:00"))).toBeNull();
+    expect(tijd(zwaar, "04:59")).toBeNull();
+    expect(tijd(zwaar, "05:00")).toContain("stiltevenster");
+    expect(tijd(zwaar, "07:14")).toContain("stiltevenster");
+    expect(tijd(zwaar, "07:15")).toBeNull();
+  });
+
+  test("een soort die niet in de allowlist staat geeft een reden, nooit null", () => {
+    expect(tijd({ ...takWeg, id: "bestaat-niet" }, "12:00")).toContain("onbekende soort");
+    expect(stilteReden(soort("proef-echo", ctx)!, live)).toContain("onbekende soort");
+  });
+
+  test("stilteVoor op soort-id: onbekend geeft een reden", () => {
+    expect(stilteVoor("bestaat-niet", ctx)).toContain("onbekende soort");
+    expect(stilteVoor("tak-weg", ctx, new Date("2026-10-21T06:00:00+02:00"))).toBeNull();
   });
 });
+
