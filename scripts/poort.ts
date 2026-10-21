@@ -30,14 +30,15 @@
 // ds-regels.ts); een uitzondering die niets meer dekt is ook FOUT.
 //
 // Affected betekent: geraakt door de diff tussen de merge-base met --base en de
-// werkkopie (ook niet-gecommitte wijzigingen). Standaard is de base `main`; sta
-// je zelf op main (na een merge), dan `origin/main`: dan controleert de poort
-// precies wat je gaat pushen.
+// werkkopie (ook niet-gecommitte wijzigingen). Standaard is de base `origin/main`
+// (ook als je zelf op main staat: dan controleert de poort precies wat je gaat
+// pushen); alleen zonder origin/main de lokale `main`. Een lokale main die
+// achterloopt (de hoofdcheckout naast een worktree) bepaalt de base dus niet.
 //
 // Opties:
 //   --alles          geen affected: alle workspaces
 //   --zonder-e2e     de e2e-stap overslaan (= bun run check, de pre-push-hook)
-//   --base <ref>     vergelijk met deze ref in plaats van main
+//   --base <ref>     vergelijk met deze ref in plaats van origin/main
 //   --ci             voor .github/workflows/ci.yml: sla de taken over die in
 //                    uitzonderingen.ci van de baseline staan (alleen op de mini)
 //   --alleen <s,…>   alleen deze stappen (sherif,boundaries,ds-regels,werk-commentaar,echte-klok,git-scrub,test-tenant,test-integriteit,rood-op-basis,scripts-tests,python-tests,biome,taken,build,e2e)
@@ -502,15 +503,17 @@ export async function stapE2e(ctx: Context, dep: E2eAfhankelijk = {}): Promise<R
 
 // ── Base ────────────────────────────────────────────────────────────────────
 
-function kiesBase(gevraagd: string | null): { ref: string; sha: string } {
+/**
+ * De base voor affected: `--base` als die gegeven is, anders origin/main als die bestaat, anders de
+ * lokale main. Niet de lokale main als origin/main er is: in een worktree loopt die vaak achter (de
+ * hoofdcheckout wordt niet bijgewerkt), en dan telt alles wat sindsdien op main kwam als gewijzigd.
+ */
+export function kiesBase(gevraagd: string | null, cwd = ROOT): { ref: string; sha: string } {
   let ref = gevraagd ?? "main";
-  if (!gevraagd) {
-    const head = git("rev-parse", "HEAD");
-    const main = draai(["git", "rev-parse", "--verify", "-q", "main^{commit}"]).uit.trim();
-    const origin = draai(["git", "rev-parse", "--verify", "-q", "origin/main^{commit}"]).uit.trim();
-    if (main === head && origin) ref = "origin/main";
-  }
-  return { ref, sha: git("merge-base", ref, "HEAD") };
+  if (!gevraagd && draai(["git", "rev-parse", "--verify", "-q", "origin/main^{commit}"], {}, cwd).uit.trim()) ref = "origin/main";
+  const r = draai(["git", "merge-base", ref, "HEAD"], {}, cwd);
+  if (r.code !== 0) throw new Error(`git merge-base ${ref} HEAD: ${r.uit.trim()}`);
+  return { ref, sha: r.uit.trim() };
 }
 
 // ── Poort ───────────────────────────────────────────────────────────────────
