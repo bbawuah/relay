@@ -14,6 +14,7 @@ const NIET_IN_LAB: Record<string, string> = {
   "scripts/e2e-slot.ts": "poorthulp, gebruikt door poort.ts",
   "scripts/echte-klok.ts": "poortstap, draait via `bun lab poort`",
   "scripts/git-scrub.ts": "poortstap, draait via `bun lab poort`",
+  "scripts/poort-log.ts": "poorthulp (logbestand van de run), gebruikt door poort.ts",
   "scripts/rood-op-basis.ts": "poortstap, draait via `bun lab poort`",
   "scripts/test-integriteit.ts": "poortstap, draait via `bun lab poort`",
   "scripts/test-tenant.ts": "poortstap, draait via `bun lab poort`",
