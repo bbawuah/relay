@@ -4,7 +4,7 @@ import { describe, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { type Context, draai, geenStempel, gewijzigdeBestanden, geenStempelMelding, leesDryTaken, schrijfStempel, scriptsTestsOverslaan, stapE2e, stapScriptsTests, stempelOvergeslagen, type Uitkomst } from "./poort";
+import { type Context, draai, geenStempel, gewijzigdeBestanden, geenStempelMelding, leesDryTaken, leesTscFouten, schrijfStempel, scriptsTestsOverslaan, stapE2e, stapScriptsTests, stapScriptsTypen, stempelOvergeslagen, type Uitkomst } from "./poort";
 import { isVeilig, SCRIPTS_TESTS_VEILIG } from "./scripts-tests-veilig";
 
 const PLAN = JSON.stringify({ tasks: [{ task: "e2e", package: "@lab-bawuah/tmux", command: "bun run test:tmux" }] }, null, 2);
@@ -390,5 +390,81 @@ describe("schrijfStempel: een niet-schrijfbare map is geen crash", () => {
     } finally {
       rmSync(tmp, { recursive: true, force: true });
     }
+  });
+});
+
+describe("leesTscFouten en stapScriptsTypen: typecheck van scripts/ draait mee met scripts-tests", () => {
+  const uit = (code: number, tekst: string): Uitkomst => ({ code, uit: tekst, stdout: tekst });
+  const tsc = [
+    "scripts/poort.ts(284,38): error TS2345: Argument of type '{ code: number; }' is not assignable to parameter of type 'Uitkomst'.",
+    "  Property 'stdout' is missing in type '{ code: number; }' but required in type 'Uitkomst'.",
+    "apps/storybook/scripts/diff.ts(22,19): error TS2709: Cannot use namespace 'PNG' as a type.",
+    "",
+  ].join("\n");
+  const nep = (gewijzigd: () => string[], r: Uitkomst) => {
+    const aanroepen = { draai: 0, cmd: [] as string[] };
+    const deps = {
+      gewijzigd,
+      draai: (c: string[]) => {
+        aanroepen.draai++;
+        aanroepen.cmd = c;
+        return r;
+      },
+    };
+    return { aanroepen, deps };
+  };
+  const o = { alles: false, ci: false };
+  const veilig = `${SCRIPTS_TESTS_VEILIG[0]}a.ts`;
+
+  test("leesTscFouten: bestand, regel, code en melding; vervolgregels vallen weg", () => {
+    expect(leesTscFouten(tsc)).toEqual([
+      { bestand: "scripts/poort.ts", regel: 284, code: "TS2345", melding: "Argument of type '{ code: number; }' is not assignable to parameter of type 'Uitkomst'." },
+      { bestand: "apps/storybook/scripts/diff.ts", regel: 22, code: "TS2709", melding: "Cannot use namespace 'PNG' as a type." },
+    ]);
+    expect(leesTscFouten("")).toEqual([]);
+  });
+  test("een typefout geeft FOUT met bestand:regel in de uitleg", () => {
+    const { aanroepen, deps } = nep(() => ["scripts/poort.ts"], uit(2, tsc));
+    const r = stapScriptsTypen(o, () => "abc", deps);
+    expect(r.status).toBe("FOUT");
+    expect(r.detail).toMatch(/2 typefouten/);
+    expect(r.uitleg).toContain("scripts/poort.ts:284 TS2345");
+    expect(aanroepen.cmd).toContain("scripts/tsconfig.json");
+  });
+  test("exit 0: OK", () => {
+    const { deps } = nep(() => ["scripts/x.ts"], uit(0, ""));
+    expect(stapScriptsTypen(o, () => "abc", deps).status).toBe("OK");
+  });
+  test("tsc faalt zonder leesbare fouten (bijv. ontbrekende tsconfig): FOUT met de uitvoer", () => {
+    const { deps } = nep(() => ["scripts/x.ts"], uit(1, "error TS5058: The specified path does not exist"));
+    const r = stapScriptsTypen(o, () => "abc", deps);
+    expect(r.status).toBe("FOUT");
+    expect(r.detail).toContain("tsc faalde");
+    expect(r.uitleg).toContain("TS5058");
+  });
+  test("SKIPt mee met scripts-tests: diff alleen onder de allowlist, zelfde reden, tsc draait niet", () => {
+    const { aanroepen, deps } = nep(() => [veilig], uit(2, tsc));
+    const r = stapScriptsTypen(o, () => "abc", deps);
+    expect(r.status).toBe("SKIP");
+    expect(r.detail).toBe(stapScriptsTests(o, () => "abc", nep(() => [veilig], uit(0, "")).deps).detail);
+    expect(aanroepen.draai).toBe(0);
+  });
+  const draaitMee: [string, { alles: boolean; ci: boolean }, () => string[]][] = [
+    ["onbekend pad", o, () => ["apps/a.ts"]],
+    ["lege diff", o, () => []],
+    [
+      "git-fout",
+      o,
+      () => {
+        throw new Error("git diff: kapot");
+      },
+    ],
+    ["--alles", { alles: true, ci: false }, () => [veilig]],
+    ["--ci", { alles: false, ci: true }, () => [veilig]],
+  ];
+  test.each(draaitMee)("draait mee met scripts-tests: %s", (_naam, opt, diff) => {
+    const { aanroepen, deps } = nep(diff, uit(0, ""));
+    expect(stapScriptsTypen(opt, () => "abc", deps).status).toBe("OK");
+    expect(aanroepen.draai).toBe(1);
   });
 });
