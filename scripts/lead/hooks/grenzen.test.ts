@@ -1,4 +1,4 @@
-import { afterAll, describe, expect, test } from "bun:test";
+import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -28,6 +28,21 @@ function draai(invoer: unknown, hook = HOOK) {
   return { code: p.exitCode, stderr: p.stderr.toString() };
 }
 const bash = (command: string, hook = HOOK) => draai({ tool_name: "Bash", tool_input: { command } }, hook);
+// Elke hook-aanroep is een eigen bash-proces (met jq en git erin): ~0,1 s onbelast, een veelvoud onder
+// machinebelasting. Voor de vaste lijsten WEIGER/DOOR/CASES (puur commandotekst, vaste cwd EIGEN_TAK, geen
+// bestanden) hangt de uitkomst alleen van (hook, commando) af: de eigenschapstest hergebruikt wat de losse
+// weiger-/doortests al draaiden in plaats van dezelfde aanroep nog eens te starten.
+const UITKOMST = new Map<string, ReturnType<typeof draai>>();
+const bashVast = (command: string, hook = HOOK) => {
+  const sleutel = `${hook}\0${command}`;
+  let r = UITKOMST.get(sleutel);
+  if (!r) UITKOMST.set(sleutel, (r = bash(command, hook)));
+  return r;
+};
+// Tests die meerdere hook-processen achter elkaar starten krijgen een ruime tijdgrens: het proces is
+// het onderwerp van de test, en de standaard van 5 s past bij werk zonder subproces.
+// echte-klok: tijdgrens voor subprocessen, geen wachttijd; onder belasting duurt een spawn seconden
+const RUIM = 60_000;
 
 const WEIGER = [
   "./scripts/uitrollen.sh",
@@ -223,18 +238,18 @@ const CASES = (() => {
 describe("grenzen.sh", () => {
   for (const c of WEIGER)
     test(`weigert ${JSON.stringify(c)}`, () => {
-      const r = bash(c);
+      const r = bashVast(c);
       expect(r.code).toBe(2);
       expect(r.stderr).toContain("Geweigerd door grenzen.sh");
     });
   for (const c of DOOR)
     test(`laat door ${JSON.stringify(c)}`, () => {
-      expect(bash(c).code).toBe(0);
+      expect(bashVast(c).code).toBe(0);
     });
   test("eigenschap: nieuw laat alleen door wat oud ook doorliet, of wat in de witte lijst valt", () => {
     const alle = [...WEIGER, ...DOOR, ...CASES];
     expect(alle.length).toBeGreaterThan(40);
-    const schendingen = alle.filter((c) => bash(c, OUD).code === 2 && bash(c).code !== 2 && !WITTE_LIJST.test(c));
+    const schendingen = alle.filter((c) => bashVast(c, OUD).code === 2 && bashVast(c).code !== 2 && !WITTE_LIJST.test(c));
     expect(schendingen).toEqual([]);
   }, 120_000);
   test("een rauwe push of ssh jump … oc verwijst naar het smalle script", () => {
@@ -243,7 +258,7 @@ describe("grenzen.sh", () => {
     expect(bash("git push origin main").stderr).toContain("via een PR");
     expect(bash("POORT_OVERSLAAN=1 git push").stderr).toContain("alleen Brian");
     expect(bash("ssh jump oc get pods").stderr).toContain("scripts/lead/lab-lees.sh");
-  });
+  }, RUIM);
   test("Read van een sleutelbestand wordt geweigerd, .example mag", () => {
     expect(draai({ tool_name: "Read", tool_input: { file_path: "/h/.config/klaarover/token" } }).code).toBe(2);
     expect(draai({ tool_name: "Read", tool_input: { file_path: "/h/x/.env" } }).code).toBe(2);
@@ -285,7 +300,7 @@ describe("grenzen.sh", () => {
     expect(r.code).toBe(2);
     expect(r.stderr).toContain("force-push mag niet");
     expect(bash(`echo ${"x".repeat(300_000)}`).code).toBe(0);
-  });
+  }, RUIM);
 });
 
 describe("grenzen.sh: merge.sh vanuit een subagent", () => {
@@ -324,36 +339,33 @@ describe("grenzen.sh: rauwe merge zodra LAB_GRENS_MERGE=1", () => {
 });
 
 describe("grenzen.sh: push zonder doeltak op main", () => {
-  const repo = (tak: string) => {
-    const map = mkdtempSync(join(tmpdir(), "grenzen-repo-"));
-    Bun.spawnSync(["git", "init", "-q", "-b", tak, map], { env: schoneEnv() });
-    return map;
-  };
+  // De drie repo's worden één keer gemaakt (het lezen van de huidige tak verandert niets aan ze), niet per test.
+  const MAPPEN = new Map<string, string>();
+  beforeAll(() => {
+    for (const tak of ["main", "master", "lead/x"]) {
+      const map = mkdtempSync(join(tmpdir(), "grenzen-repo-"));
+      Bun.spawnSync(["git", "init", "-q", "-b", tak, map], { env: schoneEnv() });
+      MAPPEN.set(tak, map);
+    }
+  });
+  afterAll(() => {
+    for (const map of MAPPEN.values()) rmSync(map, { recursive: true, force: true });
+  });
+  const push = (command: string, cwd: string) => draai({ tool_name: "Bash", tool_input: { command }, cwd }).code;
   test("weigert `git push` en `git push origin HEAD` als de huidige tak main of master is", () => {
     for (const tak of ["main", "master"]) {
-      const map = repo(tak);
-      try {
-        for (const c of ["git push", "git push origin", "git push origin HEAD", "git push -u origin +HEAD"]) {
-          const r = draai({ tool_name: "Bash", tool_input: { command: c }, cwd: map });
-          expect(r.code).toBe(2);
-        }
-        expect(draai({ tool_name: "Bash", tool_input: { command: `cd ${map} && git push` }, cwd: "/" }).code).toBe(2);
-        expect(draai({ tool_name: "Bash", tool_input: { command: `git -C ${map} push` }, cwd: "/" }).code).toBe(2);
-        expect(draai({ tool_name: "Bash", tool_input: { command: "git push origin lead/x" }, cwd: map }).code).toBe(0);
-      } finally {
-        rmSync(map, { recursive: true, force: true });
-      }
+      const map = MAPPEN.get(tak) as string;
+      for (const c of ["git push", "git push origin", "git push origin HEAD", "git push -u origin +HEAD"]) expect(push(c, map)).toBe(2);
+      expect(push(`cd ${map} && git push`, "/")).toBe(2);
+      expect(push(`git -C ${map} push`, "/")).toBe(2);
+      expect(push("git push origin lead/x", map)).toBe(0);
     }
-  });
+  }, RUIM);
   test("laat `git push` door op een eigen tak", () => {
-    const map = repo("lead/x");
-    try {
-      expect(draai({ tool_name: "Bash", tool_input: { command: "git push" }, cwd: map }).code).toBe(0);
-      expect(draai({ tool_name: "Bash", tool_input: { command: "git push origin HEAD" }, cwd: map }).code).toBe(0);
-    } finally {
-      rmSync(map, { recursive: true, force: true });
-    }
-  });
+    const map = MAPPEN.get("lead/x") as string;
+    expect(push("git push", map)).toBe(0);
+    expect(push("git push origin HEAD", map)).toBe(0);
+  }, RUIM);
 });
 
 describe("grenzen.sh: here-doc-berichten", () => {
@@ -363,7 +375,7 @@ describe("grenzen.sh: here-doc-berichten", () => {
     expect(bash(`git commit -q -m "$(cat <<'EOF'\nlead: x\n\nssh jump oc get pods ging via lab-lees.sh\nEOF\n)"`).code).toBe(0);
     expect(bash(`git commit -m "$(cat <<EOF\nlead: x, git push -f is verboden\nEOF\n)"`).code).toBe(0);
     expect(bash(`gh pr comment 1 --body "$(cat <<'EOF'\nuitrollen.sh via Brian\nEOF\n)"`).code).toBe(0);
-  });
+  }, RUIM);
   test("ook met een kop `cd x && …` of `git -C x commit`", () => {
     expect(bash(`cd /tmp/wt && ${PR}`).code).toBe(0);
     expect(bash(`git -C /tmp/wt commit -m "$(cat <<'EOF'\nlead: x\n\ngit push --force staat alleen in de tekst\nEOF\n)"`).code).toBe(0);
@@ -371,11 +383,11 @@ describe("grenzen.sh: here-doc-berichten", () => {
     // twee koppen of iets anders dan cd ervoor blijft streng
     expect(bash(`./uitrollen.sh && ${PR}`).code).toBe(2);
     expect(bash(`cd a && cd b && git commit -m "$(cat <<'EOF'\n./uitrollen.sh\nEOF\n)"`).code).toBe(2);
-  });
+  }, RUIM);
   test("wat na de here-doc komt, wordt nog getoetst", () => {
     expect(bash(`${PR} && ./uitrollen.sh`).code).toBe(2);
     expect(bash(`${PR}; git push --force`).code).toBe(2);
-  });
+  }, RUIM);
   test("streng bij twijfel", () => {
     // ongequote marker met $( in de tekst: wordt echt uitgevoerd
     expect(bash(`git commit -m "$(cat <<EOF\n$(./uitrollen.sh)\nEOF\n)"`).code).toBe(2);
@@ -384,7 +396,7 @@ describe("grenzen.sh: here-doc-berichten", () => {
     // iets onduidelijks vóór de here-doc
     expect(bash(`echo $(./uitrollen.sh) | gh pr create --body "$(cat <<'EOF'\na\nEOF\n)"`).code).toBe(2);
     expect(bash(`./uitrollen.sh; gh pr create --body "$(cat <<'EOF'\na\nEOF\n)"`).code).toBe(2);
-  });
+  }, RUIM);
 });
 
 describe("grenzen.sh: grootte van vaultnotities", () => {
@@ -808,14 +820,14 @@ describe("grenzen.sh: geen schrijvende commando's in de hoofdcheckout", () => {
   test("een cd weg en terug telt per segment", () => {
     expect(run(`cd ${CLONE} && cd ${HOOFD} && git fetch`, WORKTREE).code).toBe(2);
     expect(run(`cd ${HOOFD} && cd ${CLONE} && git fetch`, WORKTREE).code).toBe(0);
-  });
+  }, RUIM);
   test("een linked worktree als cwd mag alles", () => {
     for (const c of ["git fetch", "git checkout -b x", "pre-commit run --all-files", "bun install", "prettier --write ."])
       expect(run(c, WORKTREE).code).toBe(0);
-  });
+  }, RUIM);
   test("een clone als cwd mag alles", () => {
     for (const c of ["git fetch", "pre-commit run --all-files", "bun install"]) expect(run(c, CLONE).code).toBe(0);
-  });
+  }, RUIM);
   test("een submap van een linked worktree mag", () => {
     expect(run("git fetch", join(WORKTREE, "sub")).code).toBe(0);
   });
@@ -828,23 +840,23 @@ describe("grenzen.sh: geen schrijvende commando's in de hoofdcheckout", () => {
   test("de lead mag wel in de hoofdcheckout", () => {
     expect(run("git fetch", HOOFD, {}, "lead").code).toBe(0);
     expect(run("pre-commit run --all-files", HOOFD, {}, "lead").code).toBe(0);
-  });
+  }, RUIM);
   test("zonder LAB_AGENT_ROL en zonder subagent-velden (Brian) mag het", () => {
     expect(run("git fetch", HOOFD, {}, null).code).toBe(0);
   });
   test("elke andere rol (sublead, vervolg, agent) wordt geweigerd", () => {
     for (const rol of ["sublead", "vervolg", "agent"]) expect(run("git fetch", HOOFD, {}, rol).code).toBe(2);
-  });
+  }, RUIM);
   test("een subagent of fork wordt geweigerd, ook als de rol lead erft of ontbreekt", () => {
     expect(run("git fetch", HOOFD, { agent_id: "a1" }, "lead").code).toBe(2);
     expect(run("git fetch", HOOFD, { agent_type: "general-purpose" }, null).code).toBe(2);
     expect(run("git fetch", WORKTREE, { agent_id: "a1" }, "lead").code).toBe(0);
-  });
+  }, RUIM);
   test("de melding noemt het commando, de map en wat te doen", () => {
     const m = run("pre-commit run --all-files", HOOFD).stderr;
     expect(m).toContain("`pre-commit`");
     expect(m).toContain(HOOFD);
     expect(m).toContain("eigen worktree of clone");
     expect(m).toContain("absoluut pad");
-  });
+  }, RUIM);
 });
