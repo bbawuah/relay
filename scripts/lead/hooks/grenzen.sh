@@ -795,7 +795,12 @@ if tool == "Bash":
             continue
         if w[0] in ("cd", "pushd"):
             rest = [x for x in w[1:] if not x.startswith("-")]
-            hier_k = os.path.join(hier_k, os.path.expanduser(rest[0])) if rest and "$" not in rest[0] and "`" not in rest[0] else None
+            # None blijft None tot een absoluut pad (of ~) de werkmap weer vastlegt: join(None, …) crashte hier
+            if rest and "$" not in rest[0] and "`" not in rest[0] and rest[0] != "-":
+                nieuw = os.path.expanduser(rest[0])
+                hier_k = os.path.join(hier_k, nieuw) if hier_k is not None else (nieuw if os.path.isabs(nieuw) else None)
+            else:
+                hier_k = None
             continue
         if w[0] in ZOEK_NIET or w[0] in TEKST:
             continue
@@ -923,9 +928,12 @@ if tool == "Bash":
             return False
         def los(p, hier_):
             # None = niet te bepalen (variabele, backtick, `-`): toestaan
-            if hier_ is None or "$" in p or "`" in p or p == "-":
+            if "$" in p or "`" in p or p == "-":
                 return None
-            return os.path.join(hier_, os.path.expanduser(p))
+            p = os.path.expanduser(p)
+            if hier_ is None:
+                return p if os.path.isabs(p) else None
+            return os.path.join(hier_, p)
         hier_h = basis
         for seg in re.split(r"&&|\|\||[;&|()\n`]|\$\(", cz):
             w = woorden(seg)

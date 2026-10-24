@@ -834,6 +834,33 @@ describe("grenzen.sh: geen schrijvende commando's in de hoofdcheckout", () => {
   test("een submap van de hoofdcheckout telt als hoofdcheckout", () => {
     expect(run("pre-commit run", join(HOOFD, "sub")).code).toBe(2);
   });
+  // 24 okt 2026: een tweede cd na een cd die niet te bepalen is (`cd $SCRATCH`) gaf join(None, …) en dus
+  // "eigen fout (python-status 1)": de hook faalde dicht en blokkeerde legitiem werk (gc-query, gc-poort).
+  test("een cd na een onbepaalbare cd crasht niet (gc-query: scratchpad, daarna git -C op de eigen worktree)", () => {
+    for (const c of [`cd $SCRATCH && cd sub && git -C ${WORKTREE} status`, `cd "$SCRATCH"; cd sub; git -C ${WORKTREE} branch -d oud`]) {
+      const r = run(c, WORKTREE);
+      expect(r.stderr).not.toContain("eigen fout");
+      expect(r.code).toBe(0);
+    }
+  }, RUIM);
+  test("git branch -d vanuit een eigen worktree na een onbepaalbare cd crasht niet (gc-poort)", () => {
+    for (const c of ["cd $TMP && cd .. && git branch -d oud", "cd $(mktemp -d) && cd x && git branch -d a b"]) {
+      const r = run(c, WORKTREE);
+      expect(r.stderr).not.toContain("eigen fout");
+      expect(r.code).toBe(0);
+    }
+  }, RUIM);
+  test("een absoluut pad na een onbepaalbare cd legt de werkmap weer vast: de hoofdcheckout blijft geweigerd", () => {
+    expect(run(`cd $SCRATCH && cd ${HOOFD} && git fetch`, WORKTREE).code).toBe(2);
+    expect(run(`cd $SCRATCH && cd ${HOOFD} && git branch -d oud`, WORKTREE).code).toBe(2);
+    expect(run(`cd $SCRATCH && cd ${CLONE} && git fetch`, WORKTREE).code).toBe(0);
+  }, RUIM);
+  test("een kustomize-render na een onbepaalbare cd crasht niet maar wordt geweigerd", () => {
+    const r = run("cd $SCRATCH && cd sub && kustomize build overlay", WORKTREE);
+    expect(r.stderr).not.toContain("eigen fout");
+    expect(r.code).toBe(2);
+    expect(r.stderr).toContain("kustomize-render");
+  }, RUIM);
   test("buiten een repo geen bezwaar", () => {
     expect(run("pre-commit run", BASIS).code).toBe(0);
   });
