@@ -15,7 +15,7 @@
 //   git-scrub   een testbestand dat git aanroept gebruikt een env zonder GIT_* (schoneEnv()); anders FOUT (scripts/git-scrub.ts)
 //   test-integriteit  geen verwijderd testbestand, minder test(/it( of nieuwe .skip/.only/.todo zonder "// test-weg: reden" (scripts/test-integriteit.ts)
 //   rood-op-basis  een fix (tak of PR-titel met "fix") brengt een unittest mee die op de basis faalt en op de tak slaagt (scripts/rood-op-basis.ts)
-//   scripts-tests  bun test ./scripts/ (de tests van poort en ds-regels; < 1 s, altijd)
+//   scripts-tests  bun test ./scripts/ (de tests van poort en ds-regels; alleen als de diff scripts/, .githooks/, .github/, root-package.json, bun.lock, turbo.json of tsconfig* raakt; --alles en --ci altijd)
 //   python-tests  python3 -m unittest per map onder tools/ met een test_*.py (tools/brein; < 1 s, altijd)
 //   biome       biome ci: lint (alleen foutregels), geen format  (hele repo)
 //   taken       turbo run lint typecheck test                    (affected; met POORT_DB_VERPLICHT=1 en docker als goldcoast-api/db affected, scripts/db-verplicht.ts)
@@ -361,8 +361,30 @@ function stapRoodOpBasis(base: string, ci: boolean): Resultaat {
   return roStap(base, roLees(), ROOT, ci);
 }
 
-/** De root is geen workspace, dus turbo draait deze tests niet; deze stap wel (altijd, < 1 s). */
-function stapScriptsTests(): Resultaat {
+/** Paden waarvan een wijziging de scripts-tests kan breken (poort, hooks, root-config, CI). */
+const SCRIPTS_TESTS_PADEN = /^(scripts\/|\.githooks\/|\.github\/|package\.json$|bun\.lock$|turbo\.json$|tsconfig[^/]*$)/;
+
+/**
+ * Pure beslissing: draaien de scripts-tests? Altijd bij --alles en --ci (CI is het vangnet);
+ * anders alleen als de diff met de merge-base een pad uit SCRIPTS_TESTS_PADEN raakt.
+ * Geeft null (draaien) of de SKIP-reden.
+ */
+export function scriptsTestsOverslaan(o: Pick<Opties, "alles" | "ci">, gewijzigd: string[]): string | null {
+  if (o.alles || o.ci) return null;
+  if (gewijzigd.some((f) => SCRIPTS_TESTS_PADEN.test(f))) return null;
+  return "diff raakt scripts/, .githooks/, .github/, root-package.json, bun.lock, turbo.json en tsconfig* niet (--alles of --ci draait hem wel)";
+}
+
+/** Gewijzigde bestanden t.o.v. de merge-base: werkkopie (ook niet-gecommit) plus nieuwe, niet-getrackte bestanden. */
+function gewijzigdeBestanden(base: string): string[] {
+  const lijst = (...a: string[]) => git(...a).split("\n").filter(Boolean);
+  return [...lijst("diff", "--name-only", base), ...lijst("ls-files", "--others", "--exclude-standard")];
+}
+
+/** De root is geen workspace, dus turbo draait deze tests niet; deze stap wel (alleen als scripts e.d. geraakt zijn, zie scriptsTestsOverslaan; ~2-4 min). */
+function stapScriptsTests(o: Opties, base: string): Resultaat {
+  const reden = scriptsTestsOverslaan(o, o.alles || o.ci ? [] : gewijzigdeBestanden(base));
+  if (reden) return { status: "SKIP", detail: reden };
   const r = draai(["bun", "test", "./scripts/"]);
   const pass = r.uit.match(/^\s*(\d+) pass/m)?.[1];
   const fail = r.uit.match(/^\s*(\d+) fail/m)?.[1];
@@ -584,7 +606,7 @@ async function poort(o: Opties): Promise<number> {
       : s === "test-tenant" ? stapTestTenant()
       : s === "test-integriteit" ? stapTestIntegriteit(stapBase())
       : s === "rood-op-basis" ? stapRoodOpBasis(stapBase(), o.ci)
-      : s === "scripts-tests" ? stapScriptsTests()
+      : s === "scripts-tests" ? stapScriptsTests(o, stapBase())
       : s === "python-tests" ? stapPythonTests()
       : s === "biome" ? stapBiome()
       : s === "taken" ? stapTaken(ctx, o.ci)

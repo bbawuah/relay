@@ -4,7 +4,7 @@ import { describe, expect, test } from "bun:test";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { type Context, draai, geenStempel, geenStempelMelding, leesDryTaken, schrijfStempel, stapE2e, type Uitkomst } from "./poort";
+import { type Context, draai, geenStempel, geenStempelMelding, leesDryTaken, schrijfStempel, scriptsTestsOverslaan, stapE2e, type Uitkomst } from "./poort";
 
 const PLAN = JSON.stringify({ tasks: [{ task: "e2e", package: "@lab-bawuah/tmux", command: "bun run test:tmux" }] }, null, 2);
 
@@ -157,6 +157,33 @@ describe("geenStempel: alleen een volledige groene run op een vaste, schone HEAD
     expect(geenStempel(0, { ...vol, alleen: ["e2e"] }, a, a)).toMatch(/niet volledig/);
     expect(geenStempel(0, { ...vol, zonderE2e: true }, a, a)).toMatch(/niet volledig/);
     expect(geenStempel(1, vol, a, a)).toMatch(/niet groen/);
+  });
+});
+
+describe("scriptsTestsOverslaan: scripts-tests alleen bij geraakte scripts e.d.", () => {
+  const affected = { alles: false, ci: false };
+  test("diff zonder scripts: SKIP met reden", () => {
+    const reden = scriptsTestsOverslaan(affected, ["apps/goldcoast-klant/src/a.ts", "packages/ui/b.tsx"]);
+    expect(reden).toContain("scripts/");
+  });
+  test("lege diff: SKIP", () => {
+    expect(scriptsTestsOverslaan(affected, [])).not.toBeNull();
+  });
+  test("diff met scripts/x.ts: draait", () => {
+    expect(scriptsTestsOverslaan(affected, ["apps/a.ts", "scripts/x.ts"])).toBeNull();
+  });
+  test.each([".githooks/pre-push", ".github/workflows/ci.yml", "package.json", "bun.lock", "turbo.json", "tsconfig.json", "tsconfig.base.json"])(
+    "%s: draait",
+    (f) => expect(scriptsTestsOverslaan(affected, [f])).toBeNull(),
+  );
+  test("een package.json, scripts-map of tsconfig in een workspace telt niet", () => {
+    expect(scriptsTestsOverslaan(affected, ["apps/a/package.json", "apps/a/scripts/x.ts", "packages/b/tsconfig.json"])).not.toBeNull();
+  });
+  test("--alles draait altijd", () => {
+    expect(scriptsTestsOverslaan({ alles: true, ci: false }, ["apps/a.ts"])).toBeNull();
+  });
+  test("--ci draait altijd", () => {
+    expect(scriptsTestsOverslaan({ alles: false, ci: true }, ["apps/a.ts"])).toBeNull();
   });
 });
 
