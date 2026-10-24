@@ -1,10 +1,10 @@
 // De --dry=json-uitvoer van turbo: alleen stdout telt; waarschuwingen op stderr (remote cache niet
 // beschikbaar, 403) mogen de poort niet laten crashen.
 import { describe, expect, test } from "bun:test";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { type Context, draai, geenStempel, geenStempelMelding, leesDryTaken, schrijfStempel, scriptsTestsOverslaan, stapE2e, type Uitkomst } from "./poort";
+import { type Context, draai, geenStempel, gewijzigdeBestanden, geenStempelMelding, leesDryTaken, schrijfStempel, scriptsTestsOverslaan, stapE2e, type Uitkomst } from "./poort";
 
 const PLAN = JSON.stringify({ tasks: [{ task: "e2e", package: "@lab-bawuah/tmux", command: "bun run test:tmux" }] }, null, 2);
 
@@ -178,6 +178,34 @@ describe("scriptsTestsOverslaan: scripts-tests alleen bij geraakte scripts e.d."
   );
   test("een package.json, scripts-map of tsconfig in een workspace telt niet", () => {
     expect(scriptsTestsOverslaan(affected, ["apps/a/package.json", "apps/a/scripts/x.ts", "packages/b/tsconfig.json"])).not.toBeNull();
+  });
+  test("een verplaatsing uit scripts/ naar buiten: alleen het oude pad raakt scripts/", () => {
+    expect(scriptsTestsOverslaan(affected, ["scripts/a.test.ts"])).toBeNull();
+  });
+  test("gewijzigdeBestanden: git mv van scripts/ naar apps/ levert beide paden", () => {
+    const dir = mkdtempSync(join(tmpdir(), "poort-diff-"));
+    try {
+      const g = (...a: string[]) => {
+        const r = draai(["git", "-c", "user.email=t@t", "-c", "user.name=t", ...a], {}, dir);
+        if (r.code !== 0) throw new Error(r.uit);
+        return r.stdout;
+      };
+      g("init", "-q", "-b", "main");
+      mkdirSync(join(dir, "scripts"));
+      mkdirSync(join(dir, "apps"));
+      writeFileSync(join(dir, "scripts/a.test.ts"), "import { test } from 'bun:test';\ntest('a', () => {});\n");
+      g("add", ".");
+      g("commit", "-q", "-m", "basis");
+      const basis = g("rev-parse", "HEAD").trim();
+      g("mv", "scripts/a.test.ts", "apps/a.test.ts");
+      g("commit", "-q", "-am", "verplaatst");
+      const lijst = gewijzigdeBestanden(basis, dir);
+      expect(lijst).toContain("scripts/a.test.ts");
+      expect(lijst).toContain("apps/a.test.ts");
+      expect(scriptsTestsOverslaan(affected, lijst)).toBeNull();
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
   test("--alles draait altijd", () => {
     expect(scriptsTestsOverslaan({ alles: true, ci: false }, ["apps/a.ts"])).toBeNull();

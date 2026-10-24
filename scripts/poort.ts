@@ -376,9 +376,14 @@ export function scriptsTestsOverslaan(o: Pick<Opties, "alles" | "ci">, gewijzigd
 }
 
 /** Gewijzigde bestanden t.o.v. de merge-base: werkkopie (ook niet-gecommit) plus nieuwe, niet-getrackte bestanden. */
-function gewijzigdeBestanden(base: string): string[] {
-  const lijst = (...a: string[]) => git(...a).split("\n").filter(Boolean);
-  return [...lijst("diff", "--name-only", base), ...lijst("ls-files", "--others", "--exclude-standard")];
+export function gewijzigdeBestanden(base: string, cwd = ROOT): string[] {
+  const lijst = (...a: string[]) => {
+    const r = draai(["git", ...a], {}, cwd);
+    if (r.code !== 0) throw new Error(`git ${a.join(" ")}: ${r.uit.trim()}`);
+    return r.stdout.split("\n").filter(Boolean);
+  };
+  // --no-renames: een verplaatsing (scripts/a.test.ts naar elders) levert zo ook het oude pad op; anders ziet de diff alleen het nieuwe.
+  return [...lijst("diff", "--name-only", "--no-renames", base), ...lijst("ls-files", "--others", "--exclude-standard")];
 }
 
 /** De root is geen workspace, dus turbo draait deze tests niet; deze stap wel (alleen als scripts e.d. geraakt zijn, zie scriptsTestsOverslaan; ~2-4 min). */
