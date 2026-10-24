@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { schoneEnv } from "../test-integriteit";
@@ -227,6 +227,50 @@ describe(".githooks/pre-push", () => {
   test("zonder POORT_OVERSLAAN draait de poort, ook voor een agent", () => {
     expect(hook({ LAB_AGENT_ROL: "agent", STILTEVENSTER_NU: "2026-10-18T10:00:00Z" }).code).toBe(0);
     expect(readFileSync(join(dir, "bun.log"), "utf8")).toContain("bun run check");
+  });
+  describe("logbestand van de poort", () => {
+    // nep-poort die rood is; met schrijf=1 schrijft hij naar $POORT_LOGPAD (zoals scripts/poort-log.ts) en onthoudt dat pad
+    const nepRood = (schrijf: boolean) => {
+      writeFileSync(
+        join(dir, "bin", "bun"),
+        `#!/bin/sh\ncase "$1" in *stiltevenster.ts) exec "${process.execPath}" "$@";; esac\necho "$POORT_LOGPAD" >> "${dir}/logpaden.txt"\n${
+          schrijf ? 'echo "uitvoer van deze run" > "$POORT_LOGPAD"\n' : ""
+        }exit 1\n`,
+      );
+    };
+    const paden = () => readFileSync(join(dir, "logpaden.txt"), "utf8").trim().split("\n");
+    test("een rode poort: de weigering noemt het pad dat de hook aan de poort gaf", () => {
+      nepRood(true);
+      const r = hook({});
+      expect(r.code).toBe(1);
+      const [pad] = paden();
+      expect(pad).toContain(join(repo, ".git", "lab-poort"));
+      expect(r.fout).toContain(`Volledige uitvoer: ${pad}`);
+    });
+    test("twee hook-runs krijgen elk een eigen pad en noemen alleen dat; een POORT_LOGPAD van buiten telt niet", () => {
+      nepRood(true);
+      const a = hook({ POORT_LOGPAD: "/tmp/van-buiten.log" });
+      const b = hook({});
+      const [pa, pb] = paden();
+      expect(pa).not.toBe(pb);
+      expect(pa).not.toContain("van-buiten");
+      expect(a.fout).toContain(pa);
+      expect(a.fout).not.toContain(pb);
+      expect(b.fout).toContain(pb);
+      expect(b.fout).not.toContain(pa);
+    });
+    test("de logmap is 0700", () => {
+      nepRood(true);
+      hook({});
+      expect(statSync(join(repo, ".git", "lab-poort")).mode & 0o777).toBe(0o700);
+    });
+    test("een poort die niets schreef: geen pad genoemd", () => {
+      nepRood(false);
+      const r = hook({});
+      expect(r.code).toBe(1);
+      expect(r.fout).not.toContain(paden()[0]);
+      expect(r.fout).toMatch(/geen logbestand gevonden/);
+    });
   });
   describe("stiltevenster", () => {
     const IN = { STILTEVENSTER_NU: "2026-10-18T03:30:00Z" };
