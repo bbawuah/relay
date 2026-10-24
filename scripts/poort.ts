@@ -448,10 +448,13 @@ export function leesTscFouten(uit: string): TscFout[] {
 export function stapScriptsTypen(
   o: Pick<Opties, "alles" | "ci">,
   base: () => string,
-  d: ScriptsTestsDeps = { gewijzigd: gewijzigdeBestanden, draai: (c) => draai(c) },
+  d: ScriptsTestsDeps & { tscAanwezig?: () => boolean } = { gewijzigd: gewijzigdeBestanden, draai: (c) => draai(c) },
 ): Resultaat {
   const { reden, noot } = scriptsBeslissing(o, base, d);
   if (reden) return { status: "SKIP", detail: reden };
+  if (!(d.tscAanwezig ?? (() => existsSync(bin("tsc"))))()) {
+    return { status: "FOUT", detail: "tsc ontbreekt, draai bun install", uitleg: `${bin("tsc")} bestaat niet; typescript is een devDependency van de root-package.json` };
+  }
   const r = d.draai([bin("tsc"), "-p", "scripts/tsconfig.json", "--pretty", "false"]);
   const fouten = leesTscFouten(r.uit);
   if (r.code === 0 && !fouten.length) return { status: "OK", detail: noot.trim() || undefined };

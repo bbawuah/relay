@@ -431,6 +431,13 @@ describe("leesTscFouten en stapScriptsTypen: typecheck van scripts/ draait mee m
     expect(r.uitleg).toContain("scripts/poort.ts:284 TS2345");
     expect(aanroepen.cmd).toContain("scripts/tsconfig.json");
   });
+  test("tsc ontbreekt: nette FOUT in plaats van een stacktrace, tsc wordt niet gestart", () => {
+    const { aanroepen, deps } = nep(() => ["scripts/x.ts"], uit(0, ""));
+    const r = stapScriptsTypen(o, () => "abc", { ...deps, tscAanwezig: () => false });
+    expect(r.status).toBe("FOUT");
+    expect(r.detail).toBe("tsc ontbreekt, draai bun install");
+    expect(aanroepen.draai).toBe(0);
+  });
   test("exit 0: OK", () => {
     const { deps } = nep(() => ["scripts/x.ts"], uit(0, ""));
     expect(stapScriptsTypen(o, () => "abc", deps).status).toBe("OK");
