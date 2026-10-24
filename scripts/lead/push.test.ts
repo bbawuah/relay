@@ -228,6 +228,33 @@ describe(".githooks/pre-push", () => {
     expect(hook({ LAB_AGENT_ROL: "agent", STILTEVENSTER_NU: "2026-10-18T10:00:00Z" }).code).toBe(0);
     expect(readFileSync(join(dir, "bun.log"), "utf8")).toContain("bun run check");
   });
+  describe("logbestand van de poort", () => {
+    const map = () => join(repo, ".git", "lab-poort");
+    // nep-poort die rood is; met schrijf=1 zet hij het pad in lab-poort/laatste zoals scripts/poort-log.ts
+    const nepRood = (schrijf: boolean) => {
+      writeFileSync(
+        join(dir, "bin", "bun"),
+        `#!/bin/sh\ncase "$1" in *stiltevenster.ts) exec "${process.execPath}" "$@";; esac\n${
+          schrijf ? `mkdir -p "${map()}" && echo "${map()}/abc1234-nep.log" > "${map()}/laatste"\n` : ""
+        }exit 1\n`,
+      );
+    };
+    test("een rode poort: de weigering noemt het pad uit lab-poort/laatste", () => {
+      nepRood(true);
+      const r = hook({});
+      expect(r.code).toBe(1);
+      expect(r.fout).toContain(`Volledige uitvoer: ${map()}/abc1234-nep.log`);
+    });
+    test("een oud pad uit een eerdere run wordt niet genoemd als de poort niets schreef", () => {
+      mkdirSync(map(), { recursive: true });
+      writeFileSync(join(map(), "laatste"), `${map()}/oud.log\n`);
+      nepRood(false);
+      const r = hook({});
+      expect(r.code).toBe(1);
+      expect(r.fout).not.toContain("oud.log");
+      expect(r.fout).toMatch(/geen logbestand gevonden/);
+    });
+  });
   describe("stiltevenster", () => {
     const IN = { STILTEVENSTER_NU: "2026-10-18T03:30:00Z" };
     const BUITEN = { STILTEVENSTER_NU: "2026-10-18T05:15:00Z" };

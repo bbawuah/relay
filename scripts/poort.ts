@@ -67,6 +67,7 @@ import { beoordeelBare, beschrijf as gsBeschrijf, nieuweTreffers as gsNieuw, OPL
 import { leesPr } from "./bewijs-pr";
 import { dockerBereikbaar, dockerOntbreekt, omgevingVoor, pakkettenVanTaken } from "./db-verplicht";
 import { isVeilig, SCRIPTS_TESTS_VEILIG } from "./scripts-tests-veilig";
+import { logCommando, openLog, zetActief } from "./poort-log";
 import { inStiltevenster } from "./stiltevenster";
 import { leesContext as roLees, stap as roStap } from "./rood-op-basis";
 import { analyseer as tiAnalyseer } from "./test-integriteit";
@@ -126,7 +127,9 @@ export function draai(cmd: string[], env: Record<string, string> = {}, cwd = ROO
   });
   const kleurweg = (t: string) => t.replace(/\x1b\[[0-9;]*m/g, "");
   const stdout = kleurweg(p.stdout.toString());
-  return { code: p.exitCode ?? 1, uit: stdout + kleurweg(p.stderr.toString()), stdout };
+  const uit = stdout + kleurweg(p.stderr.toString());
+  logCommando(cmd, p.exitCode ?? 1, uit);
+  return { code: p.exitCode ?? 1, uit, stdout };
 }
 
 /** De taken uit `turbo run … --dry=json`, alleen uit stdout; null als dat geen JSON is. */
@@ -605,12 +608,24 @@ async function poort(o: Opties): Promise<number> {
   }
   const stappen = (o.alleen ?? [...STAPPEN]).filter((s) => !(o.zonderE2e && s === "e2e"));
   const ctx: Context = { affected: !o.alles, base: null, env: {} };
+  // Logbestand met de volledige uitvoer (scripts/poort-log.ts); een fout hier laat de poort niet falen.
+  const logMap = draai(["git", "rev-parse", "--path-format=absolute", "--git-common-dir"]);
+  const log = openLog({
+    map: path.join(logMap.code === 0 ? logMap.stdout.trim() : path.join(ROOT, ".git"), "lab-poort"),
+    sha: draai(["git", "rev-parse", "HEAD"]).stdout.trim() || "0000000",
+  });
+  zetActief(log);
+  const uit = (tekst: string) => {
+    console.log(tekst);
+    log.regel(tekst);
+  };
+  log.regel(`poort-start: args=${JSON.stringify(process.argv.slice(2))} modus=${o.alles ? "alles" : "affected"} base=${o.base ?? "origin/main"}`);
   if (!o.alles) {
     const base = kiesBase(o.base);
     ctx.base = base.sha;
     ctx.env = { TURBO_SCM_BASE: base.sha, TURBO_SCM_HEAD: "HEAD" };
-    console.log(`poort: affected t.o.v. ${base.ref} (merge-base ${base.sha.slice(0, 9)})`);
-  } else console.log("poort: alles");
+    uit(`poort: affected t.o.v. ${base.ref} (merge-base ${base.sha.slice(0, 9)})`);
+  } else uit("poort: alles");
 
   const stapBase = () => ctx.base ?? kiesBase(o.base).sha;
   // HEAD en schoon-zijn bij de start: de stempel hoort bij wat getest is, niet bij wat er aan het eind staat
@@ -620,10 +635,11 @@ async function poort(o: Opties): Promise<number> {
   const overgeslagen: Stap[] = [];
   for (const s of STAPPEN) {
     if (!stappen.includes(s)) {
-      if (s === "e2e" && o.zonderE2e) console.log("SKIP e2e            --zonder-e2e");
+      if (s === "e2e" && o.zonderE2e) uit("SKIP e2e            --zonder-e2e");
       continue;
     }
     const t0 = Date.now();
+    log.stapStart(s);
     const r =
       s === "sherif" ? stapSherif()
       : s === "boundaries" ? stapBoundaries()
@@ -643,10 +659,11 @@ async function poort(o: Opties): Promise<number> {
     if (r.status === "FOUT") fouten++;
     if (r.status === "SKIP") overgeslagen.push(s);
     const tijd = r.status === "SKIP" ? "" : ` (${duur(Date.now() - t0)})`;
+    log.stapEind(s, r.status, Date.now() - t0, r.detail, r.status === "SKIP" ? undefined : r.uitleg);
     console.log(`${r.status.padEnd(4)} ${s.padEnd(14)}${r.detail ? ` ${r.detail}` : ""}${tijd}`);
     if (r.uitleg && r.status !== "SKIP") console.log(r.uitleg);
   }
-  console.log(`poort: ${fouten ? `${fouten} FOUT` : "groen"} in ${duur(Date.now() - begin)}`);
+  uit(`poort: ${fouten ? `${fouten} FOUT` : "groen"} in ${duur(Date.now() - begin)}`);
 
   const eind = { sha: git("rev-parse", "HEAD"), schoon: git("status", "--porcelain") === "" };
   const waarom = geenStempel(fouten, o, start, eind);
@@ -663,6 +680,9 @@ async function poort(o: Opties): Promise<number> {
     });
     if (fout) console.log(geenStempelMelding(fout));
   }
+  zetActief(null);
+  // De laatste regel van een rode poort is het pad (de pre-push-hook leest <map>/laatste).
+  if (log.pad) console.log(fouten ? `poort: rood, volledige uitvoer: ${log.pad}` : `poort: volledige uitvoer: ${log.pad}`);
   return fouten;
 }
 
