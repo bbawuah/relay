@@ -613,6 +613,7 @@ async function poort(o: Opties): Promise<number> {
   const log = openLog({
     map: path.join(logMap.code === 0 ? logMap.stdout.trim() : path.join(ROOT, ".git"), "lab-poort"),
     sha: draai(["git", "rev-parse", "HEAD"]).stdout.trim() || "0000000",
+    pad: process.env.POORT_LOGPAD || undefined,
   });
   zetActief(log);
   const uit = (tekst: string) => {
@@ -681,7 +682,7 @@ async function poort(o: Opties): Promise<number> {
     if (fout) console.log(geenStempelMelding(fout));
   }
   zetActief(null);
-  // De laatste regel van een rode poort is het pad (de pre-push-hook leest <map>/laatste).
+  // De laatste regel van een rode poort is het pad (de pre-push-hook geeft zelf een POORT_LOGPAD mee en noemt dat pad).
   if (log.pad) console.log(fouten ? `poort: rood, volledige uitvoer: ${log.pad}` : `poort: volledige uitvoer: ${log.pad}`);
   return fouten;
 }
