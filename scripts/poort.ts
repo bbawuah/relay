@@ -16,7 +16,7 @@
 //   git-scrub   een testbestand dat git aanroept gebruikt een env zonder GIT_* (schoneEnv()); anders FOUT (scripts/git-scrub.ts)
 //   test-integriteit  geen verwijderd testbestand, minder test(/it( of nieuwe .skip/.only/.todo zonder "// test-weg: reden" (scripts/test-integriteit.ts)
 //   rood-op-basis  een fix (tak of PR-titel met "fix") brengt een unittest mee die op de basis faalt en op de tak slaagt (scripts/rood-op-basis.ts)
-//   scripts-tests  bun test ./scripts/ (alleen als de diff SCRIPTS_TESTS_PADEN raakt: scripts/, .githooks/, .github/, root-config en bekende afhankelijkheden; --alles en --ci altijd)
+//   scripts-tests  bun test ./scripts/ (alleen overgeslagen als elk gewijzigd bestand onder SCRIPTS_TESTS_VEILIG valt, scripts/scripts-tests-veilig.ts; --alles, --ci, een lege diff en een git-fout draaien hem)
 //   python-tests  python3 -m unittest per map onder tools/ met een test_*.py (tools/brein; < 1 s, altijd)
 //   biome       biome ci: lint (alleen foutregels), geen format  (hele repo)
 //   taken       turbo run lint typecheck test                    (affected; met POORT_DB_VERPLICHT=1 en docker als goldcoast-api/db affected, scripts/db-verplicht.ts)
@@ -68,6 +68,7 @@ import { beschrijf as ttBeschrijf, nieuweTreffers as ttNieuw, OPLOSSING as TT_OP
 import { beoordeelBare, beschrijf as gsBeschrijf, nieuweTreffers as gsNieuw, OPLOSSING as GS_OPLOSSING, sleutel as gsSleutel, zoek as gsZoek } from "./git-scrub";
 import { leesPr } from "./bewijs-pr";
 import { dockerBereikbaar, dockerOntbreekt, omgevingVoor, pakkettenVanTaken } from "./db-verplicht";
+import { isVeilig, SCRIPTS_TESTS_VEILIG } from "./scripts-tests-veilig";
 import { inStiltevenster } from "./stiltevenster";
 import { leesContext as roLees, stap as roStap } from "./rood-op-basis";
 import { analyseer as tiAnalyseer } from "./test-integriteit";
@@ -377,34 +378,17 @@ function stapRoodOpBasis(base: string, ci: boolean): Resultaat {
   return roStap(base, roLees(), ROOT, ci);
 }
 
-/** Paden waarvan een wijziging de scripts-tests kan breken (poort, hooks, root-config, CI). */
-const SCRIPTS_TESTS_PADEN = new RegExp(
-  [
-    "^scripts/",
-    "^\\.githooks/",
-    "^\\.github/",
-    "^package\\.json$",
-    "^bun\\.lock$",
-    "^bunfig\\.toml$",
-    "^tsconfig[^/]*$",
-    "^turbo\\.jsonc?$", // root-turbo.json
-    "^(apps|packages|tools)/[^/]+/turbo\\.jsonc?$", // turbo-inputs.test.ts scant alle workspace-turbo.json(c)
-    "^apps/goldcoast-api(/|$)", // db-suite-modus.test.ts scant src/ en test/
-    "^packages/goldcoast-db/src/testing(/|$)", // db-verplicht.test.ts leest wegwerp-postgres.ts
-    "^apps/site/scripts/vercel-ignore\\.sh$", // vercel-ignore.test.ts
-    "^apps/tmux/server/besluiten", // lead/besluit.test.ts importeert het
-  ].join("|"),
-);
-
 /**
- * Pure beslissing: draaien de scripts-tests? Altijd bij --alles en --ci (CI is het vangnet);
- * anders alleen als de diff met de merge-base een pad uit SCRIPTS_TESTS_PADEN raakt.
- * Geeft null (draaien) of de SKIP-reden.
+ * Pure beslissing: draaien de scripts-tests? Omgekeerd ontwerp (veilig falen): alleen SKIP als de diff met de
+ * merge-base niet leeg is en ELK gewijzigd bestand onder SCRIPTS_TESTS_VEILIG valt (scripts/scripts-tests-veilig.ts).
+ * Al het andere draait, ook een onbekend pad en een lege diff (een lege diff bewijst niets: veiliger draaien).
+ * Altijd draaien bij --alles en --ci (CI is het vangnet). Geeft null (draaien) of de SKIP-reden.
  */
 export function scriptsTestsOverslaan(o: Pick<Opties, "alles" | "ci">, gewijzigd: string[]): string | null {
   if (o.alles || o.ci) return null;
-  if (gewijzigd.some((f) => SCRIPTS_TESTS_PADEN.test(f))) return null;
-  return "diff raakt scripts/, .githooks/, .github/, root-package.json, bun.lock, turbo.json en tsconfig* niet (--alles of --ci draait hem wel)";
+  if (gewijzigd.length === 0) return null;
+  if (!gewijzigd.every(isVeilig)) return null;
+  return `diff raakt alleen ${SCRIPTS_TESTS_VEILIG.join(", ")} (geen scripts-test leest die; elk ander pad laat hem draaien; --alles of --ci draait hem altijd)`;
 }
 
 /** Gewijzigde bestanden t.o.v. de merge-base: werkkopie (ook niet-gecommit) plus nieuwe, niet-getrackte bestanden. */
@@ -423,7 +407,7 @@ export function gewijzigdeBestanden(base: string, cwd = ROOT): string[] {
 export type ScriptsTestsDeps = { gewijzigd: (base: string) => string[]; draai: (cmd: string[]) => Uitkomst };
 
 /**
- * De root is geen workspace, dus turbo draait deze tests niet; deze stap wel (alleen als scripts e.d. geraakt zijn, zie scriptsTestsOverslaan; ~2-4 min).
+ * De root is geen workspace, dus turbo draait deze tests niet; deze stap wel (draait tenzij de diff alleen onder SCRIPTS_TESTS_VEILIG ligt, zie scriptsTestsOverslaan; ~2-4 min).
  * `base` is lazy: bij --alles en --ci wordt noch de basis gekozen noch git aangeroepen.
  * Kan de diff niet gelezen worden (git faalt), dan draaien de tests (de veilige kant) en zegt de melding dat.
  */
