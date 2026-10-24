@@ -1,10 +1,11 @@
 // De --dry=json-uitvoer van turbo: alleen stdout telt; waarschuwingen op stderr (remote cache niet
 // beschikbaar, 403) mogen de poort niet laten crashen.
 import { describe, expect, test } from "bun:test";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { type Context, draai, geenStempel, geenStempelMelding, leesDryTaken, schrijfStempel, stapE2e, type Uitkomst } from "./poort";
+import { type Context, draai, geenStempel, gewijzigdeBestanden, geenStempelMelding, leesDryTaken, schrijfStempel, scriptsTestsOverslaan, stapE2e, stapScriptsTests, stempelOvergeslagen, type Uitkomst } from "./poort";
+import { isVeilig, SCRIPTS_TESTS_VEILIG } from "./scripts-tests-veilig";
 
 const PLAN = JSON.stringify({ tasks: [{ task: "e2e", package: "@lab-bawuah/tmux", command: "bun run test:tmux" }] }, null, 2);
 
@@ -157,6 +158,215 @@ describe("geenStempel: alleen een volledige groene run op een vaste, schone HEAD
     expect(geenStempel(0, { ...vol, alleen: ["e2e"] }, a, a)).toMatch(/niet volledig/);
     expect(geenStempel(0, { ...vol, zonderE2e: true }, a, a)).toMatch(/niet volledig/);
     expect(geenStempel(1, vol, a, a)).toMatch(/niet groen/);
+  });
+});
+
+describe("scriptsTestsOverslaan: omgekeerd ontwerp, SKIP alleen als elk bestand onder de allowlist valt", () => {
+  const affected = { alles: false, ci: false };
+  // Paden uit de echte allowlist, zodat de scripts-tests-bewaker dit bestand niet als lezer van die paden telt.
+  const [veilig1, veilig2] = SCRIPTS_TESTS_VEILIG as [string, string];
+  test("diff met alleen bestanden onder de allowlist (nieuw, gewijzigd, diep): SKIP met reden", () => {
+    const reden = scriptsTestsOverslaan(affected, [`${veilig1}src/a.ts`, `${veilig2}x/y/z.tsx`, `${veilig1}package.json`]);
+    expect(reden).toContain("--alles of --ci");
+    expect(reden).toContain(veilig1);
+  });
+  test("een onbekend pad draait (veilig falen)", () => {
+    for (const f of ["apps/tmux/x.ts", "packages/lab-commando/y.ts", "bunfig.toml", "apps/watchparty/z.ts", "README.md", "tools/brein/a.py"]) {
+      expect(scriptsTestsOverslaan(affected, [f])).toBeNull();
+    }
+  });
+  test("mix van allowlist en een onbekend pad draait", () => {
+    expect(scriptsTestsOverslaan(affected, [`${veilig1}a.ts`, "apps/tmux/x.ts"])).toBeNull();
+  });
+  test("lege diff draait: een lege diff bewijst niets (veiliger dan SKIP, bijv. een verkeerde basis)", () => {
+    expect(scriptsTestsOverslaan(affected, [])).toBeNull();
+  });
+  test("diff met scripts/x.ts draait, ook naast allowlist-bestanden", () => {
+    expect(scriptsTestsOverslaan(affected, ["scripts/x.ts"])).toBeNull();
+    expect(scriptsTestsOverslaan(affected, [`${veilig1}a.ts`, "scripts/x.ts"])).toBeNull();
+  });
+  test.each([".githooks/pre-push", ".github/workflows/ci.yml", "package.json", "bun.lock", "turbo.json", "tsconfig.json", "apps/goldcoast-api/src/a.ts"])(
+    "%s: draait",
+    (f) => expect(scriptsTestsOverslaan(affected, [f])).toBeNull(),
+  );
+  test("uitzonderingen onder een veilige map draaien: workspace-turbo.json(c)", () => {
+    expect(scriptsTestsOverslaan(affected, [`${veilig1}turbo.json`])).toBeNull();
+    expect(scriptsTestsOverslaan(affected, [`${veilig2}turbo.jsonc`])).toBeNull();
+  });
+  test("een map met dezelfde voorkant is geen allowlist-pad (pad-grens)", () => {
+    expect(isVeilig(`${veilig1.replace(/\/$/, "")}-extra/a.ts`)).toBe(false);
+    expect(isVeilig(`${veilig1}a.ts`)).toBe(true);
+  });
+  test("een verplaatsing uit scripts/ naar een allowlist-pad: het oude pad laat hem draaien", () => {
+    expect(scriptsTestsOverslaan(affected, ["scripts/a.test.ts", `${veilig1}a.test.ts`])).toBeNull();
+  });
+  // Wegwerp-repo met een basiscommit met scripts/a.test.ts, apps/b.ts en "apps/met spatie.ts"; geen gpg-ondertekening.
+  const metRepo = (f: (dir: string, g: (...a: string[]) => string, basis: string) => void) => {
+    const dir = mkdtempSync(join(tmpdir(), "poort-diff-"));
+    try {
+      const g = (...a: string[]) => {
+        const r = draai(["git", "-c", "user.email=t@t", "-c", "user.name=t", "-c", "commit.gpgsign=false", ...a], {}, dir);
+        if (r.code !== 0) throw new Error(r.uit);
+        return r.stdout;
+      };
+      g("init", "-q", "-b", "main");
+      mkdirSync(join(dir, "scripts"));
+      mkdirSync(join(dir, "apps"));
+      writeFileSync(join(dir, "scripts/a.test.ts"), "import { test } from 'bun:test';\ntest('a', () => {});\n");
+      writeFileSync(join(dir, "apps/b.ts"), "export const b = 1;\n");
+      writeFileSync(join(dir, "apps/met spatie.ts"), "export const c = 1;\n");
+      g("add", ".");
+      g("commit", "-q", "-m", "basis");
+      f(dir, g, g("rev-parse", "HEAD").trim());
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  };
+  test("gewijzigdeBestanden: git mv van scripts/ naar apps/ levert beide paden", () => {
+    metRepo((dir, g, basis) => {
+      g("mv", "scripts/a.test.ts", "apps/a.test.ts");
+      g("commit", "-q", "-am", "verplaatst");
+      const lijst = gewijzigdeBestanden(basis, dir);
+      expect(lijst).toContain("scripts/a.test.ts");
+      expect(lijst).toContain("apps/a.test.ts");
+      expect(scriptsTestsOverslaan(affected, lijst)).toBeNull();
+    });
+  });
+  test("gewijzigdeBestanden: een niet-getrackt bestand telt mee", () => {
+    metRepo((dir, _g, basis) => {
+      writeFileSync(join(dir, "scripts/nieuw.test.ts"), "x\n");
+      expect(gewijzigdeBestanden(basis, dir)).toEqual(["scripts/nieuw.test.ts"]);
+    });
+  });
+  test("gewijzigdeBestanden: een verwijdering (gecommit of in de werkkopie) levert het pad op", () => {
+    metRepo((dir, g, basis) => {
+      rmSync(join(dir, "scripts/a.test.ts"));
+      expect(gewijzigdeBestanden(basis, dir)).toEqual(["scripts/a.test.ts"]);
+      g("commit", "-q", "-am", "weg");
+      expect(gewijzigdeBestanden(basis, dir)).toEqual(["scripts/a.test.ts"]);
+    });
+  });
+  test("gewijzigdeBestanden: -z houdt een pad met spaties heel en geeft geen gequote pad", () => {
+    metRepo((dir, _g, basis) => {
+      writeFileSync(join(dir, "apps/met spatie.ts"), "export const c = 2;\n");
+      writeFileSync(join(dir, "apps/é.ts"), "x\n");
+      expect(gewijzigdeBestanden(basis, dir).sort()).toEqual(["apps/met spatie.ts", "apps/é.ts"]);
+    });
+  });
+  test("gewijzigdeBestanden: een onbekende basis gooit (stapScriptsTests vangt dat op)", () => {
+    metRepo((dir) => {
+      expect(() => gewijzigdeBestanden("0".repeat(40), dir)).toThrow(/git diff/);
+    });
+  });
+  test("--alles draait altijd, ook bij een diff die alleen de allowlist raakt", () => {
+    expect(scriptsTestsOverslaan({ alles: true, ci: false }, [`${veilig1}a.ts`])).toBeNull();
+  });
+  test("--ci draait altijd, ook bij een diff die alleen de allowlist raakt", () => {
+    expect(scriptsTestsOverslaan({ alles: false, ci: true }, [`${veilig1}a.ts`])).toBeNull();
+  });
+});
+
+describe("stapScriptsTests: beslissing, lazy git en de veilige kant bij een git-fout", () => {
+  const uit = (code: number, tekst: string): Uitkomst => ({ code, uit: tekst, stdout: tekst });
+  const nep = (gewijzigd: (b: string) => string[], code = 0, tekst = " 12 pass\n 0 fail\n") => {
+    const aanroepen = { gewijzigd: 0, draai: 0, base: 0 };
+    const deps = {
+      gewijzigd: (b: string) => {
+        aanroepen.gewijzigd++;
+        return gewijzigd(b);
+      },
+      draai: () => {
+        aanroepen.draai++;
+        return uit(code, tekst);
+      },
+    };
+    const base = () => {
+      aanroepen.base++;
+      return "abc";
+    };
+    return { aanroepen, deps, base };
+  };
+
+  test("diff alleen onder de allowlist: SKIP met reden, bun test draait niet", () => {
+    const { aanroepen, deps, base } = nep(() => [`${SCRIPTS_TESTS_VEILIG[0]}a.ts`]);
+    const r = stapScriptsTests({ alles: false, ci: false }, base, deps);
+    expect(r.status).toBe("SKIP");
+    expect(r.detail).toContain("--alles of --ci");
+    expect(aanroepen).toEqual({ gewijzigd: 1, draai: 0, base: 1 });
+  });
+  test("diff met een onbekend pad of een lege diff: draait", () => {
+    for (const lijst of [["apps/a.ts"], []]) {
+      const { aanroepen, deps, base } = nep(() => lijst);
+      expect(stapScriptsTests({ alles: false, ci: false }, base, deps).status).toBe("OK");
+      expect(aanroepen.draai).toBe(1);
+    }
+  });
+  test("diff met scripts/x.ts: draait en meldt het aantal tests", () => {
+    const { aanroepen, deps, base } = nep(() => ["scripts/x.ts"]);
+    const r = stapScriptsTests({ alles: false, ci: false }, base, deps);
+    expect(r).toEqual({ status: "OK", detail: "12 tests" });
+    expect(aanroepen.draai).toBe(1);
+  });
+  test("--alles en --ci: draait, en kiest geen basis en roept geen git aan", () => {
+    for (const o of [{ alles: true, ci: false }, { alles: false, ci: true }]) {
+      const { aanroepen, deps, base } = nep(() => {
+        throw new Error("git mag hier niet draaien");
+      });
+      expect(stapScriptsTests(o, base, deps).status).toBe("OK");
+      expect(aanroepen).toEqual({ gewijzigd: 0, draai: 1, base: 0 });
+    }
+  });
+  test("een falende bun test is FOUT met het aantal mislukte tests", () => {
+    const { deps, base } = nep(() => ["scripts/x.ts"], 1, " 3 pass\n 1 fail\n");
+    const r = stapScriptsTests({ alles: false, ci: false }, base, deps);
+    expect(r.status).toBe("FOUT");
+    expect(r.detail).toBe("1 mislukt");
+  });
+  test("git faalt (of de basis is niet te kiezen): geen exceptie, de tests draaien en de melding zegt waarom", () => {
+    for (const faal of ["gewijzigd", "base"] as const) {
+      const { aanroepen, deps } = nep(() => {
+        throw new Error("git diff: fatal: bad revision\nmeer");
+      });
+      const base = () => {
+        if (faal === "base") throw new Error("geen origin/main");
+        return "abc";
+      };
+      const r = stapScriptsTests({ alles: false, ci: false }, base, deps);
+      expect(r.status).toBe("OK");
+      expect(r.detail).toContain("diff onleesbaar, dus gedraaid");
+      expect(aanroepen.draai).toBe(1);
+    }
+  });
+  test("git faalt en de tests falen: FOUT met dezelfde noot", () => {
+    const { deps } = nep(() => {
+      throw new Error("kapot");
+    }, 1, " 1 fail\n");
+    const r = stapScriptsTests({ alles: false, ci: false }, () => "abc", deps);
+    expect(r.status).toBe("FOUT");
+    expect(r.detail).toBe("1 mislukt (diff onleesbaar, dus gedraaid: kapot)");
+  });
+});
+
+describe("stempelOvergeslagen: het stempel meldt wat niet draaide", () => {
+  test("scripts-tests SKIP: veld overgeslagen; geen skip: geen veld", () => {
+    expect(stempelOvergeslagen(["scripts-tests"])).toEqual({ overgeslagen: ["scripts-tests"] });
+    expect(stempelOvergeslagen([])).toEqual({});
+  });
+  test("andere skips (python-tests zonder tests) horen er niet in", () => {
+    expect(stempelOvergeslagen(["python-tests"])).toEqual({});
+  });
+  test("het veld staat in het geschreven stempel naast de vaste velden", () => {
+    const tmp = mkdtempSync(join(tmpdir(), "stempel-"));
+    try {
+      const basis = { sha: "abc", groen: true, modus: "affected", base: "d".repeat(40), tijd: "2026-10-24T10:00:00Z" };
+      schrijfStempel(tmp, { ...basis, ...stempelOvergeslagen(["scripts-tests"]) });
+      const s = JSON.parse(readFileSync(join(tmp, "abc.json"), "utf8"));
+      expect(s).toEqual({ ...basis, overgeslagen: ["scripts-tests"] });
+      schrijfStempel(tmp, { ...basis, ...stempelOvergeslagen([]) });
+      expect(JSON.parse(readFileSync(join(tmp, "abc.json"), "utf8"))).toEqual(basis);
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
   });
 });
 

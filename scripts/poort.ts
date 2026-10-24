@@ -15,7 +15,7 @@
 //   git-scrub   een testbestand dat git aanroept gebruikt een env zonder GIT_* (schoneEnv()); anders FOUT (scripts/git-scrub.ts)
 //   test-integriteit  geen verwijderd testbestand, minder test(/it( of nieuwe .skip/.only/.todo zonder "// test-weg: reden" (scripts/test-integriteit.ts)
 //   rood-op-basis  een fix (tak of PR-titel met "fix") brengt een unittest mee die op de basis faalt en op de tak slaagt (scripts/rood-op-basis.ts)
-//   scripts-tests  bun test ./scripts/ (de tests van poort en ds-regels; < 1 s, altijd)
+//   scripts-tests  bun test ./scripts/ (alleen overgeslagen als elk gewijzigd bestand onder SCRIPTS_TESTS_VEILIG valt, scripts/scripts-tests-veilig.ts; --alles, --ci, een lege diff en een git-fout draaien hem)
 //   python-tests  python3 -m unittest per map onder tools/ met een test_*.py (tools/brein; < 1 s, altijd)
 //   biome       biome ci: lint (alleen foutregels), geen format  (hele repo)
 //   taken       turbo run lint typecheck test                    (affected; met POORT_DB_VERPLICHT=1 en docker als goldcoast-api/db affected, scripts/db-verplicht.ts)
@@ -66,6 +66,7 @@ import { beschrijf as ttBeschrijf, nieuweTreffers as ttNieuw, OPLOSSING as TT_OP
 import { beoordeelBare, beschrijf as gsBeschrijf, nieuweTreffers as gsNieuw, OPLOSSING as GS_OPLOSSING, sleutel as gsSleutel, zoek as gsZoek } from "./git-scrub";
 import { leesPr } from "./bewijs-pr";
 import { dockerBereikbaar, dockerOntbreekt, omgevingVoor, pakkettenVanTaken } from "./db-verplicht";
+import { isVeilig, SCRIPTS_TESTS_VEILIG } from "./scripts-tests-veilig";
 import { inStiltevenster } from "./stiltevenster";
 import { leesContext as roLees, stap as roStap } from "./rood-op-basis";
 import { analyseer as tiAnalyseer } from "./test-integriteit";
@@ -361,13 +362,61 @@ function stapRoodOpBasis(base: string, ci: boolean): Resultaat {
   return roStap(base, roLees(), ROOT, ci);
 }
 
-/** De root is geen workspace, dus turbo draait deze tests niet; deze stap wel (altijd, < 1 s). */
-function stapScriptsTests(): Resultaat {
-  const r = draai(["bun", "test", "./scripts/"]);
+/**
+ * Pure beslissing: draaien de scripts-tests? Omgekeerd ontwerp (veilig falen): alleen SKIP als de diff met de
+ * merge-base niet leeg is en ELK gewijzigd bestand onder SCRIPTS_TESTS_VEILIG valt (scripts/scripts-tests-veilig.ts).
+ * Al het andere draait, ook een onbekend pad en een lege diff (een lege diff bewijst niets: veiliger draaien).
+ * Altijd draaien bij --alles en --ci (CI is het vangnet). Geeft null (draaien) of de SKIP-reden.
+ */
+export function scriptsTestsOverslaan(o: Pick<Opties, "alles" | "ci">, gewijzigd: string[]): string | null {
+  if (o.alles || o.ci) return null;
+  if (gewijzigd.length === 0) return null;
+  if (!gewijzigd.every(isVeilig)) return null;
+  return `diff raakt alleen ${SCRIPTS_TESTS_VEILIG.join(", ")} (geen scripts-test leest die; elk ander pad laat hem draaien; --alles of --ci draait hem altijd)`;
+}
+
+/** Gewijzigde bestanden t.o.v. de merge-base: werkkopie (ook niet-gecommit) plus nieuwe, niet-getrackte bestanden. */
+export function gewijzigdeBestanden(base: string, cwd = ROOT): string[] {
+  // -z: NUL-gescheiden, zodat een pad met spaties of vreemde tekens (anders gequote) heel blijft.
+  const lijst = (...a: string[]) => {
+    const r = draai(["git", ...a], {}, cwd);
+    if (r.code !== 0) throw new Error(`git ${a.join(" ")}: ${r.uit.trim()}`);
+    return r.stdout.split("\0").filter(Boolean);
+  };
+  // --no-renames: een verplaatsing (scripts/a.test.ts naar elders) levert zo ook het oude pad op; anders ziet de diff alleen het nieuwe.
+  return [...lijst("diff", "-z", "--name-only", "--no-renames", base), ...lijst("ls-files", "-z", "--others", "--exclude-standard")];
+}
+
+/** Wat stapScriptsTests van buiten nodig heeft; in tests vervangen door nepjes. */
+export type ScriptsTestsDeps = { gewijzigd: (base: string) => string[]; draai: (cmd: string[]) => Uitkomst };
+
+/**
+ * De root is geen workspace, dus turbo draait deze tests niet; deze stap wel (draait tenzij de diff alleen onder SCRIPTS_TESTS_VEILIG ligt, zie scriptsTestsOverslaan; ~2-4 min).
+ * `base` is lazy: bij --alles en --ci wordt noch de basis gekozen noch git aangeroepen.
+ * Kan de diff niet gelezen worden (git faalt), dan draaien de tests (de veilige kant) en zegt de melding dat.
+ */
+export function stapScriptsTests(
+  o: Pick<Opties, "alles" | "ci">,
+  base: () => string,
+  d: ScriptsTestsDeps = { gewijzigd: gewijzigdeBestanden, draai: (c) => draai(c) },
+): Resultaat {
+  let gewijzigd: string[] = [];
+  let diffFout: string | null = null;
+  if (!o.alles && !o.ci) {
+    try {
+      gewijzigd = d.gewijzigd(base());
+    } catch (e) {
+      diffFout = e instanceof Error ? e.message.split("\n")[0] ?? String(e) : String(e);
+    }
+  }
+  const reden = diffFout ? null : scriptsTestsOverslaan(o, gewijzigd);
+  if (reden) return { status: "SKIP", detail: reden };
+  const r = d.draai(["bun", "test", "./scripts/"]);
   const pass = r.uit.match(/^\s*(\d+) pass/m)?.[1];
   const fail = r.uit.match(/^\s*(\d+) fail/m)?.[1];
-  if (r.code === 0) return { status: "OK", detail: pass ? `${pass} tests` : undefined };
-  return { status: "FOUT", detail: fail ? `${fail} mislukt` : "bun test faalde", uitleg: staart(r.uit) };
+  const noot = diffFout ? ` (diff onleesbaar, dus gedraaid: ${diffFout})` : "";
+  if (r.code === 0) return { status: "OK", detail: pass ? `${pass} tests${noot}` : noot.trim() || undefined };
+  return { status: "FOUT", detail: `${fail ? `${fail} mislukt` : "bun test faalde"}${noot}`, uitleg: staart(r.uit) };
 }
 
 /** Python buiten de workspaces (tools/brein): per map met een test_*.py (ook nog niet gecommit) één unittest-run, alleen stdlib. */
@@ -568,6 +617,7 @@ async function poort(o: Opties): Promise<number> {
   const start = { sha: git("rev-parse", "HEAD"), schoon: git("status", "--porcelain") === "" };
   const begin = Date.now();
   let fouten = 0;
+  const overgeslagen: Stap[] = [];
   for (const s of STAPPEN) {
     if (!stappen.includes(s)) {
       if (s === "e2e" && o.zonderE2e) console.log("SKIP e2e            --zonder-e2e");
@@ -584,13 +634,14 @@ async function poort(o: Opties): Promise<number> {
       : s === "test-tenant" ? stapTestTenant()
       : s === "test-integriteit" ? stapTestIntegriteit(stapBase())
       : s === "rood-op-basis" ? stapRoodOpBasis(stapBase(), o.ci)
-      : s === "scripts-tests" ? stapScriptsTests()
+      : s === "scripts-tests" ? stapScriptsTests(o, stapBase)
       : s === "python-tests" ? stapPythonTests()
       : s === "biome" ? stapBiome()
       : s === "taken" ? stapTaken(ctx, o.ci)
       : s === "build" ? stapBuild(ctx)
       : await stapE2e(ctx);
     if (r.status === "FOUT") fouten++;
+    if (r.status === "SKIP") overgeslagen.push(s);
     const tijd = r.status === "SKIP" ? "" : ` (${duur(Date.now() - t0)})`;
     console.log(`${r.status.padEnd(4)} ${s.padEnd(14)}${r.detail ? ` ${r.detail}` : ""}${tijd}`);
     if (r.uitleg && r.status !== "SKIP") console.log(r.uitleg);
@@ -608,6 +659,7 @@ async function poort(o: Opties): Promise<number> {
       modus: o.alles ? "alles" : "affected",
       base: ctx.base,
       tijd: new Date().toISOString(),
+      ...stempelOvergeslagen(overgeslagen),
     });
     if (fout) console.log(geenStempelMelding(fout));
   }
@@ -624,6 +676,17 @@ export function schrijfStempel(map: string, stempel: { sha: string } & Record<st
   } catch (e) {
     return e instanceof Error ? e.message : String(e);
   }
+}
+
+/**
+ * Optioneel stempelveld `overgeslagen`: stappen die in deze groene run SKIP waren omdat de diff ze niet
+ * raakte (nu alleen scripts-tests), zodat de lead bij een merge ziet wat niet gedraaid is. Een run
+ * zonder zo'n skip schrijft het veld niet; merge.sh leest alleen sha/groen/modus/base/tijd, dus het
+ * formaat blijft compatibel.
+ */
+export function stempelOvergeslagen(skips: readonly string[]): { overgeslagen?: string[] } {
+  const lijst = skips.filter((s) => s === "scripts-tests");
+  return lijst.length ? { overgeslagen: lijst } : {};
 }
 
 /** Luid: de poort is groen, maar zonder stempel weigert merge.sh deze tak. */
@@ -855,7 +918,7 @@ export const KANARIES: Kanarie[] = [
   {
     stap: "scripts-tests",
     wat: "falende test in scripts/",
-    verwacht: /FOUT scripts-tests .*1 mislukt/,
+    verwacht: /FOUT scripts-tests .*\b1 mislukt/,
     zet: (m) => schrijf(m, "scripts/kanarie.test.ts", 'import { expect, test } from "bun:test";\ntest("kanarie", () => expect(1).toBe(2));\n'),
   },
   {

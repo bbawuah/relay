@@ -177,6 +177,9 @@ if [ "$stempel" = "$headvol" ]; then
 else
   echo "merge: e2e-stempel op ${stempel:0:7} ($(jq -r .modus "$STEMPELS/$stempel.json"), $(jq -r .tijd "$STEMPELS/$stempel.json")); patch van de head ${sha} is gelijk"
 fi
+# Optioneel stempelveld "overgeslagen" (poort.ts): stappen die lokaal niet draaiden omdat de diff ze niet raakte.
+overgeslagen=$(jq -r '(.overgeslagen // []) | join(", ")' "$STEMPELS/$stempel.json" 2>/dev/null || true)
+[ -z "$overgeslagen" ] || echo "merge: LET OP, in de poortrun overgeslagen: $overgeslagen (CI draait ze wel)"
 
 # Bezitscheck: waarschuwing, geen weigering (de lead beslist).
 if [ -n "$contract" ]; then
