@@ -5,6 +5,7 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "nod
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { type Context, draai, geenStempel, gewijzigdeBestanden, geenStempelMelding, leesDryTaken, schrijfStempel, scriptsTestsOverslaan, stapE2e, stapScriptsTests, stempelOvergeslagen, type Uitkomst } from "./poort";
+import { isVeilig, SCRIPTS_TESTS_VEILIG } from "./scripts-tests-veilig";
 
 const PLAN = JSON.stringify({ tasks: [{ task: "e2e", package: "@lab-bawuah/tmux", command: "bun run test:tmux" }] }, null, 2);
 
@@ -160,27 +161,46 @@ describe("geenStempel: alleen een volledige groene run op een vaste, schone HEAD
   });
 });
 
-describe("scriptsTestsOverslaan: scripts-tests alleen bij geraakte scripts e.d.", () => {
+describe("scriptsTestsOverslaan: omgekeerd ontwerp, SKIP alleen als elk bestand onder de allowlist valt", () => {
   const affected = { alles: false, ci: false };
-  test("diff zonder scripts: SKIP met reden", () => {
-    const reden = scriptsTestsOverslaan(affected, ["apps/goldcoast-klant/src/a.ts", "packages/ui/b.tsx"]);
-    expect(reden).toContain("scripts/");
+  // Paden uit de echte allowlist, zodat de scripts-tests-bewaker dit bestand niet als lezer van die paden telt.
+  const [veilig1, veilig2] = SCRIPTS_TESTS_VEILIG as [string, string];
+  test("diff met alleen bestanden onder de allowlist (nieuw, gewijzigd, diep): SKIP met reden", () => {
+    const reden = scriptsTestsOverslaan(affected, [`${veilig1}src/a.ts`, `${veilig2}x/y/z.tsx`, `${veilig1}package.json`]);
+    expect(reden).toContain("--alles of --ci");
+    expect(reden).toContain(veilig1);
   });
-  test("lege diff: SKIP", () => {
-    expect(scriptsTestsOverslaan(affected, [])).not.toBeNull();
+  test("een onbekend pad draait (veilig falen)", () => {
+    for (const f of ["apps/tmux/x.ts", "packages/lab-commando/y.ts", "bunfig.toml", "apps/watchparty/z.ts", "README.md", "tools/brein/a.py"]) {
+      expect(scriptsTestsOverslaan(affected, [f])).toBeNull();
+    }
   });
-  test("diff met scripts/x.ts: draait", () => {
-    expect(scriptsTestsOverslaan(affected, ["apps/a.ts", "scripts/x.ts"])).toBeNull();
+  test("mix van allowlist en een onbekend pad draait", () => {
+    expect(scriptsTestsOverslaan(affected, [`${veilig1}a.ts`, "apps/tmux/x.ts"])).toBeNull();
   });
-  test.each([".githooks/pre-push", ".github/workflows/ci.yml", "package.json", "bun.lock", "turbo.json", "tsconfig.json", "tsconfig.base.json"])(
+  test("lege diff draait: een lege diff bewijst niets (veiliger dan SKIP, bijv. een verkeerde basis)", () => {
+    expect(scriptsTestsOverslaan(affected, [])).toBeNull();
+  });
+  test("diff met scripts/x.ts draait, ook naast allowlist-bestanden", () => {
+    expect(scriptsTestsOverslaan(affected, ["scripts/x.ts"])).toBeNull();
+    expect(scriptsTestsOverslaan(affected, [`${veilig1}a.ts`, "scripts/x.ts"])).toBeNull();
+  });
+  test.each([".githooks/pre-push", ".github/workflows/ci.yml", "package.json", "bun.lock", "turbo.json", "tsconfig.json", "apps/goldcoast-api/src/a.ts"])(
     "%s: draait",
     (f) => expect(scriptsTestsOverslaan(affected, [f])).toBeNull(),
   );
-  test("een package.json, scripts-map of tsconfig in een workspace telt niet", () => {
-    expect(scriptsTestsOverslaan(affected, ["apps/a/package.json", "apps/a/scripts/x.ts", "packages/b/tsconfig.json"])).not.toBeNull();
+  test("uitzonderingen onder een veilige map draaien: workspace-turbo.json(c) en apps/site/scripts/", () => {
+    expect(scriptsTestsOverslaan(affected, [`${veilig1}turbo.json`])).toBeNull();
+    expect(scriptsTestsOverslaan(affected, [`${veilig2}turbo.jsonc`])).toBeNull();
+    expect(scriptsTestsOverslaan(affected, ["apps/site/scripts/vercel-ignore.sh"])).toBeNull();
+    expect(scriptsTestsOverslaan(affected, ["apps/site/components/a.tsx"])).not.toBeNull();
   });
-  test("een verplaatsing uit scripts/ naar buiten: alleen het oude pad raakt scripts/", () => {
-    expect(scriptsTestsOverslaan(affected, ["scripts/a.test.ts"])).toBeNull();
+  test("een map met dezelfde voorkant is geen allowlist-pad (pad-grens)", () => {
+    expect(isVeilig(`${veilig1.replace(/\/$/, "")}-extra/a.ts`)).toBe(false);
+    expect(isVeilig(`${veilig1}a.ts`)).toBe(true);
+  });
+  test("een verplaatsing uit scripts/ naar een allowlist-pad: het oude pad laat hem draaien", () => {
+    expect(scriptsTestsOverslaan(affected, ["scripts/a.test.ts", `${veilig1}a.test.ts`])).toBeNull();
   });
   // Wegwerp-repo met een basiscommit met scripts/a.test.ts, apps/b.ts en "apps/met spatie.ts"; geen gpg-ondertekening.
   const metRepo = (f: (dir: string, g: (...a: string[]) => string, basis: string) => void) => {
@@ -240,11 +260,11 @@ describe("scriptsTestsOverslaan: scripts-tests alleen bij geraakte scripts e.d."
       expect(() => gewijzigdeBestanden("0".repeat(40), dir)).toThrow(/git diff/);
     });
   });
-  test("--alles draait altijd", () => {
-    expect(scriptsTestsOverslaan({ alles: true, ci: false }, ["apps/a.ts"])).toBeNull();
+  test("--alles draait altijd, ook bij een diff die alleen de allowlist raakt", () => {
+    expect(scriptsTestsOverslaan({ alles: true, ci: false }, [`${veilig1}a.ts`])).toBeNull();
   });
-  test("--ci draait altijd", () => {
-    expect(scriptsTestsOverslaan({ alles: false, ci: true }, ["apps/a.ts"])).toBeNull();
+  test("--ci draait altijd, ook bij een diff die alleen de allowlist raakt", () => {
+    expect(scriptsTestsOverslaan({ alles: false, ci: true }, [`${veilig1}a.ts`])).toBeNull();
   });
 });
 
@@ -269,12 +289,19 @@ describe("stapScriptsTests: beslissing, lazy git en de veilige kant bij een git-
     return { aanroepen, deps, base };
   };
 
-  test("diff zonder scripts: SKIP met reden, bun test draait niet", () => {
-    const { aanroepen, deps, base } = nep(() => ["apps/a.ts"]);
+  test("diff alleen onder de allowlist: SKIP met reden, bun test draait niet", () => {
+    const { aanroepen, deps, base } = nep(() => [`${SCRIPTS_TESTS_VEILIG[0]}a.ts`]);
     const r = stapScriptsTests({ alles: false, ci: false }, base, deps);
     expect(r.status).toBe("SKIP");
     expect(r.detail).toContain("--alles of --ci");
     expect(aanroepen).toEqual({ gewijzigd: 1, draai: 0, base: 1 });
+  });
+  test("diff met een onbekend pad of een lege diff: draait", () => {
+    for (const lijst of [["apps/a.ts"], []]) {
+      const { aanroepen, deps, base } = nep(() => lijst);
+      expect(stapScriptsTests({ alles: false, ci: false }, base, deps).status).toBe("OK");
+      expect(aanroepen.draai).toBe(1);
+    }
   });
   test("diff met scripts/x.ts: draait en meldt het aantal tests", () => {
     const { aanroepen, deps, base } = nep(() => ["scripts/x.ts"]);
