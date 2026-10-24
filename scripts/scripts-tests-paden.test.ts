@@ -12,13 +12,13 @@
 //     toch al niet overgeslagen);
 //  2. een literal met de pakketnaam (ook `--filter=@lab-bawuah/x` of `@lab-bawuah/x/testing`);
 //  3. een literal die het segment bevat (alleen bij een segment van 8+ tekens, zoals goldcoast-klant; een korte
-//     naam als site is exact te vaak een gewoon woord);
-//  4. join-delen: "apps", "goldcoast-klant" naast elkaar, ook voor korte segmenten als site.
+//     naam als kort is exact te vaak een gewoon woord);
+//  4. join-delen: "apps", "goldcoast-klant" naast elkaar, ook voor korte segmenten als kort.
 // Een bestand dat de scan niet kan laten kloppen krijgt een VRIJSTELLING met reden (hieronder); die dekt dan het
 // hele bestand, dus een nieuwe echte treffer daarin zien we niet.
 //
 // Vangt NIET: dynamisch opgebouwde namen (`apps/${naam}`, join(ROOT, "apps", app) met app uit een variabele,
-// een naam uit een array of uit package.json); een korte segmentnaam (site) los in een literal; de scanners die
+// een naam uit een array of uit package.json); een korte segmentnaam (kort) los in een literal; de scanners die
 // de hele repo lezen via git ls-files (ds-regels, echte-klok, werk-commentaar, test-tenant: hun tests draaien nu op
 // fixtures; zodra een test dat op de echte repo doet, hoort dat pad van de allowlist); imports buiten scripts/ die
 // zelf via een tussenpakket naar de veilige paden wijzen (bijv. packages/lab-commando importeert een veilig
@@ -35,12 +35,7 @@ const SCRIPTS = join(ROOT, "scripts");
 /** Bestanden waarin de scan een echte maar onschuldige treffer geeft, met de reden. Geen wildcard. */
 export const VRIJSTELLING: Record<string, string> = {
   "scripts/vercel-ignore.test.ts":
-    "bouwt een wegwerp-repo in tmp met nep-pakketten (@lab-bawuah/site, goldcoast-klant); leest uit de echte repo alleen apps/site/scripts/vercel-ignore.sh, dat is uitgezonderd",
-  "scripts/ds-regels.ts":
-    "allowlist-data voor de poortstap ds-regels met apps/site-bestanden; die stap draait apart en is zelf affected, geen scripts-test leest de bestanden",
-  "scripts/poort.ts":
-    "zelftest-kanaries (alleen `poort --zelftest`, niet de scripts-tests) kopiëren een apps/site-bestand in een wegwerpmap",
-  "scripts/ds-regels.test.ts": "geeft apps/site-paden als fixture aan pure functies (dekking, sleutel); er wordt niets van de schijf gelezen",
+    "bouwt een wegwerp-repo in tmp met een nep-pakket @lab-bawuah/goldcoast-klant; leest uit de echte repo alleen apps/site/scripts/vercel-ignore.sh (buiten de allowlist)",
 };
 
 type Doel = { pad: string; segment: string; pakket?: string };
@@ -117,7 +112,7 @@ function scriptBestanden(map: string): string[] {
 // Fixtures: een eigen lijst met een fictief pad, zodat de test niet van de echte allowlist afhangt.
 const FIX: Doel[] = [
   { pad: "apps/mijn-klant", segment: "mijn-klant", pakket: "@lab-bawuah/mijn-klant" },
-  { pad: "apps/site", segment: "site", pakket: "@lab-bawuah/site" },
+  { pad: "apps/kort", segment: "kort", pakket: "@lab-bawuah/kort" },
 ];
 const bestaatAlles = () => true;
 const alleVeilig = () => true;
@@ -127,16 +122,16 @@ describe("scripts-tests-paden: geen scripts-test noemt een pad onder SCRIPTS_TES
   test("negatief: een pad onder de allowlist, ook als deel van een langer pad of glob, is rood", () => {
     expect(t('readFileSync(join(ROOT, "apps/mijn-klant/src/a.ts"))')).toHaveLength(1);
     expect(t('new Glob("apps/mijn-klant/**/*.ts")')).toHaveLength(1);
-    expect(t("const p = `apps/site/${naam}`;")).toHaveLength(1);
+    expect(t("const p = `apps/kort/${naam}`;")).toHaveLength(1);
   });
   test("negatief: via de pakketnaam is rood", () => {
     expect(t('import { x } from "@lab-bawuah/mijn-klant";')[0]).toContain("pakketnaam");
     expect(t('"--filter=@lab-bawuah/mijn-klant"').length).toBeGreaterThan(0);
-    expect(t('import x from "@lab-bawuah/site/lib"')[0]).toContain("pakketnaam");
+    expect(t('import x from "@lab-bawuah/kort/lib"')[0]).toContain("pakketnaam");
   });
   test("negatief: via join-delen is rood (twee delen naast elkaar, of een lang segment los)", () => {
     expect(t('join(ROOT, "apps", "mijn-klant", "x.ts")').some((x) => x.includes("join-delen"))).toBe(true);
-    expect(t('join(ROOT, "apps", "site")').some((x) => x.includes("join-delen"))).toBe(true);
+    expect(t('join(ROOT, "apps", "kort")').some((x) => x.includes("join-delen"))).toBe(true);
     expect(t('const naam = "mijn-klant";')[0]).toContain("naam mijn-klant");
   });
   test("negatief: een shellscript of conf (letterlijk) wordt ook gezien", () => {
@@ -145,9 +140,9 @@ describe("scripts-tests-paden: geen scripts-test noemt een pad onder SCRIPTS_TES
   test("geen alarm: een fixture-pad dat niet bestaat, een uitgezonderd pad, een kort woord, commentaar", () => {
     expect(treffers('"apps/mijn-klant/a.ts"', FIX, { bestaat: () => false, veilig: alleVeilig })).toEqual([]);
     expect(treffers('"apps/mijn-klant/vast.sh"', FIX, { bestaat: bestaatAlles, veilig: () => false })).toEqual([]);
-    expect(t('const fase = "site"; app: "site"')).toEqual([]);
-    expect(t("// leest apps/mijn-klant en @lab-bawuah/site niet")).toEqual([]);
-    expect(t('"apps/sitemap/a.ts"')).toEqual([]); // ander pad met dezelfde voorkant
+    expect(t('const fase = "kort"; app: "kort"')).toEqual([]);
+    expect(t("// leest apps/mijn-klant en @lab-bawuah/kort niet")).toEqual([]);
+    expect(t('"apps/kortmap/a.ts"')).toEqual([]); // ander pad met dezelfde voorkant
   });
   test("de echte allowlist: elk pad bestaat in de repo en heeft een package.json met een naam", () => {
     for (const v of SCRIPTS_TESTS_VEILIG) {

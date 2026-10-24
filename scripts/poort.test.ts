@@ -189,11 +189,9 @@ describe("scriptsTestsOverslaan: omgekeerd ontwerp, SKIP alleen als elk bestand 
     "%s: draait",
     (f) => expect(scriptsTestsOverslaan(affected, [f])).toBeNull(),
   );
-  test("uitzonderingen onder een veilige map draaien: workspace-turbo.json(c) en apps/site/scripts/", () => {
+  test("uitzonderingen onder een veilige map draaien: workspace-turbo.json(c)", () => {
     expect(scriptsTestsOverslaan(affected, [`${veilig1}turbo.json`])).toBeNull();
     expect(scriptsTestsOverslaan(affected, [`${veilig2}turbo.jsonc`])).toBeNull();
-    expect(scriptsTestsOverslaan(affected, ["apps/site/scripts/vercel-ignore.sh"])).toBeNull();
-    expect(scriptsTestsOverslaan(affected, ["apps/site/components/a.tsx"])).not.toBeNull();
   });
   test("een map met dezelfde voorkant is geen allowlist-pad (pad-grens)", () => {
     expect(isVeilig(`${veilig1.replace(/\/$/, "")}-extra/a.ts`)).toBe(false);

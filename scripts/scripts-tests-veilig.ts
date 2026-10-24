@@ -10,13 +10,11 @@ export const SCRIPTS_TESTS_VEILIG: readonly string[] = [
   "apps/goldcoast-klant/",
   "apps/goldcoast-operatie/",
   "packages/goldcoast-contracts/",
-  "apps/site/",
-  // packages/goldcoast-query/ komt erbij zodra het package in main staat (de bewaker eist dat het pad bestaat).
+  "packages/goldcoast-query/",
 ];
 
 /** Paden onder een veilige map die tóch gelezen worden. */
 export const SCRIPTS_TESTS_VEILIG_UITZONDERING: readonly { patroon: RegExp; reden: string }[] = [
-  { patroon: /^apps\/site\/scripts(\/|$)/, reden: "vercel-ignore.test.ts kopieert apps/site/scripts/vercel-ignore.sh" },
   { patroon: /^(apps|packages)\/[^/]+\/turbo\.jsonc?$/, reden: "turbo-inputs.test.ts scant elke workspace-turbo.json(c)" },
 ];
 
