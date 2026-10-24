@@ -13,6 +13,7 @@ const NIET_IN_LAB: Record<string, string> = {
   "scripts/ds-regels.ts": "poortstap, draait via `bun lab poort`",
   "scripts/e2e-slot.ts": "poorthulp, gebruikt door poort.ts",
   "scripts/echte-klok.ts": "poortstap, draait via `bun lab poort`",
+  "scripts/gc-data-laag.ts": "poortstap, draait via `bun lab poort`",
   "scripts/git-scrub.ts": "poortstap, draait via `bun lab poort`",
   "scripts/rood-op-basis.ts": "poortstap, draait via `bun lab poort`",
   "scripts/test-integriteit.ts": "poortstap, draait via `bun lab poort`",
