@@ -350,8 +350,7 @@ function stapTestTenant(): Resultaat {
  * Gc-data-laag draait in-process over de getrackte bronbestanden van de Goldcoast-apps (< 1 s): een eigen
  * fetch-laag is FOUT (bestaande in de baseline, mag alleen krimpen).
  */
-function stapGcDataLaag(): Resultaat {
-  const treffers = gdZoek();
+export function stapGcDataLaag(treffers = gdZoek()): Resultaat {
   const r = metBaseline("gc-data-laag", { code: 0, uit: "" }, treffers.map(gdSleutel));
   if (r.status !== "FOUT") return r;
   const nieuw = gdNieuw(treffers, leesBaseline()["gc-data-laag"] ?? []).map((t) => `     ${gdBeschrijf(t)}`);
