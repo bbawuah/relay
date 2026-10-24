@@ -203,8 +203,8 @@ describe("push.sh --verwijder", () => {
 });
 
 describe(".githooks/pre-push", () => {
-  const hook = (extra: Record<string, string>) => {
-    const p = Bun.spawnSync(["sh", PRE_PUSH], { cwd: repo, env: env({ PATH: `${join(dir, "bin")}:${process.env.PATH}`, ...extra }), stdout: "pipe", stderr: "pipe" });
+  const hook = (extra: Record<string, string>, stdin = "") => {
+    const p = Bun.spawnSync(["sh", PRE_PUSH], { cwd: repo, stdin: Buffer.from(stdin), env: env({ PATH: `${join(dir, "bin")}:${process.env.PATH}`, ...extra }), stdout: "pipe", stderr: "pipe" });
     return { code: p.exitCode, fout: p.stderr.toString() };
   };
   beforeEach(() => {
@@ -227,6 +227,58 @@ describe(".githooks/pre-push", () => {
   test("zonder POORT_OVERSLAAN draait de poort, ook voor een agent", () => {
     expect(hook({ LAB_AGENT_ROL: "agent", STILTEVENSTER_NU: "2026-10-18T10:00:00Z" }).code).toBe(0);
     expect(readFileSync(join(dir, "bun.log"), "utf8")).toContain("bun run check");
+  });
+  describe("alleen verwijderen", () => {
+    const NUL = "0".repeat(40);
+    const SHA = "a".repeat(40);
+    const del = (tak: string) => `(delete) ${NUL} refs/heads/${tak} ${SHA}\n`;
+    const echt = (tak: string) => `refs/heads/${tak} ${SHA} refs/heads/${tak} ${NUL}\n`;
+    const poortGedraaid = () => existsSync(join(dir, "bun.log"));
+    test("een push die alleen verwijdert draait de poort niet", () => {
+      const r = hook({}, del("gc/query-3") + del("gc/query-4"));
+      expect(r.code).toBe(0);
+      expect(r.fout).toMatch(/alleen verwijderen/);
+      expect(poortGedraaid()).toBe(false);
+    });
+    test("ook in het stiltevenster en voor een agent", () => {
+      expect(hook({ LAB_AGENT_ROL: "agent", STILTEVENSTER_NU: "2026-10-18T03:30:00Z" }, del("gc/x")).code).toBe(0);
+      expect(poortGedraaid()).toBe(false);
+    });
+    test("een mix van delete en echte push draait de poort", () => {
+      expect(hook({}, del("gc/oud") + echt("gc/nieuw")).code).toBe(0);
+      expect(readFileSync(join(dir, "bun.log"), "utf8")).toContain("bun run check");
+    });
+    test("een delete van main of master is niet vrijgesteld maar geweigerd, ook in een mix", () => {
+      for (const t of ["main", "master"]) {
+        const r = hook({}, del(t));
+        expect(r.code).toBe(1);
+        expect(r.fout).toMatch(/verwijderen mag niet/);
+      }
+      expect(hook({}, echt("gc/nieuw") + del("main")).code).toBe(1);
+      expect(poortGedraaid()).toBe(false);
+    });
+    test("een echte push met rode poort blijft geweigerd", () => {
+      writeFileSync(join(dir, "bin", "bun"), `#!/bin/sh\nexit 1\n`);
+      const r = hook({}, echt("gc/nieuw"));
+      expect(r.code).toBe(1);
+      expect(r.fout).toMatch(/de poort is rood/);
+    });
+    test("een delete met een rode poort slaagt, want de poort draait niet", () => {
+      writeFileSync(join(dir, "bin", "bun"), `#!/bin/sh\nexit 1\n`);
+      expect(hook({}, del("gc/x")).code).toBe(0);
+    });
+    test("push.sh --verwijder tegen een bare origin: de echte hook ziet delete-only en draait de poort niet", () => {
+      git(repo, "push", "-q", "origin", "lead/x:lead/klaar");
+      git(repo, "push", "-q", "origin", "lead/x:main");
+      writeFileSync(join(repo, ".githooks", "pre-push"), readFileSync(PRE_PUSH));
+      mkdirSync(join(dir, "bin2"));
+      writeFileSync(join(dir, "bin2", "bun"), `#!/bin/sh\necho gedraaid >> "${dir}/bun2.log"\nexit 1\n`);
+      chmodSync(join(dir, "bin2", "bun"), 0o755);
+      const r = draai(["--verwijder", "lead/klaar"], { PATH: `${join(dir, "bin2")}:${process.env.PATH}` });
+      expect(r.code).toBe(0);
+      expect(opOrigin("lead/klaar")).toBe("");
+      expect(existsSync(join(dir, "bun2.log"))).toBe(false);
+    });
   });
   describe("stiltevenster", () => {
     const IN = { STILTEVENSTER_NU: "2026-10-18T03:30:00Z" };
