@@ -241,8 +241,8 @@ export type Resultaat = { status: "OK" | "FOUT" | "SKIP"; detail?: string; uitle
 
 type BaselineSoort = "sherif" | "boundaries" | "ds-regels" | "werk-commentaar" | "echte-klok" | "git-scrub" | "test-tenant" | "gc-data-laag";
 
-function metBaseline(soort: BaselineSoort, r: Uitkomst, sleutels: string[], extra: string[] = [], extraLabel = "allowlist verouderd"): Resultaat {
-  const bekend = leesBaseline()[soort] ?? [];
+function metBaseline(soort: BaselineSoort, r: Uitkomst, sleutels: string[], extra: string[] = [], extraLabel = "allowlist verouderd", bekendUit?: string[]): Resultaat {
+  const bekend = bekendUit ?? leesBaseline()[soort] ?? [];
   if (r.code !== 0 && sleutels.length === 0) {
     return { status: "FOUT", detail: "onverwachte uitvoer", uitleg: staart(r.uit) };
   }
@@ -351,10 +351,11 @@ function stapTestTenant(): Resultaat {
  * Gc-data-laag draait in-process over de getrackte bronbestanden van de Goldcoast-apps (< 1 s): een eigen
  * fetch-laag is FOUT (bestaande in de baseline, mag alleen krimpen).
  */
-export function stapGcDataLaag(treffers = gdZoek()): Resultaat {
-  const r = metBaseline("gc-data-laag", { code: 0, uit: "" }, treffers.map(gdSleutel));
+export function stapGcDataLaag(treffers = gdZoek(), bekendUit?: string[]): Resultaat {
+  const bekend = bekendUit ?? leesBaseline()["gc-data-laag"] ?? [];
+  const r = metBaseline("gc-data-laag", { code: 0, uit: "" }, treffers.map(gdSleutel), [], undefined, bekend);
   if (r.status !== "FOUT") return r;
-  const nieuw = gdNieuw(treffers, leesBaseline()["gc-data-laag"] ?? []).map((t) => `     ${gdBeschrijf(t)}`);
+  const nieuw = gdNieuw(treffers, bekend).map((t) => `     ${gdBeschrijf(t)}`);
   return { ...r, uitleg: `${r.uitleg}${nieuw.length ? `\n${nieuw.join("\n")}` : ""}
      Oplossing: ${GD_OPLOSSING}` };
 }
@@ -877,7 +878,7 @@ export const KANARIES: Kanarie[] = [
   },
   {
     stap: "gc-data-laag",
-    wat: "een useEffect met maakClient( in apps/goldcoast-klant",
+    wat: "een useEffect met maakClient( in een fixture-bestand van de klant-app",
     verwacht: /FOUT gc-data-laag .*1 nieuw/,
     zet: (m) =>
       schrijf(
