@@ -16,6 +16,7 @@
 //   test-integriteit  geen verwijderd testbestand, minder test(/it( of nieuwe .skip/.only/.todo zonder "// test-weg: reden" (scripts/test-integriteit.ts)
 //   rood-op-basis  een fix (tak of PR-titel met "fix") brengt een unittest mee die op de basis faalt en op de tak slaagt (scripts/rood-op-basis.ts)
 //   scripts-tests  bun test ./scripts/ (alleen overgeslagen als elk gewijzigd bestand onder SCRIPTS_TESTS_VEILIG valt, scripts/scripts-tests-veilig.ts; --alles, --ci, een lege diff en een git-fout draaien hem)
+//   scripts-typen  tsc -p scripts/tsconfig.json (typecheck van scripts/, strict, types bun); draait alleen als scripts-tests draait (zelfde beslissing, dus zelfde SKIP); elke fout is FOUT, geen baseline
 //   python-tests  python3 -m unittest per map onder tools/ met een test_*.py (tools/brein; < 1 s, altijd)
 //   biome       biome ci: lint (alleen foutregels), geen format  (hele repo)
 //   taken       turbo run lint typecheck test                    (affected; met POORT_DB_VERPLICHT=1 en docker als goldcoast-api/db affected, scripts/db-verplicht.ts)
@@ -42,7 +43,7 @@
 //   --base <ref>     vergelijk met deze ref in plaats van origin/main
 //   --ci             voor .github/workflows/ci.yml: sla de taken over die in
 //                    uitzonderingen.ci van de baseline staan (alleen op de mini)
-//   --alleen <s,…>   alleen deze stappen (sherif,boundaries,ds-regels,werk-commentaar,echte-klok,git-scrub,test-tenant,test-integriteit,rood-op-basis,scripts-tests,python-tests,biome,taken,build,e2e)
+//   --alleen <s,…>   alleen deze stappen (sherif,boundaries,ds-regels,werk-commentaar,echte-klok,git-scrub,test-tenant,test-integriteit,rood-op-basis,scripts-tests,scripts-typen,python-tests,biome,taken,build,e2e)
 //   --zelftest       bewijs dat elke stap afkeurt: per stap een bewuste fout in een
 //                    tijdelijke kopie van de werkkopie; de poort moet daar rood worden
 //   --baseline       schrijf de huidige sherif-, boundaries- en ds-regels-schendingen naar de
@@ -67,6 +68,7 @@ import { beoordeelBare, beschrijf as gsBeschrijf, nieuweTreffers as gsNieuw, OPL
 import { leesPr } from "./bewijs-pr";
 import { dockerBereikbaar, dockerOntbreekt, omgevingVoor, pakkettenVanTaken } from "./db-verplicht";
 import { isVeilig, SCRIPTS_TESTS_VEILIG } from "./scripts-tests-veilig";
+import { logCommando, openLog, zetActief } from "./poort-log";
 import { inStiltevenster } from "./stiltevenster";
 import { leesContext as roLees, stap as roStap } from "./rood-op-basis";
 import { analyseer as tiAnalyseer } from "./test-integriteit";
@@ -74,7 +76,7 @@ import { JUISTE_VORM, sleutel as wcSleutel, zoek as wcZoek } from "./werk-commen
 
 const ROOT = path.resolve(import.meta.dir, "..");
 const BASELINE_PAD = path.join(ROOT, "scripts/poort-baseline.json");
-const STAPPEN = ["sherif", "boundaries", "ds-regels", "werk-commentaar", "echte-klok", "git-scrub", "test-tenant", "test-integriteit", "rood-op-basis", "scripts-tests", "python-tests", "biome", "taken", "build", "e2e"] as const;
+const STAPPEN = ["sherif", "boundaries", "ds-regels", "werk-commentaar", "echte-klok", "git-scrub", "test-tenant", "test-integriteit", "rood-op-basis", "scripts-tests", "scripts-typen", "python-tests", "biome", "taken", "build", "e2e"] as const;
 type Stap = (typeof STAPPEN)[number];
 
 // ── Opties ──────────────────────────────────────────────────────────────────
@@ -126,7 +128,9 @@ export function draai(cmd: string[], env: Record<string, string> = {}, cwd = ROO
   });
   const kleurweg = (t: string) => t.replace(/\x1b\[[0-9;]*m/g, "");
   const stdout = kleurweg(p.stdout.toString());
-  return { code: p.exitCode ?? 1, uit: stdout + kleurweg(p.stderr.toString()), stdout };
+  const uit = stdout + kleurweg(p.stderr.toString());
+  logCommando(cmd, p.exitCode ?? 1, uit);
+  return { code: p.exitCode ?? 1, uit, stdout };
 }
 
 /** De taken uit `turbo run … --dry=json`, alleen uit stdout; null als dat geen JSON is. */
@@ -281,7 +285,7 @@ function stapDsRegels(): Resultaat {
   const uitslagen = dsZoek();
   const treffers = uitslagen.flatMap((u) => u.treffers);
   const verouderd = ongebruikt(treffers).map((m) => `${m}; haal weg uit UITZONDERINGEN in scripts/ds-regels.ts`);
-  const r = metBaseline("ds-regels", { code: 0, uit: "" }, dsSleutels(uitslagen), verouderd);
+  const r = metBaseline("ds-regels", { code: 0, uit: "", stdout: "" }, dsSleutels(uitslagen), verouderd);
   const toegestaan = treffers.filter((t) => t.uitzondering).length;
   return r.status === "OK" ? { ...r, detail: `${r.detail ?? "0 in baseline"}, ${toegestaan} toegestaan` } : r;
 }
@@ -297,7 +301,7 @@ function stapWerkCommentaar(): Resultaat {
   const verlopen = treffers
     .filter((t) => t.soort === "verlopen")
     .map((t) => `verlopen (${t.datum}): ${t.bestand}:${t.regel}  ${t.tekst}; doe het werk, of zet een nieuwe datum met een reden`);
-  const r = metBaseline("werk-commentaar", { code: 0, uit: "" }, ongeldig, verlopen, "verlopen");
+  const r = metBaseline("werk-commentaar", { code: 0, uit: "", stdout: "" }, ongeldig, verlopen, "verlopen");
   if (r.status === "FOUT") return { ...r, uitleg: `${r.uitleg}
      juiste vorm: ${JUISTE_VORM}` };
   return r;
@@ -310,7 +314,7 @@ function stapWerkCommentaar(): Resultaat {
  */
 function stapEchteKlok(): Resultaat {
   const treffers = ekZoek();
-  const r = metBaseline("echte-klok", { code: 0, uit: "" }, treffers.map(ekSleutel));
+  const r = metBaseline("echte-klok", { code: 0, uit: "", stdout: "" }, treffers.map(ekSleutel));
   if (r.status !== "FOUT") return r;
   const nieuw = ekNieuw(treffers, leesBaseline()["echte-klok"] ?? []).map((t) => `     ${ekBeschrijf(t)}`);
   return { ...r, uitleg: `${r.uitleg}${nieuw.length ? `\n${nieuw.join("\n")}` : ""}
@@ -323,7 +327,7 @@ function stapEchteKlok(): Resultaat {
  */
 function stapGitScrub(): Resultaat {
   const treffers = gsZoek();
-  const r = metBaseline("git-scrub", { code: 0, uit: "" }, treffers.map(gsSleutel));
+  const r = metBaseline("git-scrub", { code: 0, uit: "", stdout: "" }, treffers.map(gsSleutel));
   if (r.status !== "FOUT") return r;
   const nieuw = gsNieuw(treffers, leesBaseline()["git-scrub"] ?? []).map((t) => `     ${gsBeschrijf(t)}`);
   return { ...r, uitleg: `${r.uitleg}${nieuw.length ? `\n${nieuw.join("\n")}` : ""}
@@ -336,7 +340,7 @@ function stapGitScrub(): Resultaat {
  */
 function stapTestTenant(): Resultaat {
   const treffers = ttZoek();
-  const r = metBaseline("test-tenant", { code: 0, uit: "" }, treffers.map(ttSleutel));
+  const r = metBaseline("test-tenant", { code: 0, uit: "", stdout: "" }, treffers.map(ttSleutel));
   if (r.status !== "FOUT") return r;
   const nieuw = ttNieuw(treffers, leesBaseline()["test-tenant"] ?? []).map((t) => `     ${ttBeschrijf(t)}`);
   return { ...r, uitleg: `${r.uitleg}${nieuw.length ? `\n${nieuw.join("\n")}` : ""}
@@ -391,15 +395,10 @@ export function gewijzigdeBestanden(base: string, cwd = ROOT): string[] {
 export type ScriptsTestsDeps = { gewijzigd: (base: string) => string[]; draai: (cmd: string[]) => Uitkomst };
 
 /**
- * De root is geen workspace, dus turbo draait deze tests niet; deze stap wel (draait tenzij de diff alleen onder SCRIPTS_TESTS_VEILIG ligt, zie scriptsTestsOverslaan; ~2-4 min).
- * `base` is lazy: bij --alles en --ci wordt noch de basis gekozen noch git aangeroepen.
- * Kan de diff niet gelezen worden (git faalt), dan draaien de tests (de veilige kant) en zegt de melding dat.
+ * De beslissing van scripts-tests, ook gebruikt door scripts-typen (die draait alleen als scripts-tests draait):
+ * `reden` is de SKIP-reden of null (draaien), `noot` zegt dat de diff onleesbaar was en daarom gedraaid is.
  */
-export function stapScriptsTests(
-  o: Pick<Opties, "alles" | "ci">,
-  base: () => string,
-  d: ScriptsTestsDeps = { gewijzigd: gewijzigdeBestanden, draai: (c) => draai(c) },
-): Resultaat {
+function scriptsBeslissing(o: Pick<Opties, "alles" | "ci">, base: () => string, d: ScriptsTestsDeps): { reden: string | null; noot: string } {
   let gewijzigd: string[] = [];
   let diffFout: string | null = null;
   if (!o.alles && !o.ci) {
@@ -409,14 +408,63 @@ export function stapScriptsTests(
       diffFout = e instanceof Error ? e.message.split("\n")[0] ?? String(e) : String(e);
     }
   }
-  const reden = diffFout ? null : scriptsTestsOverslaan(o, gewijzigd);
+  return { reden: diffFout ? null : scriptsTestsOverslaan(o, gewijzigd), noot: diffFout ? ` (diff onleesbaar, dus gedraaid: ${diffFout})` : "" };
+}
+
+/**
+ * De root is geen workspace, dus turbo draait deze tests niet; deze stap wel (draait tenzij de diff alleen onder SCRIPTS_TESTS_VEILIG ligt, zie scriptsTestsOverslaan; ~2-4 min).
+ * `base` is lazy: bij --alles en --ci wordt noch de basis gekozen noch git aangeroepen.
+ * Kan de diff niet gelezen worden (git faalt), dan draaien de tests (de veilige kant) en zegt de melding dat.
+ */
+export function stapScriptsTests(
+  o: Pick<Opties, "alles" | "ci">,
+  base: () => string,
+  d: ScriptsTestsDeps = { gewijzigd: gewijzigdeBestanden, draai: (c) => draai(c) },
+): Resultaat {
+  const { reden, noot } = scriptsBeslissing(o, base, d);
   if (reden) return { status: "SKIP", detail: reden };
   const r = d.draai(["bun", "test", "./scripts/"]);
   const pass = r.uit.match(/^\s*(\d+) pass/m)?.[1];
   const fail = r.uit.match(/^\s*(\d+) fail/m)?.[1];
-  const noot = diffFout ? ` (diff onleesbaar, dus gedraaid: ${diffFout})` : "";
   if (r.code === 0) return { status: "OK", detail: pass ? `${pass} tests${noot}` : noot.trim() || undefined };
   return { status: "FOUT", detail: `${fail ? `${fail} mislukt` : "bun test faalde"}${noot}`, uitleg: staart(r.uit) };
+}
+
+/** Een regel van `tsc --pretty false`: `pad(regel,kolom): error TSnnnn: melding`. */
+export type TscFout = { bestand: string; regel: number; code: string; melding: string };
+
+/** tsc-uitvoer naar bestand:regel; vervolgregels (inspringing) horen bij de vorige melding en vallen weg. */
+export function leesTscFouten(uit: string): TscFout[] {
+  const fouten: TscFout[] = [];
+  for (const l of uit.split("\n")) {
+    const m = l.match(/^(.+?)\((\d+),\d+\): error (TS\d+): (.*)$/);
+    if (m) fouten.push({ bestand: m[1]!, regel: Number(m[2]), code: m[3]!, melding: m[4]! });
+  }
+  return fouten;
+}
+
+/**
+ * Typecheck van scripts/ (scripts/tsconfig.json, `types: ["bun"]`, strict). De root is geen workspace, dus turbo typecheckt
+ * scripts/ niet (c0e23405 en c6bc75e7 brachten zo typefouten op main). Draait alleen als scripts-tests draait: dezelfde
+ * beslissing (scriptsTestsOverslaan), dus SKIP met dezelfde reden; --alles en --ci altijd. Geen baseline: elke fout is FOUT.
+ */
+export function stapScriptsTypen(
+  o: Pick<Opties, "alles" | "ci">,
+  base: () => string,
+  d: ScriptsTestsDeps & { tscAanwezig?: () => boolean } = { gewijzigd: gewijzigdeBestanden, draai: (c) => draai(c) },
+): Resultaat {
+  const { reden, noot } = scriptsBeslissing(o, base, d);
+  if (reden) return { status: "SKIP", detail: reden };
+  if (!(d.tscAanwezig ?? (() => existsSync(bin("tsc"))))()) {
+    return { status: "FOUT", detail: "tsc ontbreekt, draai bun install", uitleg: `${bin("tsc")} bestaat niet; typescript is een devDependency van de root-package.json` };
+  }
+  const r = d.draai([bin("tsc"), "-p", "scripts/tsconfig.json", "--pretty", "false"]);
+  const fouten = leesTscFouten(r.uit);
+  if (r.code === 0 && !fouten.length) return { status: "OK", detail: noot.trim() || undefined };
+  const lijst = fouten.slice(0, 20).map((f) => `     ${f.bestand}:${f.regel} ${f.code} ${f.melding}`).join("\n");
+  const meer = fouten.length > 20 ? `\n     … en ${fouten.length - 20} meer` : "";
+  if (!fouten.length) return { status: "FOUT", detail: `tsc faalde${noot}`, uitleg: staart(r.uit) };
+  return { status: "FOUT", detail: `${fouten.length} typefout${fouten.length === 1 ? "" : "en"} in scripts/${noot}`, uitleg: lijst + meer };
 }
 
 /** Python buiten de workspaces (tools/brein): per map met een test_*.py (ook nog niet gecommit) één unittest-run, alleen stdlib. */
@@ -545,7 +593,7 @@ export async function stapE2e(ctx: Context, dep: E2eAfhankelijk = {}): Promise<R
   if (inStiltevenster(nu())) return venster("(voor het slot)");
   // Maximaal POORT_E2E_SLOTS (standaard 2) volledige e2e-runs tegelijk op de machine;
   // binnen een run POORT_E2E_CONCURRENCY (standaard 2) taken tegelijk.
-  let slot: Awaited<ReturnType<typeof neemSlot>>;
+  let slot: { vrij(): void };
   try {
     slot = await (dep.neemSlot ?? (() => neemSlot(echteOmgeving(process.cwd()), aantalSlots(), undefined, slotPrio())))();
   } catch (e) {
@@ -605,12 +653,25 @@ async function poort(o: Opties): Promise<number> {
   }
   const stappen = (o.alleen ?? [...STAPPEN]).filter((s) => !(o.zonderE2e && s === "e2e"));
   const ctx: Context = { affected: !o.alles, base: null, env: {} };
+  // Logbestand met de volledige uitvoer (scripts/poort-log.ts); een fout hier laat de poort niet falen.
+  const logMap = draai(["git", "rev-parse", "--path-format=absolute", "--git-common-dir"]);
+  const log = openLog({
+    map: path.join(logMap.code === 0 ? logMap.stdout.trim() : path.join(ROOT, ".git"), "lab-poort"),
+    sha: draai(["git", "rev-parse", "HEAD"]).stdout.trim() || "0000000",
+    pad: process.env.POORT_LOGPAD || undefined,
+  });
+  zetActief(log);
+  const uit = (tekst: string) => {
+    console.log(tekst);
+    log.regel(tekst);
+  };
+  log.regel(`poort-start: args=${JSON.stringify(process.argv.slice(2))} modus=${o.alles ? "alles" : "affected"} base=${o.base ?? "origin/main"}`);
   if (!o.alles) {
     const base = kiesBase(o.base);
     ctx.base = base.sha;
     ctx.env = { TURBO_SCM_BASE: base.sha, TURBO_SCM_HEAD: "HEAD" };
-    console.log(`poort: affected t.o.v. ${base.ref} (merge-base ${base.sha.slice(0, 9)})`);
-  } else console.log("poort: alles");
+    uit(`poort: affected t.o.v. ${base.ref} (merge-base ${base.sha.slice(0, 9)})`);
+  } else uit("poort: alles");
 
   const stapBase = () => ctx.base ?? kiesBase(o.base).sha;
   // HEAD en schoon-zijn bij de start: de stempel hoort bij wat getest is, niet bij wat er aan het eind staat
@@ -620,10 +681,11 @@ async function poort(o: Opties): Promise<number> {
   const overgeslagen: Stap[] = [];
   for (const s of STAPPEN) {
     if (!stappen.includes(s)) {
-      if (s === "e2e" && o.zonderE2e) console.log("SKIP e2e            --zonder-e2e");
+      if (s === "e2e" && o.zonderE2e) uit("SKIP e2e            --zonder-e2e");
       continue;
     }
     const t0 = Date.now();
+    log.stapStart(s);
     const r =
       s === "sherif" ? stapSherif()
       : s === "boundaries" ? stapBoundaries()
@@ -635,6 +697,7 @@ async function poort(o: Opties): Promise<number> {
       : s === "test-integriteit" ? stapTestIntegriteit(stapBase())
       : s === "rood-op-basis" ? stapRoodOpBasis(stapBase(), o.ci)
       : s === "scripts-tests" ? stapScriptsTests(o, stapBase)
+      : s === "scripts-typen" ? stapScriptsTypen(o, stapBase)
       : s === "python-tests" ? stapPythonTests()
       : s === "biome" ? stapBiome()
       : s === "taken" ? stapTaken(ctx, o.ci)
@@ -643,10 +706,11 @@ async function poort(o: Opties): Promise<number> {
     if (r.status === "FOUT") fouten++;
     if (r.status === "SKIP") overgeslagen.push(s);
     const tijd = r.status === "SKIP" ? "" : ` (${duur(Date.now() - t0)})`;
+    log.stapEind(s, r.status, Date.now() - t0, r.detail, r.status === "SKIP" ? undefined : r.uitleg);
     console.log(`${r.status.padEnd(4)} ${s.padEnd(14)}${r.detail ? ` ${r.detail}` : ""}${tijd}`);
     if (r.uitleg && r.status !== "SKIP") console.log(r.uitleg);
   }
-  console.log(`poort: ${fouten ? `${fouten} FOUT` : "groen"} in ${duur(Date.now() - begin)}`);
+  uit(`poort: ${fouten ? `${fouten} FOUT` : "groen"} in ${duur(Date.now() - begin)}`);
 
   const eind = { sha: git("rev-parse", "HEAD"), schoon: git("status", "--porcelain") === "" };
   const waarom = geenStempel(fouten, o, start, eind);
@@ -663,6 +727,9 @@ async function poort(o: Opties): Promise<number> {
     });
     if (fout) console.log(geenStempelMelding(fout));
   }
+  zetActief(null);
+  // De laatste regel van een rode poort is het pad (de pre-push-hook geeft zelf een POORT_LOGPAD mee en noemt dat pad).
+  if (log.pad) console.log(fouten ? `poort: rood, volledige uitvoer: ${log.pad}` : `poort: volledige uitvoer: ${log.pad}`);
   return fouten;
 }
 
@@ -685,7 +752,7 @@ export function schrijfStempel(map: string, stempel: { sha: string } & Record<st
  * formaat blijft compatibel.
  */
 export function stempelOvergeslagen(skips: readonly string[]): { overgeslagen?: string[] } {
-  const lijst = skips.filter((s) => s === "scripts-tests");
+  const lijst = skips.filter((s) => s === "scripts-tests" || s === "scripts-typen");
   return lijst.length ? { overgeslagen: lijst } : {};
 }
 
@@ -920,6 +987,12 @@ export const KANARIES: Kanarie[] = [
     wat: "falende test in scripts/",
     verwacht: /FOUT scripts-tests .*\b1 mislukt/,
     zet: (m) => schrijf(m, "scripts/kanarie.test.ts", 'import { expect, test } from "bun:test";\ntest("kanarie", () => expect(1).toBe(2));\n'),
+  },
+  {
+    stap: "scripts-typen",
+    wat: "typefout in scripts/",
+    verwacht: /FOUT scripts-typen .*1 typefout/,
+    zet: (m) => schrijf(m, "scripts/kanarie-typen.ts", 'export const kanarie: number = "geen getal";\n'),
   },
   {
     stap: "python-tests",
