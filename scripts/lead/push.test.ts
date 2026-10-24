@@ -257,6 +257,20 @@ describe(".githooks/pre-push", () => {
       expect(hook({}, echt("gc/nieuw") + del("main")).code).toBe(1);
       expect(poortGedraaid()).toBe(false);
     });
+    test("een lege regel op stdin laat de poort draaien (open falen)", () => {
+      expect(hook({}, "\n").code).toBe(0);
+      expect(readFileSync(join(dir, "bun.log"), "utf8")).toContain("bun run check");
+    });
+    test("een update van een bestaande tak (remote sha niet 0) draait de poort", () => {
+      const b = "b".repeat(40);
+      expect(hook({}, `refs/heads/gc/x ${SHA} refs/heads/gc/x ${b}\n`).code).toBe(0);
+      expect(readFileSync(join(dir, "bun.log"), "utf8")).toContain("bun run check");
+    });
+    test("een tag-delete is vrijgesteld", () => {
+      const r = hook({}, `(delete) ${NUL} refs/tags/t1 ${SHA}\n`);
+      expect(r.code).toBe(0);
+      expect(poortGedraaid()).toBe(false);
+    });
     test("een echte push met rode poort blijft geweigerd", () => {
       writeFileSync(join(dir, "bin", "bun"), `#!/bin/sh\nexit 1\n`);
       const r = hook({}, echt("gc/nieuw"));
