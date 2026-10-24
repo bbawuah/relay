@@ -16,6 +16,7 @@ export const SCRIPTS_TESTS_VEILIG: readonly string[] = [
 /** Paden onder een veilige map die tóch gelezen worden. */
 export const SCRIPTS_TESTS_VEILIG_UITZONDERING: readonly { patroon: RegExp; reden: string }[] = [
   { patroon: /^(apps|packages)\/[^/]+\/turbo\.jsonc?$/, reden: "turbo-inputs.test.ts scant elke workspace-turbo.json(c)" },
+  { patroon: /^(apps|packages)\/[^/]+\/package\.json$/, reden: "geen-latest-dependency.test.ts scant elke workspace-package.json" },
 ];
 
 /** Is dit gewijzigde bestand (of deze map) veilig om geen scripts-tests voor te draaien? */

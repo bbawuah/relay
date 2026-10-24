@@ -34,6 +34,10 @@ const SCRIPTS = join(ROOT, "scripts");
 
 /** Bestanden waarin de scan een echte maar onschuldige treffer geeft, met de reden. Geen wildcard. */
 export const VRIJSTELLING: Record<string, string> = {
+  "scripts/gc-data-laag.ts":
+    "noemt @lab-bawuah/goldcoast-query alleen in de tekst van de foutmelding (OPLOSSING) en apps/goldcoast-* in een regex en commentaar; leest de apps pas bij het draaien van de poortstap (niet in een scripts-test)",
+  "scripts/gc-data-laag.test.ts":
+    "alleen fixtures: tekst en niet-bestaande paden als apps/goldcoast-klant/a.tsx plus de pakketnaam in de meldingstekst; leest geen echte app-bron (de stap krijgt fixture-treffers en een eigen baseline)",
   "scripts/vercel-ignore.test.ts":
     "bouwt een wegwerp-repo in tmp met een nep-pakket @lab-bawuah/goldcoast-klant; leest uit de echte repo alleen apps/site/scripts/vercel-ignore.sh (buiten de allowlist)",
 };

@@ -166,7 +166,7 @@ describe("scriptsTestsOverslaan: omgekeerd ontwerp, SKIP alleen als elk bestand 
   // Paden uit de echte allowlist, zodat de scripts-tests-bewaker dit bestand niet als lezer van die paden telt.
   const [veilig1, veilig2] = SCRIPTS_TESTS_VEILIG as [string, string];
   test("diff met alleen bestanden onder de allowlist (nieuw, gewijzigd, diep): SKIP met reden", () => {
-    const reden = scriptsTestsOverslaan(affected, [`${veilig1}src/a.ts`, `${veilig2}x/y/z.tsx`, `${veilig1}package.json`]);
+    const reden = scriptsTestsOverslaan(affected, [`${veilig1}src/a.ts`, `${veilig2}x/y/z.tsx`, `${veilig1}README.md`]);
     expect(reden).toContain("--alles of --ci");
     expect(reden).toContain(veilig1);
   });
@@ -192,6 +192,10 @@ describe("scriptsTestsOverslaan: omgekeerd ontwerp, SKIP alleen als elk bestand 
   test("uitzonderingen onder een veilige map draaien: workspace-turbo.json(c)", () => {
     expect(scriptsTestsOverslaan(affected, [`${veilig1}turbo.json`])).toBeNull();
     expect(scriptsTestsOverslaan(affected, [`${veilig2}turbo.jsonc`])).toBeNull();
+  });
+  test("uitzonderingen onder een veilige map draaien: workspace-package.json", () => {
+    expect(scriptsTestsOverslaan(affected, [`${veilig1}package.json`])).toBeNull();
+    expect(scriptsTestsOverslaan(affected, [`${veilig2}package.json`])).toBeNull();
   });
   test("een map met dezelfde voorkant is geen allowlist-pad (pad-grens)", () => {
     expect(isVeilig(`${veilig1.replace(/\/$/, "")}-extra/a.ts`)).toBe(false);
