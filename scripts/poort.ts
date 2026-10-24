@@ -354,7 +354,7 @@ function stapTestTenant(): Resultaat {
  */
 export function stapGcDataLaag(treffers = gdZoek(), bekendUit?: string[]): Resultaat {
   const bekend = bekendUit ?? leesBaseline()["gc-data-laag"] ?? [];
-  const r = metBaseline("gc-data-laag", { code: 0, uit: "" }, treffers.map(gdSleutel), [], undefined, bekend);
+  const r = metBaseline("gc-data-laag", { code: 0, uit: "", stdout: "" }, treffers.map(gdSleutel), [], undefined, bekend);
   if (r.status !== "FOUT") return r;
   const nieuw = gdNieuw(treffers, bekend).map((t) => `     ${gdBeschrijf(t)}`);
   return { ...r, uitleg: `${r.uitleg}${nieuw.length ? `\n${nieuw.join("\n")}` : ""}
