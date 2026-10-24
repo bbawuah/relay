@@ -11,13 +11,13 @@ export const CRASH_SIGNALEN = ["SIGTRAP", "SIGSEGV", "SIGBUS", "SIGILL", "SIGABR
 
 export type Resultaat = {
   exitCode: number | null;
-  signalCode?: string | null;
+  signalCode?: string | number | null;
   stdout: { length: number };
   stderr: { length: number };
 };
 
 export const isStartCrash = (r: Resultaat): boolean =>
-  r.exitCode === null && !!r.signalCode && (CRASH_SIGNALEN as readonly string[]).includes(r.signalCode) && r.stdout.length === 0 && r.stderr.length === 0;
+  r.exitCode === null && typeof r.signalCode === "string" && (CRASH_SIGNALEN as readonly string[]).includes(r.signalCode) && r.stdout.length === 0 && r.stderr.length === 0;
 
 /** Draait `start`; bij een start-crash (zie boven) eenmaal opnieuw. `pogingen` telt de starts. */
 export function metStartHerstel<R extends Resultaat>(start: () => R): { r: R; pogingen: number } {
