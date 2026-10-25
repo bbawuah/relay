@@ -202,6 +202,8 @@ type Opties = {
   pr: string | null;
   /** Vaste lijst PR-nummers (--prs), in deze volgorde; null = alles met een geldig akkoord. */
   prs: number[] | null;
+  /** --sla-afgevallen-over: met --prs toch doorgaan als een genoemde PR afvalt (het oude gedrag). */
+  slaAfgevallenOver: boolean;
   /** Seconden wachten op de eerste check-run van de integratie-PR (--ci-wacht; env LAB_WACHTRIJ_CI_WACHT). */
   ciWacht: number;
 };
@@ -211,7 +213,7 @@ export const standaardPoort = (basis: string) => `bun install --frozen-lockfile 
 export const STANDAARD_POORT = standaardPoort("origin/main");
 
 export function leesOpties(args: string[]): Opties | string {
-  const o: Opties = { droog: false, poortCmd: "", nu: null, basis: "origin/main", map: null, ruim: false, pr: null, prs: null, ciWacht: Number(process.env.LAB_WACHTRIJ_CI_WACHT ?? 30) || 0 };
+  const o: Opties = { droog: false, poortCmd: "", nu: null, basis: "origin/main", map: null, ruim: false, pr: null, prs: null, slaAfgevallenOver: false, ciWacht: Number(process.env.LAB_WACHTRIJ_CI_WACHT ?? 30) || 0 };
   let eigenPoort = false;
   for (let i = 0; i < args.length; i++) {
     const a = args[i];
@@ -228,6 +230,7 @@ export function leesOpties(args: string[]): Opties | string {
         if (!/^\d+(,\d+)*$/.test(v)) return `--prs verwacht nummers met komma's, bijvoorbeeld 81,82; kreeg ${v}`;
         o.prs = [...new Set(v.split(",").map(Number))];
       }
+      else if (a === "--sla-afgevallen-over") o.slaAfgevallenOver = true;
       else if (a === "--ci-wacht") {
         const v = waarde();
         if (!/^\d+$/.test(v)) return `--ci-wacht verwacht seconden, kreeg ${v}`;
@@ -245,6 +248,7 @@ export function leesOpties(args: string[]): Opties | string {
   }
   if (!eigenPoort) o.poortCmd = standaardPoort(o.basis);
   if (o.prs && o.ruim) return "--prs hoort niet bij --ruim-takken";
+  if (o.slaAfgevallenOver && !o.prs) return "--sla-afgevallen-over hoort bij --prs";
   if (o.nu && !leesStempel(o.nu)) return `--nu moet jjjjmmdd-hhmm zijn, kreeg ${o.nu}`;
   if (o.pr && !o.ruim) return "een PR-nummer hoort bij --ruim-takken";
   return o;
@@ -385,6 +389,15 @@ function hoofd(args: string[]): never {
     afgevallen = o.prs.filter((n) => !geldig.has(n)).map((n) => ({ nummer: n, reden: reden.get(n) ?? "niet open of zonder geldig akkoord" }));
   }
   for (const a of afgevallen) console.log(`wachtrij: #${a.nummer} overgeslagen: ${a.reden}`);
+  // Een vaste lijst is een bewuste keuze: een genoemde PR die afvalt stopt de run vóór het samenvoegen
+  // (25 okt: de poort draaide en er kwam een integratie-PR zonder die PR). Ook bij --droog.
+  if (o.prs && afgevallen.length && !o.slaAfgevallenOver) {
+    return klaar(
+      1,
+      `wachtrij: ${afgevallen.length} van de ${o.prs.length} PR('s) uit --prs vallen af, er is niets samengevoegd:\n${afgevallen.map((a) => `  #${a.nummer}: ${a.reden}`).join("\n")}\n` +
+        "Herstel dat (akkoord op de huidige head, open PR), of draai met --sla-afgevallen-over om zonder deze PR's door te gaan.",
+    );
+  }
   if (!gekozen.length) return klaar(0, "wachtrij: leeg, geen open PR met een geldig \"Lead-review: akkoord <sha7>\"");
 
   // --nu bepaalt alleen de naam van de tak; het stiltevenster gaat op de echte klok

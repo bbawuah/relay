@@ -222,6 +222,9 @@ describe("tijd en opties", () => {
     expect(leesOpties(["--prs", "81,82,81"])).toMatchObject({ prs: [81, 82] });
     expect(leesOpties(["--prs", "81;82"])).toMatch(/--prs verwacht/);
     expect(leesOpties(["--prs", "81", "--ruim-takken"])).toMatch(/--prs hoort niet/);
+    expect(leesOpties(["--prs", "81"])).toMatchObject({ slaAfgevallenOver: false });
+    expect(leesOpties(["--prs", "81", "--sla-afgevallen-over"])).toMatchObject({ slaAfgevallenOver: true });
+    expect(leesOpties(["--sla-afgevallen-over"])).toMatch(/hoort bij --prs/);
   });
 });
 
@@ -492,21 +495,101 @@ describe("wachtrij.ts", () => {
     expect(existsSync(wt)).toBe(false);
   });
 
-  test("--prs: alleen die PR's, in die volgorde; een PR zonder geldig akkoord valt af met reden", () => {
+  test("--prs: alleen die PR's, in die volgorde", () => {
     maakTak("tak-1", "b.txt", "een\n");
     maakTak("tak-2", "c.txt", "twee\n");
     maakTak("tak-3", "d.txt", "drie\n");
-    zetPrs([prVoorTak(1, "tak-1"), prVoorTak(2, "tak-2"), prVoorTak(3, "tak-3", { comments: [] })]);
+    zetPrs([prVoorTak(1, "tak-1"), prVoorTak(2, "tak-2"), prVoorTak(3, "tak-3")]);
     const droog = draaiWachtrij(["--droog", "--nu", "20261006-1200", "--map", wt, "--prs", "3,2"]);
-    expect(droog.uit).toMatch(/#3 overgeslagen: niet open of zonder geldig akkoord/);
+    expect(droog.code).toBe(0);
     expect(droog.uit).toMatch(/vaste lijst via --prs/);
     expect(droog.uit).not.toContain("#1 tak-1");
-    const r = draaiWachtrij(["--nu", "20261006-1200", "--map", wt, "--poort-cmd", "true", "--prs", "2,3,9"]);
+    const r = draaiWachtrij(["--nu", "20261006-1200", "--map", wt, "--poort-cmd", "true", "--prs", "2,3"]);
     expect(r.code).toBe(0);
-    expect(r.uit).toMatch(/#9 overgeslagen/);
-    expect(r.uit).toMatch(/Lead: controleer eerst de lijst PR's in de integratie-PR \(samengevoegd: #2; eruit: #3 #9\)/);
     expect(git(wt, "merge-base", "--is-ancestor", sha("tak-1"), "HEAD").code).not.toBe(0);
+    expect(git(wt, "merge-base", "--is-ancestor", sha("tak-2"), "HEAD").code).toBe(0);
     expect(log("create.txt")).toContain("vaste lijst via --prs");
+  });
+
+  describe("--prs met een PR die afvalt", () => {
+    const opzet = () => {
+      maakTak("tak-1", "b.txt", "een\n");
+      maakTak("tak-2", "c.txt", "twee\n");
+      maakTak("tak-3", "d.txt", "drie\n");
+      // 3: geen akkoord; 4 staat niet in de lijst met open PR's; 5: verouderd akkoord
+      zetPrs([prVoorTak(1, "tak-1"), prVoorTak(2, "tak-2"), prVoorTak(3, "tak-3", { comments: [] }), pr(5, { comments: [{ body: "Lead-review: akkoord 1234567" }] })]);
+    };
+    const geenSporen = () => {
+      expect(existsSync(wt)).toBe(false);
+      expect(git(repo, "branch", "--list", "wachtrij/*").uit).toBe("");
+      expect(remoteTakken()).not.toContain("wachtrij/");
+      expect(log("create.txt")).toBe("");
+      expect(log("gh.log")).not.toContain("pr create");
+    };
+
+    test("stopt met exit 1 en per PR de reden, vóór worktree, poort en integratie-PR", () => {
+      opzet();
+      // --poort-cmd schrijft een bestand: het mag niet draaien
+      const poort = `touch ${join(dir, "poort-gedraaid")}`;
+      const r = draaiWachtrij(["--nu", "20261006-1200", "--map", wt, "--poort-cmd", poort, "--prs", "2,3,4,5"]);
+      expect(r.reden).toBe("exit 1");
+      expect(r.fout).toContain("3 van de 4");
+      expect(r.fout).toMatch(/#3: .*akkoord/);
+      expect(r.fout).toMatch(/#4: niet open of zonder geldig akkoord/);
+      expect(r.fout).toMatch(/#5: .*verouderd akkoord/);
+      expect(r.fout).toContain("--sla-afgevallen-over");
+      expect(existsSync(join(dir, "poort-gedraaid"))).toBe(false);
+      geenSporen();
+    });
+
+    test("één afgevallen PR is genoeg, ook als alle andere in orde zijn", () => {
+      opzet();
+      const r = draaiWachtrij(["--nu", "20261006-1200", "--map", wt, "--poort-cmd", "true", "--prs", "1,2,3"]);
+      expect(r.code).toBe(1);
+      expect(r.fout).toMatch(/#3: /);
+      expect(r.fout).not.toMatch(/#1: |#2: /);
+      geenSporen();
+    });
+
+    test("ook als geen enkele genoemde PR geldig is: exit 1 in plaats van 'leeg'", () => {
+      opzet();
+      const r = draaiWachtrij(["--nu", "20261006-1200", "--map", wt, "--poort-cmd", "true", "--prs", "3"]);
+      expect(r.code).toBe(1);
+      expect(r.fout).toMatch(/#3: /);
+      geenSporen();
+    });
+
+    test("--droog meldt het ook met exit 1", () => {
+      opzet();
+      const r = draaiWachtrij(["--droog", "--nu", "20261006-1200", "--map", wt, "--prs", "2,3"]);
+      expect(r.code).toBe(1);
+      expect(r.fout).toMatch(/#3: /);
+      geenSporen();
+    });
+
+    test("--sla-afgevallen-over: het oude gedrag, de rest wordt samengevoegd en de body noemt wie eruit viel", () => {
+      opzet();
+      const r = draaiWachtrij(["--nu", "20261006-1200", "--map", wt, "--poort-cmd", "true", "--prs", "2,3,9", "--sla-afgevallen-over"]);
+      expect(r.code).toBe(0);
+      expect(r.uit).toMatch(/#3 overgeslagen/);
+      expect(r.uit).toMatch(/#9 overgeslagen/);
+      expect(r.uit).toMatch(/Lead: controleer eerst de lijst PR's in de integratie-PR \(samengevoegd: #2; eruit: #3 #9\)/);
+      expect(git(wt, "merge-base", "--is-ancestor", sha("tak-2"), "HEAD").code).toBe(0);
+      expect(log("create.txt")).toContain("vaste lijst via --prs");
+    });
+
+    test("zonder afvallers verandert er niets, ook niet met --sla-afgevallen-over", () => {
+      opzet();
+      const r = draaiWachtrij(["--nu", "20261006-1200", "--map", wt, "--poort-cmd", "true", "--prs", "1,2", "--sla-afgevallen-over"]);
+      expect(r.code).toBe(0);
+    });
+
+    test("zonder --prs blijft afvallen gewoon een melding (alles met een akkoord)", () => {
+      opzet();
+      const r = draaiWachtrij(["--nu", "20261006-1200", "--map", wt, "--poort-cmd", "true"]);
+      expect(r.code).toBe(0);
+      expect(r.uit).toMatch(/#5 overgeslagen/);
+    });
   });
 
   test("de body noemt de echte --basis en de poort draait met --base", () => {
