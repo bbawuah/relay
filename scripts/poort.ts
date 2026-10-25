@@ -12,6 +12,7 @@
 //   werk-commentaar  TODO/HACK/FIXME/XXX/workaround alleen als TODO(JJJJ-MM-DD): reden; verlopen = FOUT
 //   echte-klok  unittests wachten niet op de echte klok: Bun.sleep/setTimeout ≥ 10 ms = FOUT (scripts/echte-klok.ts)
 //   test-tenant goldcoast-tests gebruiken geen vaste, gedeelde tenant-id: nieuweTestTenant() (scripts/test-tenant.ts)
+//   mollie-sleutels geen Mollie-sleutel in de repo; live dicht zolang de globale sleutel in infra staat (scripts/mollie-sleutels.ts)
 //   gc-data-laag  geen eigen fetch/maakClient in een useEffect of useState+useEffect-laadpatroon in apps/goldcoast-klant en -operatie: useQuery/useMutation (scripts/gc-data-laag.ts)
 //   git-scrub   een testbestand dat git aanroept gebruikt een env zonder GIT_* (schoneEnv()); anders FOUT (scripts/git-scrub.ts)
 //   test-integriteit  geen verwijderd testbestand, minder test(/it( of nieuwe .skip/.only/.todo zonder "// test-weg: reden" (scripts/test-integriteit.ts)
@@ -44,7 +45,7 @@
 //   --base <ref>     vergelijk met deze ref in plaats van origin/main
 //   --ci             voor .github/workflows/ci.yml: sla de taken over die in
 //                    uitzonderingen.ci van de baseline staan (alleen op de mini)
-//   --alleen <s,…>   alleen deze stappen (sherif,boundaries,ds-regels,werk-commentaar,echte-klok,git-scrub,test-tenant,gc-data-laag,test-integriteit,rood-op-basis,scripts-tests,scripts-typen,python-tests,biome,taken,build,e2e)
+//   --alleen <s,…>   alleen deze stappen (sherif,boundaries,ds-regels,werk-commentaar,echte-klok,git-scrub,test-tenant,mollie-sleutels,gc-data-laag,test-integriteit,rood-op-basis,scripts-tests,scripts-typen,python-tests,biome,taken,build,e2e)
 //   --zelftest       bewijs dat elke stap afkeurt: per stap een bewuste fout in een
 //                    tijdelijke kopie van de werkkopie; de poort moet daar rood worden
 //   --baseline       schrijf de huidige sherif-, boundaries- en ds-regels-schendingen naar de
@@ -65,6 +66,7 @@ import { aantalSlots, echteOmgeving, neemSlot, slotPrio } from "./e2e-slot";
 import { ongebruikt, sleutels as dsSleutels, zoek as dsZoek } from "./ds-regels";
 import { beschrijf as ekBeschrijf, nieuweTreffers as ekNieuw, OPLOSSING as EK_OPLOSSING, sleutel as ekSleutel, zoek as ekZoek } from "./echte-klok";
 import { beschrijf as gdBeschrijf, nieuweTreffers as gdNieuw, OPLOSSING as GD_OPLOSSING, sleutel as gdSleutel, zoek as gdZoek } from "./gc-data-laag";
+import { stapMollieSleutels } from "./mollie-sleutels";
 import { beschrijf as ttBeschrijf, nieuweTreffers as ttNieuw, OPLOSSING as TT_OPLOSSING, sleutel as ttSleutel, zoek as ttZoek } from "./test-tenant";
 import { beoordeelBare, beschrijf as gsBeschrijf, nieuweTreffers as gsNieuw, OPLOSSING as GS_OPLOSSING, sleutel as gsSleutel, zoek as gsZoek } from "./git-scrub";
 import { leesPr } from "./bewijs-pr";
@@ -78,7 +80,7 @@ import { JUISTE_VORM, sleutel as wcSleutel, zoek as wcZoek } from "./werk-commen
 
 const ROOT = path.resolve(import.meta.dir, "..");
 const BASELINE_PAD = path.join(ROOT, "scripts/poort-baseline.json");
-const STAPPEN = ["sherif", "boundaries", "ds-regels", "werk-commentaar", "echte-klok", "git-scrub", "test-tenant", "gc-data-laag", "test-integriteit", "rood-op-basis", "scripts-tests", "scripts-typen", "python-tests", "biome", "taken", "build", "e2e"] as const;
+const STAPPEN = ["sherif", "boundaries", "ds-regels", "werk-commentaar", "echte-klok", "git-scrub", "test-tenant", "mollie-sleutels", "gc-data-laag", "test-integriteit", "rood-op-basis", "scripts-tests", "scripts-typen", "python-tests", "biome", "taken", "build", "e2e"] as const;
 type Stap = (typeof STAPPEN)[number];
 
 // ── Opties ──────────────────────────────────────────────────────────────────
@@ -711,6 +713,7 @@ async function poort(o: Opties): Promise<number> {
       : s === "echte-klok" ? stapEchteKlok()
       : s === "git-scrub" ? stapGitScrub()
       : s === "test-tenant" ? stapTestTenant()
+      : s === "mollie-sleutels" ? stapMollieSleutels()
       : s === "gc-data-laag" ? stapGcDataLaag()
       : s === "test-integriteit" ? stapTestIntegriteit(stapBase())
       : s === "rood-op-basis" ? stapRoodOpBasis(stapBase(), o.ci)
@@ -942,6 +945,12 @@ export const KANARIES: Kanarie[] = [
         "apps/goldcoast-api/src/kanarie-tenant.test.ts",
         'import { expect, test } from "bun:test";\nconst TENANT = "11111111-1111-4111-8111-111111111111";\ntest("kanarie", () => {\n  expect(TENANT).toBeString();\n});\n',
       ),
+  },
+  {
+    stap: "mollie-sleutels",
+    wat: "een nep-live_-sleutel in een fixture-bestand van apps/template",
+    verwacht: /FOUT mollie-sleutels .*1 treffer/,
+    zet: (m) => schrijf(m, "apps/template/src/kanarie-mollie.ts", `export const k = "${"live"}_${"Nep".padEnd(24, "x")}";\n`),
   },
   {
     stap: "gc-data-laag",
