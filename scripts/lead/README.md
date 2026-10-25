@@ -39,6 +39,7 @@ Veel sessies tegelijk: `spawn.sh --meerdere lijst.txt --lead <n> [--model ..] [-
 | `--sublead` | Start een sub-lead: de startzin verwijst naar `scripts/lead/sublead.md` (bouwer, reviewer die niet plant, één herstelronde met de Agent-tool) en vraagt een korte melding (PR, sha, oordeel, open punten). |
 | `--workflow <JJJJ-MM-DD>` | Alleen bij `--sublead`, en alleen als Brian workflows toestond op die datum (de lead noteert dat in `~/vault-b-status/lead.md`): de startzin zegt dat en wijst naar `scripts/lead/vaste-cyclus.js`. Zonder deze vlag staat er "Geen Workflow-tool." in de startzin. |
 | `--vervolg <tak>` | Verse sessie op een bestaande tak (lokaal of `origin/<tak>` in `--map`, anders exit 1): de startzin laat haar alleen de opdracht en `git log`/diff van de tak lezen, geen oude context. Sluit `--sublead` uit. |
+| `--t3` | Start de sessie als thread in T3 Code in plaats van in tmux; `--map` moet een eigen worktree zijn. Zie "`--t3`" hieronder. |
 | `--droog` | Alleen tonen. |
 
 Wat het doet:
@@ -50,6 +51,26 @@ Wat het doet:
 5. Print het pane-id (bijvoorbeeld `%12`) op stdout.
 
 Het script moet binnen tmux draaien (dat eist `agent-spawn.sh`). Voor tests kunnen de wachttijden en het spawn-script worden overschreven: `LAB_SPAWN_SCRIPT`, `LAB_SPAWN_WACHT`, `LAB_SPAWN_POLS`, `LAB_SPAWN_BEWIJS` (hele getallen). `bun test scripts/lead/spawn-vertrouwen.test.ts` toetst het wachten met een echte tmux op een wegwerp-socket (`spawntest-<pid>`) en een nep-spawnscript.
+
+### `--t3`: sessie als thread in T3 Code
+
+`spawn.sh --t3 --naam <n> --opdracht <bestand> --map <eigen worktree> [--model ..] [--lead ..]` start de sessie niet in tmux maar als thread in T3 Code (de server die de T3-desktop-app via SSH op deze machine draait). Brian ziet de thread dan in de app op de laptop, met diff-review en checkpoints. Werkt ook met `--sublead`, `--vervolg`, `--meerdere` en `--droog`.
+
+1. **Map.** `--map` moet de wortel van een eigen linked worktree zijn: niet de hoofdcheckout, geen submap, en `.claude/settings.local.json` moet daar git-genegeerd zijn. Anders exit 1 en er wordt niets geschreven.
+2. **Identiteit.** T3 kent geen omgeving per thread, alleen per provider-instantie. Daarom zet het script `LAB_AGENT_NAAM`, `LAB_AGENT_ROL`, `LAB_LEAD_NAAM`, `LAB_OPDRACHT` en `LAB_SPAWN_ID` in `env` van `<map>/.claude/settings.local.json` (met jq; andere sleutels blijven staan). De Claude-provider van T3 leest dat bestand per checkout, dus de hooks (`grenzen.sh`, register, pre-push) zien de sessie als agent. Gevolg: één T3-sessie per checkout. Draagt het bestand al een andere `LAB_AGENT_NAAM`, dan weigert het script. Haal na afloop de `LAB_*`-sleutels weg als je de worktree hergebruikt; elke andere Claude-sessie in die map krijgt de identiteit ook.
+3. **Project en thread.** Is de map nog geen T3-project (`t3 thread list` in de map faalt), dan `t3 project add --title <naam> <map>`. Daarna `t3 thread start --title <naam> --provider claudeAgent --model <slug> <map> -` met de startzin op stdin. Model: `sonnet` geeft `claude-sonnet-5-5`, `opus` geeft `claude-opus-5-5`, zonder `--model` geldt `LAB_T3_MODEL` (standaard `claude-opus-5-5`). Provider: `LAB_T3_PROVIDER` (standaard `claudeAgent`).
+4. **Startzin.** Dezelfde als in tmux, plus: geen `AskUserQuestion` (vraag in tekst) en het laatste rapport ook als laatste antwoord in de thread.
+5. **Bewijs.** Pollt `t3 thread show <id> --json` (max `LAB_SPAWN_BEWIJS` s) tot de thread minstens 3 items heeft. Item 1 is de startzin, item 2 een command_execution die binnen milliseconden meedraait (vermoedelijk een hook), item 3 is het eerste werk van de agent. Een status `failed`, `error`, `interrupted` of `cancelled` geeft exit 1.
+6. **Uitvoer.** De laatste regel is `t3:<thread-id>`, ook in `--meerdere`.
+
+De `t3`-binary staat niet op `PATH`: het script neemt `LAB_T3`, anders `t3` op `PATH`, anders de nieuwste `~/.t3/runtime/versions/*/t3`.
+
+Wat de lead moet weten (proef 25 okt 2026, T3 0.1.2):
+
+- **Rapport lezen.** Een SendMessage van een T3-thread naar de lead kwam in de proef niet aan: de lead-sessie draaide als achtergrondsessie en het bericht werd vastgehouden. Niet getoetst: een lead in tmux. Lees het rapport daarom met `t3 thread show <id> --messages 1`. T3-threads staan wel in `ListAgents`, als `<mapnaam>-<xx>`, niet onder `--naam`.
+- **Nooit sturen bij een open vraag.** `t3 thread send` naar een thread met `pendingRequestCount > 0` laat die vraag vastlopen (T3-issue #15517). Het script waarschuwt op stderr als de thread direct een vraag stelt. Naar een bezige thread sturen mag: het bericht komt als volgende beurt (`Queued.`).
+- **Stoppen of een vraag beantwoorden** kan alleen in de app; daar is geen CLI voor.
+- **Rechten.** Threads draaien in de standaardmodus van het project (nu Full access). De hooks gelden ook dan.
 
 ## merge.sh
 

@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
 # Start een Claude-sessie in een eigen tmux-venster en geef die een opdracht.
 # Gebruik: scripts/lead/spawn.sh --naam <n> --opdracht <bestand> [--model sonnet|opus]
-#          [--map <pad>] [--lead <unieke naam>] [--sublead [--workflow <JJJJ-MM-DD>]] [--vervolg <tak>] [--droog]
+#          [--map <pad>] [--lead <unieke naam>] [--sublead [--workflow <JJJJ-MM-DD>]] [--vervolg <tak>] [--t3] [--droog]
+#          --t3: start de sessie als thread in T3 Code (server op deze machine) in plaats van in tmux; --map moet dan
+#          een eigen worktree zijn. Laatste regel van de uitvoer: t3:<thread-id>.
 #        scripts/lead/spawn.sh --meerdere <lijst> [--model ..] [--map ..] [--lead ..] [--droog]
 #          lijst: per regel `naam opdrachtbestand [sonnet|opus]` (# en lege regels worden overgeslagen). Alle sessies
 #          starten parallel; per sessie dezelfde controles als hierboven; het eindoordeel is luid: exit 1 en een regel
@@ -23,7 +25,7 @@ for v in WACHT POLS BEWIJS; do
 done
 [[ $WACHT_VERTROUWEN =~ ^[0-9]+$ ]] || fout "WACHT_VERTROUWEN moet een geheel getal zijn, niet '$WACHT_VERTROUWEN'"
 
-naam="" opdracht="" model="" map="$PWD" lead="" droog=0 sublead=0 vervolg="" workflow="" meerdere=""
+naam="" opdracht="" model="" map="$PWD" lead="" droog=0 sublead=0 vervolg="" workflow="" meerdere="" t3=0
 waarde() { [ "$#" -ge 2 ] || fout "optie $1 heeft een waarde nodig"; }
 while [ $# -gt 0 ]; do
   case $1 in
@@ -37,7 +39,8 @@ while [ $# -gt 0 ]; do
     --vervolg) waarde "$@"; vervolg=$2; shift 2 ;;
     --droog) droog=1; shift ;;
     --meerdere) waarde "$@"; meerdere=$2; shift 2 ;;
-    -h|--help) sed -n '2,9p' "$0"; exit 0 ;;
+    --t3) t3=1; shift ;;
+    -h|--help) sed -n '2,11p' "$0"; exit 0 ;;
     *) fout "onbekende optie: $1" ;;
   esac
 done
@@ -69,6 +72,7 @@ if [ -n "$meerdere" ]; then
     [ -z "${modellen[$i]}" ] || args+=(--model "${modellen[$i]}")
     [ -z "$lead" ] || args+=(--lead "$lead")
     [ "$droog" = 0 ] || args+=(--droog)
+    [ "$t3" = 0 ] || args+=(--t3)
     bash "$zelf" "${args[@]}" >"$uitmap/${namen[$i]}.uit" 2>"$uitmap/${namen[$i]}.fout" &
     pids+=($!)
   done
@@ -124,10 +128,104 @@ if [ -n "$vervolg" ]; then
       git -C "$map" rev-parse --verify --quiet "refs/remotes/origin/$vervolg" >/dev/null
   ) || fout "tak '$vervolg' bestaat niet (lokaal of op origin) in $map"
 fi
-[ "$droog" = 1 ] || [ -f "$SPAWN" ] || fout "spawn-script niet gevonden: $SPAWN"
+[ "$droog" = 1 ] || [ "$t3" = 1 ] || [ -f "$SPAWN" ] || fout "spawn-script niet gevonden: $SPAWN"
 
 opdracht=$(cd "$(dirname "$opdracht")" && pwd)/$(basename "$opdracht")
 map=$(cd "$map" && pwd)
+
+# --- T3 Code ---------------------------------------------------------------------------------------------------
+# T3 kent geen omgeving per thread (alleen per provider-instantie), dus de identiteit voor de hooks gaat in
+# <map>/.claude/settings.local.json (git-genegeerd), die de Claude-provider van T3 per checkout inleest. Eén
+# identiteit per checkout: daarom alleen een eigen worktree, nooit de hoofdcheckout of een map van een andere sessie.
+git_schoon() (
+  # GIT_*-variabelen (pre-push-hook) zouden git naar een andere repo leiden
+  while IFS= read -r v; do unset "$v"; done < <(compgen -e | grep '^GIT_' || true)
+  git "$@"
+)
+
+t3_bin() {
+  if [ -n "${LAB_T3:-}" ]; then echo "$LAB_T3"; return; fi
+  command -v t3 2>/dev/null && return
+  # de desktop-app installeert de server buiten PATH
+  ls -d "$HOME"/.t3/runtime/versions/*/t3 2>/dev/null | sort -V | tail -n 1
+}
+
+t3_controleer_map() {
+  command -v jq >/dev/null 2>&1 || fout "--t3 heeft jq nodig"
+  local top gemeen eigen inst bestaand
+  top=$(git_schoon -C "$map" rev-parse --show-toplevel 2>/dev/null) || fout "--t3: $map is geen git-checkout"
+  [ "$(cd "$top" && pwd -P)" = "$(cd "$map" && pwd -P)" ] || fout "--t3: --map moet de wortel van een worktree zijn ($top), geen submap"
+  gemeen=$(cd "$map" && cd "$(git_schoon rev-parse --git-common-dir)" && pwd -P)
+  eigen=$(cd "$(git_schoon -C "$map" rev-parse --absolute-git-dir)" && pwd -P)
+  [ "$eigen" != "$gemeen" ] || fout "--t3: $map is de hoofdcheckout; maak een eigen worktree (git worktree add) en geef die als --map"
+  git_schoon -C "$map" check-ignore -q .claude/settings.local.json ||
+    fout "--t3: .claude/settings.local.json is niet git-genegeerd in $map; de identiteit zou dan in een commit kunnen belanden"
+  inst="$map/.claude/settings.local.json"
+  if [ -f "$inst" ]; then
+    jq -e 'type == "object"' "$inst" >/dev/null 2>&1 || fout "--t3: $inst is geen JSON-object; niets aangeraakt"
+    bestaand=$(jq -r '.env.LAB_AGENT_NAAM // ""' "$inst")
+    [ -z "$bestaand" ] || [ "$bestaand" = "$naam" ] ||
+      fout "--t3: $map draagt al de identiteit van sessie '$bestaand' (env in $inst); één T3-sessie per checkout. Is die klaar, haal dan de LAB_*-sleutels uit env weg"
+  fi
+  return 0
+}
+
+t3_start() {
+  local zin=$1 bin model_slug provider inst tmp uit id verstreken js st items pend
+  t3_controleer_map
+  bin=$(t3_bin || true)
+  provider="${LAB_T3_PROVIDER:-claudeAgent}"
+  case $model in
+    sonnet) model_slug=claude-sonnet-5-5 ;;
+    opus) model_slug=claude-opus-5-5 ;;
+    *) model_slug="${LAB_T3_MODEL:-claude-opus-5-5}" ;;
+  esac
+  inst="$map/.claude/settings.local.json"
+  if [ "$droog" = 1 ]; then
+    echo "droog: zet env LAB_AGENT_NAAM=$naam LAB_AGENT_ROL=$rol LAB_LEAD_NAAM=$lead LAB_OPDRACHT=$opdracht_q LAB_SPAWN_ID=$spawn_id in $inst (overige sleutels blijven)"
+    echo "droog: ${bin:-t3} project add --title $naam $map (alleen als de map nog geen T3-project is)"
+    echo "droog: ${bin:-t3} thread start --title $naam --provider $provider --model $model_slug $map - (startzin op stdin)"
+    echo "droog: startzin: $zin"
+    echo "droog: controleer met thread show dat de thread aan het werk is (max ${BEWIJS}s); laatste regel t3:<thread-id>"
+    exit 0
+  fi
+  [ -n "$bin" ] && [ -x "$bin" ] || fout "--t3: t3 niet gevonden (zet LAB_T3, of verbind T3 Code eenmaal met deze machine zodat ~/.t3/runtime bestaat)"
+
+  mkdir -p "$map/.claude"
+  [ -f "$inst" ] || echo '{}' >"$inst"
+  tmp=$(mktemp "$inst.XXXXXX")
+  jq --arg n "$naam" --arg r "$rol" --arg l "$lead" --arg o "$opdracht" --arg s "$spawn_id" \
+    '.env = ((.env // {}) + {LAB_AGENT_NAAM: $n, LAB_AGENT_ROL: $r, LAB_LEAD_NAAM: $l, LAB_OPDRACHT: $o, LAB_SPAWN_ID: $s})' \
+    "$inst" >"$tmp" || { rm -f "$tmp"; fout "--t3: kon $inst niet bijwerken"; }
+  mv "$tmp" "$inst"
+
+  if ! (cd "$map" && "$bin" thread list >/dev/null 2>&1); then
+    uit=$("$bin" project add --title "$naam" "$map" 2>&1) || fout "--t3: project toevoegen mislukte (draait de T3-server?): $uit"
+  fi
+  uit=$(printf '%s\n' "$zin" | "$bin" thread start --title "$naam" --provider "$provider" --model "$model_slug" "$map" - 2>&1) ||
+    fout "--t3: thread starten mislukte: $uit"
+  # t3 drukt het id af (in een terminal met "Thread " ervoor): de laatste niet-lege regel
+  id=$(printf '%s\n' "$uit" | sed -e 's/^Thread //' -e '/^[[:space:]]*$/d' | tail -n 1)
+  [[ $id =~ ^[A-Za-z0-9:._%-]+$ ]] || fout "--t3: geen thread-id in de uitvoer van t3: $uit"
+
+  # Bewijs dat de sessie werkt (zoals ⏺ in tmux): item 1 is de startzin, item 2 een hook die direct meedraait
+  # (binnen milliseconden, vermoedelijk een hook; gezien met T3 0.1.2), pas item 3 is werk van de agent zelf.
+  verstreken=0
+  while :; do
+    js=$("$bin" thread show "$id" --json 2>/dev/null || true)
+    st=$(printf '%s' "$js" | jq -r '.thread.status // ""' 2>/dev/null || true)
+    items=$(printf '%s' "$js" | jq -r '.thread.itemCount // 0' 2>/dev/null || echo 0)
+    pend=$(printf '%s' "$js" | jq -r '.thread.pendingRequestCount // 0' 2>/dev/null || echo 0)
+    case $st in failed|error|interrupted|cancelled) fout "--t3: thread $id staat op '$st'; kijk in T3 Code" ;; esac
+    if [[ $items =~ ^[0-9]+$ ]] && [ "$items" -ge 3 ]; then
+      [ "$pend" = 0 ] || echo "spawn: let op: thread $id wacht op een antwoord in T3 Code; stuur geen t3 thread send zolang pendingRequestCount > 0" >&2
+      echo "t3:$id"; exit 0
+    fi
+    [ "$verstreken" -lt "$BEWIJS" ] || break
+    sleep "$POLS"; verstreken=$((verstreken + POLS))
+  done
+  fout "--t3: thread $id is gestart, maar toonde geen werk binnen ${BEWIJS}s; kijk zelf in T3 Code"
+}
 
 rol=agent
 [ "$sublead" = 0 ] || rol=sublead
@@ -156,6 +254,11 @@ elif [ -n "$vervolg" ]; then
 fi
 
 zin="$zin Sluit je laatste rapport aan de lead af met een vaste slotregel (laatste regel, kaal): \`vrij\` als je klaar en opgeruimd bent, of \`wacht op achtergrondrun tot ~HH:MM\` (hoogstens 2 uur vooruit) als je op een achtergrondrun wacht. \"vrij\" ergens anders in de tekst telt niet."
+
+if [ "$t3" = 1 ]; then
+  zin="$zin Je draait als thread in T3 Code: gebruik geen AskUserQuestion (de lead ziet die vraag niet en een bericht van de lead laat hem vastlopen), maar zet een vraag in tekst in je rapport. Zet je laatste rapport ook als je laatste antwoord in deze thread."
+  t3_start "$zin"   # eindigt altijd met exit
+fi
 
 if [ "$droog" = 1 ]; then
   echo "droog: $SPAWN window $map \"$cmd\""

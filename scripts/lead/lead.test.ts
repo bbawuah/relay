@@ -885,3 +885,161 @@ describe("spawn.sh", () => {
     expect(draai(SPAWN, ["--meerdere", lijst, "--lead", "l"], basis()).fout).toMatch(/verwacht 'naam opdrachtbestand/);
   });
 });
+
+describe("spawn.sh --t3", () => {
+  // Nep-t3: logt elke aanroep met de werkmap, onthoudt of het project bestaat, leest de startzin van stdin
+  // en geeft voor `thread show` de JSON uit t3-show.json.
+  let wt: string;
+  const T3 = () => join(bin, "t3");
+  const show = (thread: Record<string, unknown>) => writeFileSync(join(dir, "t3-show.json"), JSON.stringify({ thread: { status: "running", itemCount: 3, pendingRequestCount: 0, ...thread }, messages: [] }));
+  const opdracht = () => {
+    const p = join(dir, "opdracht.md");
+    writeFileSync(p, "doe iets\n");
+    return p;
+  };
+  const basis = (extra: Record<string, string> = {}) => ({
+    LAB_SPAWN_SCRIPT: join(bin, "nep-agent-spawn.sh"),
+    LAB_SPAWN_POLS: "0",
+    LAB_SPAWN_WACHT: "0",
+    LAB_SPAWN_BEWIJS: "0",
+    LAB_LEAD_NAAM: "",
+    LAB_CLAUDE_JSON: join(dir, "bestaat-niet.json"),
+    LAB_T3: T3(),
+    LAB_T3_MODEL: "",
+    ...extra,
+  });
+  const inst = () => join(wt, ".claude", "settings.local.json");
+  const t3 = (args: string[], extra: Record<string, string> = {}) => draai(SPAWN, ["--naam", "w1", "--opdracht", opdracht(), "--lead", "lead-x", "--t3", ...args], basis(extra));
+
+  beforeEach(() => {
+    schrijfBin(
+      "t3",
+      `#!/usr/bin/env bash
+echo "t3 [$PWD] $*" >> "$FAKE_DIR/t3.log"
+case "$1 $2" in
+  "thread list") [ -f "$FAKE_DIR/t3-project" ] && exit 0; echo "No T3 Code project matches '.'." >&2; exit 1 ;;
+  "project add") touch "$FAKE_DIR/t3-project"; echo "Added project"; exit 0 ;;
+  "thread start")
+    cat > "$FAKE_DIR/t3-stdin.txt"
+    if [ -f "$FAKE_DIR/t3-startfout" ]; then echo "server niet bereikbaar" >&2; exit 1; fi
+    if [ -f "$FAKE_DIR/t3-onzin" ]; then echo "Warning: iets"; echo "- - -"; exit 0; fi
+    # de echte t3 drukt buiten een terminal alleen het id af, in een terminal met "Thread " ervoor
+    if [ -f "$FAKE_DIR/t3-tty" ]; then echo "Thread mcp:1234abcd-0000"; else echo "mcp:1234abcd-0000"; fi
+    exit 0 ;;
+  "thread show") cat "$FAKE_DIR/t3-show.json" 2>/dev/null; exit 0 ;;
+esac
+exit 1
+`,
+    );
+    wt = join(dir, "eigen-worktree");
+    git(repo, "worktree", "add", "-q", "-b", "werk", wt);
+    writeFileSync(join(wt, ".gitignore"), ".claude/settings.local.json\n");
+    show({});
+  });
+
+  test("weigert de hoofdcheckout, een submap en een niet-genegeerd settings.local.json; schrijft dan niets", () => {
+    writeFileSync(join(repo, ".gitignore"), ".claude/settings.local.json\n");
+    const hoofd = t3(["--map", repo]);
+    expect(hoofd.code).toBe(1);
+    expect(hoofd.fout).toMatch(/hoofdcheckout/);
+    mkdirSync(join(wt, "sub"));
+    expect(t3(["--map", join(wt, "sub")]).fout).toMatch(/wortel van een worktree/);
+    rmSync(join(wt, ".gitignore"));
+    expect(t3(["--map", wt]).fout).toMatch(/niet git-genegeerd/);
+    expect(t3(["--map", dir]).fout).toMatch(/geen git-checkout/);
+    expect(existsSync(inst())).toBe(false);
+    expect(existsSync(join(repo, ".claude"))).toBe(false);
+    expect(log("t3.log")).toBe("");
+  });
+
+  test("weigert een checkout met de identiteit van een andere sessie; dezelfde naam mag", () => {
+    mkdirSync(join(wt, ".claude"));
+    writeFileSync(inst(), JSON.stringify({ env: { LAB_AGENT_NAAM: "ander" } }));
+    const r = t3(["--map", wt]);
+    expect(r.code).toBe(1);
+    expect(r.fout).toMatch(/identiteit van sessie 'ander'/);
+    expect(log("t3.log")).toBe("");
+    writeFileSync(inst(), JSON.stringify({ env: { LAB_AGENT_NAAM: "w1" } }));
+    expect(t3(["--map", wt]).code).toBe(0);
+    writeFileSync(inst(), "geen json");
+    expect(t3(["--map", wt]).fout).toMatch(/geen JSON-object/);
+  });
+
+  test("zet de identiteit in settings.local.json, voegt het project toe, start de thread en geeft t3:<id>", () => {
+    mkdirSync(join(wt, ".claude"));
+    writeFileSync(inst(), JSON.stringify({ permissions: { allow: ["Bash(ls)"] }, env: { FOO: "1", LAB_AGENT_ROL: "oud" } }));
+    const r = t3(["--map", wt, "--model", "sonnet"]);
+    expect(r.fout).toBe("");
+    expect(r.code).toBe(0);
+    expect(r.uit.trim().split("\n").at(-1)).toBe("t3:mcp:1234abcd-0000");
+    const s = JSON.parse(readFileSync(inst(), "utf8"));
+    expect(s.permissions).toEqual({ allow: ["Bash(ls)"] });
+    expect(s.env).toMatchObject({ FOO: "1", LAB_AGENT_NAAM: "w1", LAB_AGENT_ROL: "agent", LAB_LEAD_NAAM: "lead-x", LAB_OPDRACHT: join(dir, "opdracht.md") });
+    expect(s.env.LAB_SPAWN_ID).toMatch(/^\d+-\d+-\d+$/);
+    expect(readdirSync(join(wt, ".claude"))).toEqual(["settings.local.json"]); // geen tijdelijk bestand achtergelaten
+    const l = log("t3.log");
+    expect(l).toContain(`t3 [${wt}] thread list`);
+    expect(l).toContain(`project add --title w1 ${wt}`);
+    expect(l).toContain(`thread start --title w1 --provider claudeAgent --model claude-sonnet-5-5 ${wt} -`);
+    expect(l).toContain("thread show mcp:1234abcd-0000 --json");
+    const zin = readFileSync(join(dir, "t3-stdin.txt"), "utf8");
+    expect(zin).toContain("Je lead is lead-x. Jij bent sessie w1. Lees");
+    expect(zin).toContain("gebruik geen AskUserQuestion");
+    // geen tmux-pad
+    expect(log("spawn.log")).toBe("");
+    expect(log("tmux.log")).toBe("");
+  });
+
+  test("bestaand project: geen project add; model zonder --model uit LAB_T3_MODEL, anders opus; provider uit LAB_T3_PROVIDER", () => {
+    writeFileSync(join(dir, "t3-project"), "");
+    expect(t3(["--map", wt]).code).toBe(0);
+    expect(log("t3.log")).not.toContain("project add");
+    expect(log("t3.log")).toContain("--provider claudeAgent --model claude-opus-5-5 ");
+    expect(t3(["--map", wt], { LAB_T3_MODEL: "claude-fable-5-1", LAB_T3_PROVIDER: "claude-2" }).code).toBe(0);
+    expect(log("t3.log")).toContain("--provider claude-2 --model claude-fable-5-1 ");
+  });
+
+  test("faalt luid als de thread niet start, niet aan het werk gaat of mislukt", () => {
+    writeFileSync(join(dir, "t3-startfout"), "");
+    expect(t3(["--map", wt]).fout).toMatch(/thread starten mislukte: server niet bereikbaar/);
+    rmSync(join(dir, "t3-startfout"));
+    show({ itemCount: 2 }); // startzin + hook, nog geen werk
+    const stil = t3(["--map", wt]);
+    expect(stil.code).toBe(1);
+    expect(stil.fout).toMatch(/toonde geen werk binnen 0s/);
+    show({ status: "failed", itemCount: 1 });
+    expect(t3(["--map", wt]).fout).toMatch(/staat op 'failed'/);
+  });
+
+  test("leest het thread-id met en zonder 'Thread '-voorvoegsel en weigert onzin", () => {
+    expect(t3(["--map", wt]).uit.trim()).toBe("t3:mcp:1234abcd-0000");
+    writeFileSync(join(dir, "t3-tty"), "");
+    expect(t3(["--map", wt]).uit.trim()).toBe("t3:mcp:1234abcd-0000");
+    writeFileSync(join(dir, "t3-onzin"), "");
+    const r = t3(["--map", wt]);
+    expect(r.code).toBe(1);
+    expect(r.fout).toMatch(/geen thread-id in de uitvoer/);
+  });
+
+  test("meldt een open vraag in de thread: dan geen thread send", () => {
+    show({ pendingRequestCount: 1 });
+    const r = t3(["--map", wt]);
+    expect(r.code).toBe(0);
+    expect(r.fout).toMatch(/pendingRequestCount > 0/);
+  });
+
+  test("--droog toont de stappen en schrijft en start niets; --meerdere geeft --t3 door", () => {
+    const r = t3(["--map", wt, "--droog"]);
+    expect(r.code).toBe(0);
+    expect(r.uit).toContain(`in ${inst()}`);
+    expect(r.uit).toContain("thread start --title w1 --provider claudeAgent --model claude-opus-5-5");
+    expect(existsSync(inst())).toBe(false);
+    expect(log("t3.log")).toBe("");
+    const lijst = join(dir, "lijst.txt");
+    writeFileSync(lijst, `a ${opdracht()}\nb ${opdracht()}\n`);
+    const m = draai(SPAWN, ["--meerdere", lijst, "--lead", "l", "--map", wt, "--t3", "--droog"], basis());
+    expect(m.code).toBe(0);
+    expect(m.uit).toContain("spawn: a gestart: droog: controleer met thread show");
+    expect(m.uit).toContain("spawn: b gestart: droog: controleer met thread show");
+  });
+});
