@@ -154,7 +154,8 @@ Stappen:
 | Optie | Betekenis |
 |---|---|
 | `--droog` | Alleen tonen; ook bij `--ruim-takken`. |
-| `--prs <n,n,…>` | Vaste lijst, bijvoorbeeld `--prs 81,82`: alleen deze PR's, in deze volgorde. Een genoemde PR zonder geldig akkoord valt af met reden. De lead controleert de lijst in de integratie-PR. |
+| `--prs <n,n,…>` | Vaste lijst, bijvoorbeeld `--prs 81,82`: alleen deze PR's, in deze volgorde. Valt een genoemde PR af (niet open, geen geldig akkoord op de huidige head), dan stopt de wachtrij vóór het samenvoegen met exit 1 en per PR de reden; er komt geen worktree, poortrun of integratie-PR. Ook bij `--droog`. Een PR die pas bij het samenvoegen eruit valt (verschoven tak, mergeconflict) valt nog steeds af met een melding; de lead ziet dat in de lijst van de integratie-PR. |
+| `--sla-afgevallen-over` | Alleen met `--prs`: ga toch door zonder de PR's die afvallen (het oude gedrag). De afvallers staan in de integratie-PR. |
 | `--poort-cmd <cmd>` | Vervangt de standaardpoort (voor tests). De body zegt dan "geen e2e-bewijs" in plaats van "met e2e". |
 | `--nu <jjjjmmdd-hhmm>` | Bepaalt alleen de naam van de tak (`wachtrij/<stempel>`). Het stiltevenster gaat altijd op de echte klok. |
 | `--ci-wacht <s>` | Seconden (standaard 30, of env `LAB_WACHTRIJ_CI_WACHT`) die na het openen van de integratie-PR gewacht wordt op de eerste CI-CheckRun (`__typename` CheckRun, `workflowName` CI; Vercel-entries tellen niet). Is er dan nog geen, dan staat in de uitvoer `WAARSCHUWING: geen CI-run voor <sha7>; sluit en heropen de PR of push opnieuw`. |
