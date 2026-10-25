@@ -8,7 +8,7 @@
 //
 //   sherif      dependency-regels over alle package.json's      (hele repo)
 //   boundaries  turbo boundaries: imports zonder dependency      (hele repo)
-//   ds-regels   designsysteem-regels R1–R9 (scripts/ds-regels.ts) (alle apps)
+//   ds-regels   designsysteem-regels R1–R10 (scripts/ds-regels.ts) (alle apps)
 //   werk-commentaar  TODO/HACK/FIXME/XXX/workaround alleen als TODO(JJJJ-MM-DD): reden; verlopen = FOUT
 //   echte-klok  unittests wachten niet op de echte klok: Bun.sleep/setTimeout ≥ 10 ms = FOUT (scripts/echte-klok.ts)
 //   test-tenant goldcoast-tests gebruiken geen vaste, gedeelde tenant-id: nieuweTestTenant() (scripts/test-tenant.ts)
@@ -898,6 +898,13 @@ export const KANARIES: Kanarie[] = [
     wat: "een hex-kleur in de opmaak van apps/template (R9)",
     verwacht: /FOUT ds-regels .*1 nieuw/,
     zet: (m) => schrijf(m, "apps/template/src/kanarie-ds-hex.tsx", 'export const Kanarie = () => <p style={{ color: "#1B2A4E" }}>kanarie</p>;\n'),
+  },
+  {
+    stap: "ds-regels",
+    wat: "een rekenmaat op de spacing-eenheid in apps/template (R10 omweg-maat; R5 ziet die niet)",
+    verwacht: /FOUT ds-regels .*1 nieuw/,
+    zet: (m) =>
+      schrijf(m, "apps/template/src/kanarie-ds-omweg.tsx", 'export const Kanarie = () => <p className="text-[calc(var(--spacing)*6.5)]">kanarie</p>;\n'),
   },
   {
     stap: "ds-regels",
