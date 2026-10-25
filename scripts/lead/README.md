@@ -67,7 +67,7 @@ De `t3`-binary staat niet op `PATH`: het script neemt `LAB_T3`, anders `t3` op `
 
 Wat de lead moet weten (proef 25 okt 2026, T3 0.1.2):
 
-- **Rapport lezen.** Een SendMessage van een T3-thread naar de lead kwam in de proef niet aan: de lead-sessie draaide als achtergrondsessie en het bericht werd vastgehouden. Niet getoetst: een lead in tmux. Lees het rapport daarom met `t3 thread show <id> --messages 1`. T3-threads staan wel in `ListAgents`, als `<mapnaam>-<xx>`, niet onder `--naam`.
+- **Rapport lezen.** Een SendMessage van een T3-thread naar de lead kwam in de proef aan, maar pas na een tijd vastgehouden te zijn, en alleen met de volle sessienaam van de lead (de korte referentie `[xxxxxx]` werkte niet). Niet getoetst: een lead in tmux met een gewone naam. Het rapport staat altijd als laatste antwoord in de thread: `t3 thread show <id> --messages 1`. T3-threads staan in `ListAgents` als `<mapnaam>-<xx>`, niet onder `--naam`.
 - **Nooit sturen bij een open vraag.** `t3 thread send` naar een thread met `pendingRequestCount > 0` laat die vraag vastlopen (T3-issue #15517). Het script waarschuwt op stderr als de thread direct een vraag stelt. Naar een bezige thread sturen mag: het bericht komt als volgende beurt (`Queued.`).
 - **Stoppen of een vraag beantwoorden** kan alleen in de app; daar is geen CLI voor.
 - **Rechten.** Threads draaien in de standaardmodus van het project (nu Full access). De hooks gelden ook dan.
