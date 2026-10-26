@@ -908,6 +908,13 @@ export const KANARIES: Kanarie[] = [
   },
   {
     stap: "ds-regels",
+    wat: "een inline fontSize in px/rem/em of als getal in apps/template (R10 omweg-maat, inline style)",
+    verwacht: /FOUT ds-regels .*1 nieuw/,
+    zet: (m) =>
+      schrijf(m, "apps/template/src/kanarie-ds-inline.tsx", 'export const Kanarie = () => <p style={{ fontSize: "0.8125rem" }}>kanarie</p>;\n'),
+  },
+  {
+    stap: "ds-regels",
     wat: "een opgeloste treffer die nog in de baseline staat",
     verwacht: /FOUT ds-regels .*1 opgelost/,
     zet: (m) =>
