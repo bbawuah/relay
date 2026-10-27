@@ -1148,14 +1148,15 @@ exit 1
     expect(zonder.uit).not.toContain("mcp_servers.peers");
   });
 
-  test("sandbox: tmux start de werker met een permissieprofiel (netwerk aan, -a never); de gedeelde .git is niet als geheel schrijfbaar", () => {
+  test("sandbox: tmux start de werker met een permissieprofiel (netwerk uit, -a never); de gedeelde .git is niet als geheel schrijfbaar", () => {
     writeFileSync(join(dir, "pane.txt"), "Ask Codex\n• Ran ls\n");
     const r = codex(["--map", wt, "--droog"], { TMPDIR: join(dir, "sbtmp") });
     const gem = realpathSync(join(repo, ".git"));
     const eigen = realpathSync(join(gem, "worktrees", "eigen-worktree"));
     expect(r.uit).toContain(" -a never ");
     expect(r.uit).toContain(`-c 'default_permissions="lab-werker"'`);
-    expect(r.uit).toContain(`-c 'permissions.lab-werker.network={enabled=true}'`);
+    expect(r.uit).toContain(`-c 'permissions.lab-werker.network={enabled=false}'`);
+    expect(r.uit).not.toContain("enabled=true");
     const fs = /-c 'permissions\.lab-werker\.filesystem=\{([^']*)\}'/.exec(r.uit)?.[1] ?? "";
     const regels = fs.split(",").map((x) => x.replace(/"/g, ""));
     const heeft = (pad: string, toegang: string) => regels.includes(`${pad}=${toegang}`);
@@ -1267,6 +1268,122 @@ exit 1
     expect(git(wt, "log", "--format=%s", "-1").stdout.toString().trim()).toBe("sandbox-test");
     expect(existsSync(join(gem, "hooks", "x"))).toBe(false);
   }, 120_000);
+
+  test("netwerk uit is de standaard: --netwerk zet het aan; de startzin zegt niet pushen en meldt 'klaar om te pushen'; bun install vooraf", () => {
+    writeFileSync(join(dir, "pane.txt"), "Ask Codex\n• Ran ls\n");
+    const uit = codex(["--map", wt, "--droog"]);
+    expect(uit.uit).toContain("network={enabled=false}");
+    expect(uit.uit).toContain("push niet en draai geen gh");
+    expect(uit.uit).toContain("klaar om te pushen op <sha>");
+    expect(uit.uit).toContain(`droog: bun install in ${wt}`);
+    const aan = codex(["--map", wt, "--droog", "--netwerk"]);
+    expect(aan.uit).toContain("network={enabled=true}");
+    expect(aan.uit).not.toContain("push niet en draai geen gh");
+    expect(aan.uit).not.toContain("droog: bun install");
+    // T3 heeft geen sandbox en dus geen netwerkvlag-effect: geen pushverbod in de startzin
+    expect(codex(["--map", wt, "--t3", "--droog"]).uit).not.toContain("push niet en draai geen gh");
+    // --netwerk hoort bij codex
+    const cl = draai(SPAWN, ["--naam", "w", "--opdracht", opdracht(), "--lead", "l", "--netwerk", "--droog"], basis());
+    expect(cl.code).toBe(1);
+    expect(cl.fout).toMatch(/--netwerk hoort bij --vendor codex/);
+  });
+
+  test("bun install draait in de worktree vóór de start (alleen met package.json en zonder --netwerk); een mislukte install start niets", () => {
+    writeFileSync(join(dir, "pane.txt"), "Ask Codex\n• Ran ls\n");
+    const nep = join(bin, "nep-install.sh");
+    const logPad = join(dir, "install.log");
+    writeFileSync(nep, ["#!/usr/bin/env bash", `echo "install in $PWD" >> "${logPad}"`, '[ -z "${NEP_INSTALL_FAAL:-}" ]', ""].join("\n"), { mode: 0o755 });
+    // zonder package.json: niet
+    codex(["--map", wt], { LAB_SPAWN_INSTALL: nep });
+    expect(existsSync(join(dir, "install.log"))).toBe(false);
+    writeFileSync(join(wt, "package.json"), "{}\n");
+    rmSync(idDir(), { recursive: true, force: true });
+    codex(["--map", wt, "--netwerk"], { LAB_SPAWN_INSTALL: nep });
+    expect(existsSync(join(dir, "install.log"))).toBe(false); // met netwerk installeert de werker zelf
+    rmSync(idDir(), { recursive: true, force: true });
+    codex(["--map", wt], { LAB_SPAWN_INSTALL: nep });
+    expect(readFileSync(join(dir, "install.log"), "utf8")).toMatch(/^install in \S*eigen-worktree\n$/);
+    // mislukt: foutmelding, geen identiteit
+    rmSync(idDir(), { recursive: true, force: true });
+    const r = codex(["--map", wt], { LAB_SPAWN_INSTALL: nep, NEP_INSTALL_FAAL: "1" });
+    expect(r.code).toBe(1);
+    expect(r.fout).toMatch(/bun install in .* mislukte/);
+    expect(idBestanden()).toEqual([]);
+  });
+
+  // Echte afdwinging (zoals hierboven, nep-Responses-server): met netwerk uit geven een unix-socket (stand-in), een tmux-socket
+  // (wegwerp-tmux via -S) en een uitgaande TCP-verbinding EPERM; met --netwerk slagen ze (positieve controle, de omweg uit de README).
+  const netwerkProef = async (extra: string[]): Promise<string> => {
+    const codexBin = Bun.which("codex");
+    writeFileSync(join(dir, "pane.txt"), "Ask Codex\n• Ran ls\n");
+    const thuis = join(dir, "thuis-net");
+    mkdirSync(thuis, { recursive: true });
+    const kort = mkdtempSync(join("/tmp", "nw-"));
+    const sock = join(kort, "s.sock");
+    const tsock = join(kort, "t.sock");
+    const unix = Bun.listen({ unix: sock, socket: { data() {} } });
+    const tcp = Bun.listen({ hostname: "127.0.0.1", port: 0, socket: { data() {} } });
+    Bun.spawnSync(["tmux", "-S", tsock, "-f", "/dev/null", "new-session", "-d", "-s", "nw"], { env: { PATH: process.env.PATH ?? "", HOME: thuis } });
+    const shell = [
+      `nc -U -w1 ${sock} </dev/null && echo SOCK-OK`,
+      `tmux -S ${tsock} list-sessions >/dev/null && echo TMUX-OK`,
+      `nc -z -w1 127.0.0.1 ${tcp.port} && echo TCP-OK`,
+    ].join("; ");
+    const r = codex(["--map", wt, "--droog", ...extra], { TMPDIR: join(dir, "sbtmp-net"), HOME: thuis });
+    const cArgs = [...r.uit.matchAll(/-c '((?:default_permissions|permissions\.)[^']*)'/g)].map((m) => m[1]);
+    let verzoeken = 0;
+    let uitvoer = "";
+    const server = Bun.serve({
+      port: 0,
+      hostname: "127.0.0.1",
+      async fetch(req) {
+        const body = await req.text();
+        if (!new URL(req.url).pathname.endsWith("/responses")) return new Response("{}", { status: 404 });
+        verzoeken++;
+        const sse = (e: string, d: object) => `event: ${e}\ndata: ${JSON.stringify({ type: e, ...d })}\n\n`;
+        let uit = sse("response.created", { response: { id: `r${verzoeken}`, status: "in_progress" } });
+        const item =
+          verzoeken === 1
+            ? { type: "function_call", id: "fc_1", call_id: "call_1", name: "exec_command", arguments: JSON.stringify({ cmd: shell }) }
+            : { type: "message", id: "m_2", role: "assistant", content: [{ type: "output_text", text: "klaar" }] };
+        if (verzoeken === 2) {
+          const o = (JSON.parse(body).input as { type?: string; output?: unknown }[]).find((i) => i.type === "function_call_output");
+          uitvoer = String(o?.output ?? "");
+        }
+        uit += sse("response.output_item.added", { output_index: 0, item: verzoeken === 1 ? item : { ...item, content: [] } }) + sse("response.output_item.done", { output_index: 0, item });
+        uit += sse("response.completed", { response: { id: `r${verzoeken}`, status: "completed", usage: { input_tokens: 1, output_tokens: 1, total_tokens: 2 } } });
+        return new Response(uit, { headers: { "content-type": "text/event-stream" } });
+      },
+    });
+    try {
+      const ch = join(dir, "codex-net-home");
+      mkdirSync(ch, { recursive: true });
+      writeFileSync(join(ch, "config.toml"), `model = "nep"\nmodel_provider = "nep"\n[model_providers.nep]\nname = "nep"\nbase_url = "http://127.0.0.1:${server.port}/v1"\nwire_api = "responses"\nrequires_openai_auth = false\n`);
+      const p = Bun.spawn([codexBin!, "exec", "--skip-git-repo-check", ...cArgs.flatMap((c) => ["-c", c]), "doe"], { cwd: wt, env: { PATH: process.env.PATH ?? "", HOME: thuis, CODEX_HOME: ch }, stdin: "ignore", stdout: "pipe", stderr: "pipe" });
+      const timer = setTimeout(() => p.kill(), 90_000); // echte-klok: een echte codex-run, geen testklok
+      await p.exited;
+      clearTimeout(timer);
+    } finally {
+      server.stop(true);
+      unix.stop(true);
+      tcp.stop(true);
+      Bun.spawnSync(["tmux", "-S", tsock, "kill-server"], { env: { PATH: process.env.PATH ?? "" } });
+      rmSync(kort, { recursive: true, force: true });
+    }
+    return uitvoer;
+  };
+
+  test("netwerk uit (echte codex): unix-socket, tmux-socket en uitgaand TCP geven EPERM; met --netwerk slagen ze", async () => {
+    if (process.platform !== "darwin" || !Bun.which("codex") || !Bun.which("tmux") || !Bun.which("nc")) {
+      console.log("netwerk-afdwinging niet getoetst: geen macOS, codex, tmux of nc");
+      return;
+    }
+    const uit = await netwerkProef([]);
+    for (const x of ["SOCK-OK", "TMUX-OK", "TCP-OK"]) expect(uit).not.toContain(x);
+    expect(uit).toMatch(/[Oo]peration not permitted/);
+    const aan = await netwerkProef(["--netwerk"]);
+    for (const x of ["SOCK-OK", "TMUX-OK", "TCP-OK"]) expect(aan).toContain(x);
+  }, 240_000);
 
   test("hosted web search: tmux zet hem uit met -c (ook zonder MCP, ook als de config hem aanzet); T3 weigert als de config hem aanzet", () => {
     writeFileSync(join(dir, "pane.txt"), "Ask Codex\n• Ran ls\n");

@@ -2,16 +2,19 @@
 # Start een Claude-sessie in een eigen tmux-venster en geef die een opdracht.
 # Gebruik: scripts/lead/spawn.sh --naam <n> --opdracht <bestand> [--model sonnet|opus]
 #          [--map <pad>] [--lead <unieke naam>] [--sublead [--workflow <JJJJ-MM-DD>]] [--vervolg <tak>] [--t3] [--droog]
-#          [--vendor claude|codex]
+#          [--vendor claude|codex] [--netwerk]
 #          --vendor codex: een Codex-sessie (`codex -C <map>`; --model is dan een Codex-model); standaard claude. Eist een eigen
 #          worktree als --map (nooit de hoofdcheckout) en een Codex-config met de grenzen-hook (grenzen.sh, vertrouwd door
 #          codex-installeer.ts); anders weigert spawn. De rol staat in de pane-omgeving (tmux) en altijd in
 #          <staat>/identiteit/<hash van de checkout>.json (codex-wrap.sh zet die in de omgeving van elke hook, ook in T3).
-#          Sandbox (tmux): de werker draait met een permissieprofiel (workspace-write-achtig, netwerk aan): schrijven alleen in de
+#          Sandbox (tmux): de werker draait met een permissieprofiel (workspace-write-achtig, netwerk UIT): schrijven alleen in de
 #          worktree, /tmp, TMPDIR, de bun-cache, <common>/objects, refs, logs en worktrees/<naam>; hooks, config, commondir en
 #          gitdir blijven read-only; sleutelmappen zijn onleesbaar; geen escalatieverzoeken (-a never). Een T3-thread krijgt
 #          geen -c en dus geen sandbox: --t3 met --vendor codex weigert tenzij --zonder-sandbox, een expliciete escape die alleen
-#          op aanwijzing van Brian mag. De upstream van de werkertak (origin/<tak>) zet spawn vooraf, want .git/config is read-only.
+#          op aanwijzing van Brian mag. Netwerk is standaard uit (ook unix-sockets: EPERM, dus geen tmux send-keys-ontsnapping);
+#          --netwerk zet het aan (Brian of de lead, bewust). Zonder netwerk draait spawn eerst `bun install` in de worktree (buiten de
+#          sandbox, als er een package.json is) en pusht de werker niet en draait hij geen gh: hij meldt "klaar om te pushen op <sha>".
+#          De upstream van de werkertak (origin/<tak>) zet spawn vooraf, want .git/config is read-only.
 #          --t3: start de sessie als thread in T3 Code (server op deze machine) in plaats van in tmux; --map moet dan
 #          een eigen worktree zijn. Laatste regel van de uitvoer: t3:<thread-id>.
 #        scripts/lead/spawn.sh --meerdere <lijst> [--model ..] [--map ..] [--lead ..] [--droog]
@@ -40,7 +43,7 @@ for v in WACHT POLS BEWIJS ENTER; do
 done
 [[ $WACHT_VERTROUWEN =~ ^[0-9]+$ ]] || fout "WACHT_VERTROUWEN moet een geheel getal zijn, niet '$WACHT_VERTROUWEN'"
 
-naam="" opdracht="" model="" map="$PWD" lead="" droog=0 sublead=0 vervolg="" workflow="" meerdere="" t3=0 vendor=claude zonder_sandbox=0
+naam="" opdracht="" model="" map="$PWD" lead="" droog=0 sublead=0 vervolg="" workflow="" meerdere="" t3=0 vendor=claude zonder_sandbox=0 netwerk=0
 waarde() { [ "$#" -ge 2 ] || fout "optie $1 heeft een waarde nodig"; }
 while [ $# -gt 0 ]; do
   case $1 in
@@ -56,6 +59,7 @@ while [ $# -gt 0 ]; do
     --meerdere) waarde "$@"; meerdere=$2; shift 2 ;;
     --t3) t3=1; shift ;;
     --zonder-sandbox) zonder_sandbox=1; shift ;;
+    --netwerk) netwerk=1; shift ;;
     --vendor) waarde "$@"; vendor=$2; shift 2 ;;
     -h|--help) sed -n '2,15p' "$0"; exit 0 ;;
     *) fout "onbekende optie: $1" ;;
@@ -63,6 +67,7 @@ while [ $# -gt 0 ]; do
 done
 
 case $vendor in claude|codex) ;; *) fout "--vendor moet claude of codex zijn, niet '$vendor'" ;; esac
+[ "$netwerk" = 0 ] || [ "$vendor" = codex ] || fout "--netwerk hoort bij --vendor codex"
 
 if [ -n "$meerdere" ]; then
   [ -z "$naam$opdracht$vervolg" ] && [ "$sublead" = 0 ] || fout "--meerdere sluit --naam, --opdracht, --vervolg en --sublead uit"
@@ -438,9 +443,10 @@ if [ "$vendor" = codex ]; then
   # Hosted web search uit voor werkers (de uitkomst loopt langs geen hook); --search nooit meegeven. In T3 kan dit niet per
   # thread: codex_controles weigert daar als de config het aanzet. Het -c zet de TUI in embedded mode (zoals de MCP-c's).
   [ "$t3" = 1 ] || cmd="$cmd -c 'web_search=\"disabled\"'"
-  # Sandbox: een permissieprofiel (zie codex_sandbox) met netwerk, en nooit een escalatieverzoek (-a never): zonder mens in de
+  # Sandbox: een permissieprofiel (zie codex_sandbox) zonder netwerk (met --netwerk wel), en nooit een escalatieverzoek (-a never): zonder mens in de
   # pane zou een verzoek om buiten de sandbox te draaien blijven hangen, en een goedkeuring zou de sandbox ophouden te zijn.
-  [ "$t3" = 1 ] || cmd="$cmd -a never -c 'default_permissions=\"lab-werker\"' -c 'permissions.lab-werker.filesystem={$SANDBOX_FS}' -c 'permissions.lab-werker.network={enabled=true}'"
+  net=false; [ "$netwerk" = 0 ] || net=true
+  [ "$t3" = 1 ] || cmd="$cmd -a never -c 'default_permissions=\"lab-werker\"' -c 'permissions.lab-werker.filesystem={$SANDBOX_FS}' -c 'permissions.lab-werker.network={enabled=$net}'"
   # De peers-MCP alleen voor deze sessie (-c), nooit globaal in ~/.codex.
   server="${LAB_PEERS_SERVER:-$HIER/peers/server.ts}"
   bun_abs=$(command -v "$BUN" 2>/dev/null || true)
@@ -474,6 +480,10 @@ fi
 if [ "$vendor" = codex ]; then
   # Codex kent geen SendMessage: het rapport aan de lead is de tool send van de MCP-server peers.
   zin="${zin//via SendMessage (to: $lead)/met de tool send van MCP-server peers (naar: $lead)}"
+  # Zonder netwerk kan de werker niet pushen: de lead pusht en opent de PR.
+  if [ "$t3" = 0 ] && [ "$netwerk" = 0 ]; then
+    zin="$zin Je hebt geen netwerk: push niet en draai geen gh. Commit in je worktree en meld in je rapport \"klaar om te pushen op <sha>\"; de lead pusht en opent de PR."
+  fi
 fi
 zin="$zin Sluit je laatste rapport aan de lead af met een vaste slotregel (laatste regel, kaal): \`vrij\` als je klaar en opgeruimd bent, of \`wacht op achtergrondrun tot ~HH:MM\` (hoogstens 2 uur vooruit) als je op een achtergrondrun wacht. \"vrij\" ergens anders in de tekst telt niet."
 
@@ -487,6 +497,7 @@ if [ "$droog" = 1 ]; then
   echo "droog: tmux set -p -t <pane> @agent_rol $rol; tmux set -p -t <pane> @agent_naam $naam"
   if [ "$vendor" = codex ]; then
     echo "droog: schrijf de identiteit (naam=$naam rol=$rol) naar $(identiteit_pad) (0600 in een map 0700); codex-wrap.sh zet die in elke hook"
+    [ "$t3" = 1 ] || [ "$netwerk" = 1 ] || echo "droog: bun install in $map (buiten de sandbox, zonder netwerk kan de werker het niet)"
     echo "droog: gecontroleerd: $map is een eigen worktree en $CODEX_HOME_GEKOZEN/config.toml heeft de vertrouwde, actuele grenzen-hook"
   fi
   echo "droog: wacht (max ${WACHT}s) tot de pane '$KLAAR_TEKST' of de promptregel toont"
@@ -511,6 +522,12 @@ fi
 [ "$vertrouwd" = 1 ] || echo "spawn: let op: $map is nog niet vertrouwd in Claude Code; de sessie $naam wacht straks op Brians antwoord op de vertrouwensvraag" >&2
 
 if [ "$vendor" = codex ]; then
+  # Zonder netwerk kan de werker niet installeren: doe het hier, buiten de sandbox, vóór de identiteit (een mislukking laat niets achter).
+  if [ "$t3" = 0 ] && [ "$netwerk" = 0 ] && [ -f "$map/package.json" ]; then
+    install_cmd=("$BUN" install)
+    [ -z "${LAB_SPAWN_INSTALL:-}" ] || install_cmd=("$LAB_SPAWN_INSTALL")
+    (cd "$map" && "${install_cmd[@]}" >&2) || fout "bun install in $map mislukte; de werker heeft zonder netwerk geen installatie. Los het op of start met --netwerk"
+  fi
   identiteit_vrij
   schrijf_identiteit
   codex_upstream
