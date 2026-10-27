@@ -196,11 +196,11 @@ git_schoon() (
   git -c core.fsmonitor= -c core.hooksPath=/dev/null -c core.untrackedCache=false -c diff.ignoreSubmodules=all "$@"
 )
 
-# Git in de gedeelde .git van de lead, niet via de worktree van de werker; zonder GIT_*, hooks, fsmonitor en replace-refs.
+# Git in de gedeelde .git van de lead (of in LEAD_GITDIR), niet via de worktree van de werker; zonder GIT_*, hooks, fsmonitor en replace-refs.
 git_lead() (
   while IFS= read -r v; do unset "$v"; done < <(compgen -e | grep '^GIT_' || true)
   export GIT_NO_REPLACE_OBJECTS=1
-  git --git-dir="$GEMEEN_DIR" -c core.fsmonitor= -c core.hooksPath=/dev/null -c core.untrackedCache=false -c diff.ignoreSubmodules=all "$@"
+  git --git-dir="${LEAD_GITDIR:-$GEMEEN_DIR}" -c core.fsmonitor= -c core.hooksPath=/dev/null -c core.untrackedCache=false -c diff.ignoreSubmodules=all -c core.commitGraph=false "$@"
 )
 
 t3_bin() {
@@ -240,13 +240,14 @@ eigen_worktree() {
 # gitdir, die een git in die worktree naar een andere common dir sturen), een profiel met `read` op die bestanden wel.
 # Weigert (nooit half): een pad met ' " \ of een regeleinde kan niet veilig in de TOML.
 codex_sandbox() {
-  local c e h t b rest m
+  local c e h t b rest m ch
   c=$GEMEEN_DIR e=$EIGEN_DIR h=${HOME:-}
   m=$(cd "$map" && pwd -P) || fout "--vendor codex: $map is niet te openen"
   [ -n "$h" ] && [ -d "$h" ] || fout "--vendor codex: HOME ontbreekt, de sandbox kan niet gebouwd worden"
   h=$(cd "$h" && pwd -P)
-  t=$(cd /tmp && pwd -P)
-  for rest in "$m" "$c" "$e" "$h" "$t" "$naam"; do
+  t=$(cd "${LAB_WERKER_TMPWORTEL:-/tmp}" && pwd -P) || fout "--vendor codex: de tmp-wortel ${LAB_WERKER_TMPWORTEL:-/tmp} bestaat niet"
+  ch=$CODEX_HOME_GEKOZEN
+  for rest in "$m" "$c" "$e" "$h" "$t" "$naam" "$ch"; do
     case $rest in *\'*|*\"*|*\\*|*$'\n'*) fout "--vendor codex: een pad bevat ', \" of \\ en kan niet in de sandbox-config: $rest" ;; esac
   done
   b="$h/.bun/install/cache"
@@ -260,16 +261,36 @@ codex_sandbox() {
   SANDBOX_FS="$SANDBOX_FS,\"$c/refs/replace\"=\"read\",\"$m/.git\"=\"read\""
   # Eigen tmp-map als enige tmp-root: niet /tmp als geheel en niet de TMPDIR van de lead (daar staan sessiemappen en sockets van anderen).
   WERKTMP="$t/lab-werker-$naam"
-  SANDBOX_FS="$SANDBOX_FS,\"$WERKTMP\"=\"write\",\"$b\"=\"write\""
+  SANDBOX_FS="$SANDBOX_FS,\"$WERKTMP\"=\"write\""
+  # De bun-cache alleen schrijfbaar als de werker zelf mag installeren (--netwerk). Anders vervangt hij een pakket in de cache en linkt de
+  # volgende `bun install` van de lead het in, waarna `bun run check` het als de lead draait. Gelezen mag hij ("/"="read").
+  [ "$netwerk" = 0 ] || SANDBOX_FS="$SANDBOX_FS,\"$b\"=\"write\""
   # De projectconfig van Codex (<worktree>/.codex/config.toml) draait zijn mcp_servers buiten de sandbox en mag het profiel aanvullen:
   # read-only, ook als de map nog niet bestaat.
   SANDBOX_FS="$SANDBOX_FS,\"$m/.codex\"=\"read\""
   # Sleutelmappen onleesbaar (dezelfde lijst als grenzen.sh), want een write_stdin gaat langs die hook.
-  SANDBOX_FS="$SANDBOX_FS,\"$h/.config/klaarover\"=\"none\",\"$h/.config/douane\"=\"none\",\"$h/.config/agentwerkbank\"=\"none\",\"$h/.codex/auth.json\"=\"none\""
+  SANDBOX_FS="$SANDBOX_FS,\"$h/.config/klaarover\"=\"none\",\"$h/.config/douane\"=\"none\",\"$h/.config/agentwerkbank\"=\"none\""
+  # De CODEX_HOME die spawn gebruikt (kan een andere zijn dan ~/.codex): transcripten, geschiedenis, logs, sqlite-staat, config en sleutel.
+  # Codex en zijn hooks lezen die buiten de sandbox; de shell van de werker hoeft ze niet te lezen. Leesbaar blijven shell_snapshots/,
+  # skills/, prompts/, rules/ en AGENTS.md. De sqlite-bestanden zijn die welke er nu staan (nieuwe komen niet vanzelf op de lijst).
+  local d f k
+  for d in "$ch" "$h/.codex"; do
+    for k in auth.json sessions archived_sessions history.jsonl log config.toml config.toml.voor-peerbus; do
+      SANDBOX_FS="$SANDBOX_FS,\"$d/$k\"=\"none\""
+    done
+    for f in "$d"/*.sqlite*; do
+      [ -e "$f" ] || continue
+      case $f in *\'*|*\"*|*\\*) continue ;; esac
+      SANDBOX_FS="$SANDBOX_FS,\"$f\"=\"none\""
+    done
+    [ "$ch" != "$h/.codex" ] || break
+  done
   # Inloggegevens en tokens: een denylist (alles blijft leesbaar tenzij hier genoemd), geen allowlist. Met --netwerk is een leesbaar
-  # token een directe exfiltratieroute. ~/.codex als geheel staat er niet bij: Codex en zijn hooks (grenzen.sh) lezen daar zelf.
+  # token een directe exfiltratieroute. ~/.codex als geheel staat er niet bij (zie hierboven: alleen wat de shell niet nodig heeft).
   local k
-  for k in .ssh .config/gh .netrc .git-credentials .aws .azure .kube .docker .npmrc .config/op Library/Keychains; do
+  for k in .ssh .config/gh .netrc .git-credentials .aws .azure .kube .docker .npmrc .config/op Library/Keychains \
+    .config/glab-cli .gnupg .config/gcloud "Library/Application Support/com.vercel.cli" \
+    .claude/projects .claude/.credentials.json .claude/history.jsonl .claude.json; do
     SANDBOX_FS="$SANDBOX_FS,\"$h/$k\"=\"none\""
   done
 }
@@ -572,19 +593,34 @@ if [ "$vendor" = codex ]; then
   # (die kunnen registry of cache omleggen). Vóór schrijf_identiteit: een mislukking laat niets achter, en er loopt geen
   # werker in deze map (identiteit_vrij).
   if [ "$t3" = 0 ] && [ "$netwerk" = 0 ] && [ -f "$map/package.json" ]; then
-    # De werker kan package.json, bun.lock, bunfig.toml en .npmrc in zijn worktree vervangen (bij een herstart of --vervolg komen ze van
-    # hem): een afhankelijkheid http://…/x.tgz?data=… is een GET buiten de sandbox, een file:-afhankelijkheid kopieert mappen, en
-    # bunfig/.npmrc leggen registry en cache om. Daarom alleen installeren als ze identiek zijn aan origin/main, gelezen met een sha die
-    # de werker niet kan schrijven (ls-remote + fetch in de gitdir van de lead; origin/main in refs/ is schrijfbaar).
-    vertrouwd=$(git_lead ls-remote origin refs/heads/main 2>/dev/null | cut -f1 | head -n 1 || true)
-    if [ -n "$vertrouwd" ] && git_lead fetch -q origin refs/heads/main 2>/dev/null; then :; else vertrouwd=""; fi
-    [ -n "$vertrouwd" ] || fout "kon origin/main niet ophalen om package.json, bun.lock, bunfig.toml en .npmrc te vergelijken; geen bun install buiten de sandbox. Start met --netwerk (dan installeert de werker zelf)"
+    # De werker kan package.json, bun.lock, bunfig.toml, .npmrc en .env* in zijn worktree vervangen (bij een herstart of --vervolg komen ze van
+    # hem): een afhankelijkheid http://…/x.tgz?data=… is een GET buiten de sandbox, een file:-afhankelijkheid kopieert mappen,
+    # bunfig/.npmrc/.env (BUN_CONFIG_REGISTRY) leggen registry en cache om, en een symlink laat find/bun een map volgen die niet in de
+    # vergelijking zit. Daarom alleen installeren als ze identiek zijn aan origin/main, gelezen uit een tijdelijke bare repo van de lead die
+    # vers van origin haalt (fetch controleert de hashes): de gedeelde .git zelf is niet te vertrouwen, want de werker kan in objects/
+    # een los object of pack onder de sha van een bestaande blob zetten, en refs/remotes/origin/main is ook schrijfbaar.
+    bron=$(mktemp -d) || fout "kon geen tijdelijke map maken voor de vergelijking met origin/main"
+    bronrepo="$bron/bron.git"
+    url=$(git_lead config --get remote.origin.url 2>/dev/null || true)
+    vertrouwd=""
+    if [ -n "$url" ] && LEAD_GITDIR="$bronrepo" git_lead init -q --bare 2>/dev/null &&
+      LEAD_GITDIR="$bronrepo" git_lead fetch -q --no-tags --depth=1 "$url" refs/heads/main 2>/dev/null; then
+      vertrouwd=$(LEAD_GITDIR="$bronrepo" git_lead rev-parse --verify -q 'FETCH_HEAD^{commit}' 2>/dev/null || true)
+    fi
+    if [ -z "$vertrouwd" ]; then
+      rm -rf "$bron"
+      fout "kon origin/main niet ophalen om package.json, bun.lock, bunfig.toml, .npmrc en .env* te vergelijken; geen bun install buiten de sandbox. Start met --netwerk (dan installeert de werker zelf)"
+    fi
+    afwijking=""
     while IFS= read -r -d '' f; do
       rel=${f#"$map"/}
-      if [ -L "$f" ] || ! git_lead show "$vertrouwd:$rel" 2>/dev/null | cmp -s - "$f"; then
-        fout "$rel in $map wijkt af van origin/main (of is nieuw, of een symlink): bun install buiten de sandbox zou hem volgen. Herstel het bestand, of start met --netwerk: dan draait de werker zelf bun install in de sandbox"
+      if [ -L "$f" ] || ! LEAD_GITDIR="$bronrepo" git_lead show "$vertrouwd:$rel" 2>/dev/null | cmp -s - "$f"; then
+        afwijking=$rel
+        break
       fi
-    done < <(find "$map" \( -name node_modules -o -name .git \) -prune -o \( -name package.json -o -name bunfig.toml -o -name .npmrc -o -name bun.lock -o -name bun.lockb \) -print0)
+    done < <(find "$map" \( -name node_modules -o -name .git \) -prune -o \( -type l -o -name package.json -o -name bunfig.toml -o -name .npmrc -o -name '.env*' -o -name bun.lock -o -name bun.lockb \) -print0)
+    rm -rf "$bron"
+    [ -z "$afwijking" ] || fout "$afwijking in $map wijkt af van origin/main (of is nieuw, of een symlink): bun install buiten de sandbox zou hem volgen. Herstel het bestand, of start met --netwerk: dan draait de werker zelf bun install in de sandbox"
     (cd "$map" && "$BUN" install --ignore-scripts --frozen-lockfile >&2) || fout "bun install --ignore-scripts --frozen-lockfile in $map mislukte; de werker heeft zonder netwerk geen installatie. Los het op of start met --netwerk"
   fi
   mkdir -p -m 700 "$WERKTMP" 2>/dev/null || [ "$t3" = 1 ] || fout "kon de tmp-map $WERKTMP niet maken"

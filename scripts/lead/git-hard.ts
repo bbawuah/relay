@@ -17,6 +17,8 @@ export const GIT_HARD_OPTIES = [
   "-c", "core.hooksPath=/dev/null",
   "-c", "core.untrackedCache=false",
   "-c", "diff.ignoreSubmodules=all",
+  // een schrijfbare commit-graph (gedeelde objects/info) kan merge-base --is-ancestor laten liegen
+  "-c", "core.commitGraph=false",
 ];
 
 /**

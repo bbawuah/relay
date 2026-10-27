@@ -356,7 +356,7 @@ describe("mutatietest: de test is rood als de helper een optie of de pin mist", 
   });
 
   test("de opties staan allemaal in GIT_HARD_OPTIES", () => {
-    expect(GIT_HARD_OPTIES).toEqual(["-c", "core.fsmonitor=", "-c", "core.hooksPath=/dev/null", "-c", "core.untrackedCache=false", "-c", "diff.ignoreSubmodules=all"]);
+    expect(GIT_HARD_OPTIES).toEqual(["-c", "core.fsmonitor=", "-c", "core.hooksPath=/dev/null", "-c", "core.untrackedCache=false", "-c", "diff.ignoreSubmodules=all", "-c", "core.commitGraph=false"]);
   });
 });
 
@@ -475,5 +475,13 @@ describe("gitHard en replace-refs", () => {
     rauw(repo, "replace", twee, los);
     expect(Bun.spawnSync(["git", "-C", repo, "merge-base", "--is-ancestor", een, twee], { env: env() }).exitCode).toBe(1); // git liegt
     expect(gitHard(repo, ["merge-base", "--is-ancestor", een, twee]).code).toBe(0); // gitHard niet
+  });
+
+  test("gitHard zet core.commitGraph uit (een schrijfbare commit-graph laat merge-base liegen)", () => {
+    const repo = path.join(dir, "graaf-repo");
+    mkdirSync(repo);
+    rauw(repo, "init", "-q", "-b", "main");
+    expect(gitHard(repo, ["config", "--get", "core.commitGraph"]).uit).toBe("false");
+    expect(GIT_HARD_OPTIES).toContain("core.commitGraph=false");
   });
 });
