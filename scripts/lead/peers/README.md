@@ -145,10 +145,16 @@ claude mcp add peers --scope local -- bun /pad/naar/repo/scripts/lead/peers/serv
 #   {"mcpServers":{"peers":{"command":"bun","args":["/pad/naar/repo/scripts/lead/peers/server.ts"]}}}
 # Claude geeft zijn omgeving door; LAB_AGENT_NAAM en LAB_LEAD_STAAT moeten in de sessie gezet zijn.
 
-# Codex (per run, niets in ~/.codex)
+# Codex (per run, niets in ~/.codex): spawn.sh --vendor codex doet dit zelf
 codex \
-  -c 'mcp_servers.peers.command="bun"' \
+  -c 'mcp_servers.peers.command="/pad/naar/bun"' \
   -c 'mcp_servers.peers.args=["/pad/naar/repo/scripts/lead/peers/server.ts"]' \
-  -c 'mcp_servers.peers.env_vars=["LAB_AGENT_NAAM","LAB_LEAD_NAAM","LAB_LEAD_STAAT"]' \
+  -c 'mcp_servers.peers.env={LAB_AGENT_NAAM="naam",LAB_LEAD_NAAM="lead",LAB_LEAD_STAAT="/pad/naar/staat"}' \
   -c 'mcp_servers.peers.default_tools_approval_mode="approve"'
 ```
+
+Codex geeft een MCP-server niet de omgeving van de sessie door (ook `env_vars` werkt daar niet voor een spawn-omgeving): de identiteit gaat als statische `env`-tabel per spawn mee. Meting (27 okt 2026, Codex 0.164.0):
+
+- Een `-c`-override zet de TUI in embedded mode ("Running without the shared background server"): de MCP-server en de hooks erven dan de omgeving van de pane.
+- Zonder `-c` (en in T3) draait een gedeelde app-server-daemon per `CODEX_HOME`; MCP-servers en hooks erven de omgeving van die daemon, en de cwd van de MCP-server is de cwd van de thread.
+- **Identiteitsfallback.** Ontbreekt `LAB_AGENT_NAAM`, dan zoekt `server.ts` vanaf zijn cwd omhoog naar `<staat>/identiteit/<sha256(echt pad van de checkout)[:24]>.json` (door `spawn.sh --vendor codex` geschreven, alleen voor een eigen worktree, alleen rol `agent`/`sublead`/`vervolg`) en gebruikt naam, lead en spawn-id daaruit. `LAB_AGENT_NAAM` uit de omgeving gaat voor. **Iedereen met dezelfde cwd krijgt die identiteit**: het is routering, geen authenticatie.
