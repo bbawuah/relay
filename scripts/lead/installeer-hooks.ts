@@ -182,10 +182,10 @@ export function installeer(o: Opties): Uitslag {
   if (kopieer) {
     for (const b of BESTANDEN) if (!existsSync(join(o.bron, b))) return fout(`bronbestand ontbreekt: ${join(o.bron, b)}`);
     for (const [van] of peersKopieen(o.bron, o.doel)) if (!existsSync(van)) return fout(`bronbestand ontbreekt: ${van}`);
-    mkdirSync(o.doel, { recursive: true });
+    mkdirSync(o.doel, { recursive: true, mode: 0o700 });
     for (const b of BESTANDEN) copyFileSync(join(o.bron, b), join(o.doel, b));
     for (const [van, naar] of peersKopieen(o.bron, o.doel)) {
-      mkdirSync(dirname(naar), { recursive: true });
+      mkdirSync(dirname(naar), { recursive: true, mode: 0o700 });
       copyFileSync(van, naar);
     }
     chmodSync(join(o.doel, "hook.sh"), 0o755);

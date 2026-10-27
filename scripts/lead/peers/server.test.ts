@@ -206,9 +206,16 @@ describe("identiteit zonder LAB_AGENT_NAAM (Codex-thread in T3)", () => {
     schrijfIdentiteit(staat, realpathSync(wt), ident("a"));
   });
 
-  test("metIdentiteit: de omgeving gaat voor; anders de identiteit van de checkout (ook vanuit een submap)", () => {
+  test("metIdentiteit: het identiteitsbestand wint van een geërfde LAB_AGENT_NAAM; zonder bestand geldt de omgeving", () => {
     const env = { LAB_LEAD_STAAT: staat };
-    expect(metIdentiteit({ ...env, LAB_AGENT_NAAM: "x" }, wt, T0).LAB_AGENT_NAAM).toBe("x");
+    // een daemon uit een lead-shell: de geërfde naam is die van de lead, het bestand van de thread wint
+    expect(metIdentiteit({ ...env, LAB_AGENT_NAAM: "lead-x", LAB_LEAD_NAAM: "lead-y" }, wt, T0)).toMatchObject({ LAB_AGENT_NAAM: "a", LAB_LEAD_NAAM: "lead-x" });
+    // zonder bestand voor deze cwd (andere checkout) blijft de omgeving gelden
+    expect(metIdentiteit({ ...env, LAB_AGENT_NAAM: "x" }, dir, T0).LAB_AGENT_NAAM).toBe("x");
+  });
+
+  test("metIdentiteit: de identiteit van de checkout (ook vanuit een submap)", () => {
+    const env = { LAB_LEAD_STAAT: staat };
     expect(metIdentiteit(env, wt, T0)).toMatchObject({ LAB_AGENT_NAAM: "a", LAB_LEAD_NAAM: "lead-x" });
     expect(metIdentiteit(env, join(wt, "sub"), T0).LAB_AGENT_NAAM).toBe("a");
   });

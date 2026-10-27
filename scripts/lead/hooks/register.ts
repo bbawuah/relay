@@ -44,6 +44,8 @@ export type Rec = {
   spawn_id?: string;
   /** Gezet door hernoem.ts: naam/lead zijn bewust gewijzigd en gaan mee bij /clear. */
   hernoemd?: boolean;
+  /** Aantal ongelezen peer-berichten bij het laatste seintje (UserPromptSubmit of Stop): Stop blokkeert alleen bij een stijging. */
+  seintje_n?: number;
 } & PeerVelden;
 
 export type Omgeving = { [k: string]: string | undefined };

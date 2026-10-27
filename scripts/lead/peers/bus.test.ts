@@ -1123,3 +1123,26 @@ describe("parallel", () => {
     expect(rest.some((e) => e.id === eerste.id)).toBe(false);
   }, 30_000);
 });
+
+describe("ongelezen(naam): een telling zonder bijwerkingen", () => {
+  test("telt de ongelezen berichten; wekt niemand, neemt geen verlaten wek over en schrijft niets", async () => {
+    open("a", "b");
+    const bus = maak();
+    expect(bus.ongelezen("b")).toBe(0);
+    await bus.send("a", "b", "een");
+    klok += 100;
+    // een verlaten wek (proces dood): list() zou hem overnemen en wekken; ongelezen niet
+    const wekPad = join(staat, "peers/wek/b.json");
+    writeFileSync(wekPad, JSON.stringify({ ts: T0, open: { tot: T0 + WEK_VENSTER_MS, pid: 2 ** 22 + 7 } }));
+    klok += 3 * WEK_VENSTER_MS;
+    const voor = { wekken: wekken.length, wek: readFileSync(wekPad, "utf8"), bestanden: slotBestanden().length };
+    expect(bus.ongelezen("b")).toBe(1);
+    expect(bus.ongelezen("b")).toBe(1);
+    expect(wekken).toHaveLength(voor.wekken);
+    expect(readFileSync(wekPad, "utf8")).toBe(voor.wek);
+    expect(slotBestanden()).toHaveLength(voor.bestanden); // geen lock blijft liggen
+    bus.ack("b", bus.inbox("b").map((e) => e.id));
+    expect(bus.ongelezen("b")).toBe(0);
+    expect(bus.ongelezen("../x")).toBe(0); // ongeldige naam: 0, geen pad buiten de staatmap
+  });
+});

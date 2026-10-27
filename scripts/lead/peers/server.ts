@@ -84,14 +84,15 @@ async function roepAan(bus: Bus, ikzelf: string, naam: string, a: Record<string,
 }
 
 /**
- * De omgeving met de identiteit van de sessie. LAB_AGENT_NAAM uit de omgeving gaat voor (tmux-spawn, Claude);
- * ontbreekt hij, dan zoekt dit het identiteitsbestand van de checkout van `cwd` (alleen een eigen worktree heeft er een).
+ * De omgeving met de identiteit van de sessie. Een identiteitsbestand voor de checkout van `cwd` (alleen een eigen worktree
+ * heeft er een) wint van LAB_AGENT_NAAM en LAB_LEAD_NAAM uit de omgeving, zoals codex-wrap dat voor de hooks doet: een
+ * daemon die uit een lead-shell startte erft de naam van die lead en mag een thread niet als die lead laten sturen.
+ * Zonder bestand geldt de omgeving (tmux-spawn, Claude). De identiteit wordt eenmalig bij de start van de server bepaald.
  * Iedereen met dezelfde cwd krijgt die identiteit: het is een routering, geen authenticatie (zie types.ts, "Bekende grens").
  */
 export function metIdentiteit(env: Omgeving, cwd: string, nu = Date.now()): Omgeving {
-  if (env.LAB_AGENT_NAAM) return env;
   const i = identiteitEnv(env, cwd, nu);
-  return i.LAB_AGENT_NAAM ? { ...env, LAB_AGENT_NAAM: i.LAB_AGENT_NAAM, ...(env.LAB_LEAD_NAAM ? {} : { LAB_LEAD_NAAM: i.LAB_LEAD_NAAM }) } : env;
+  return i.LAB_AGENT_NAAM ? { ...env, LAB_AGENT_NAAM: i.LAB_AGENT_NAAM, ...(i.LAB_LEAD_NAAM ? { LAB_LEAD_NAAM: i.LAB_LEAD_NAAM } : {}) } : env;
 }
 
 const PROTOCOLLEN = ["2024-11-05", "2025-03-26", "2025-06-18"];

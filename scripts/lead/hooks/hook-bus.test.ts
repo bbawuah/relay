@@ -126,7 +126,7 @@ describe("hooks → bus", () => {
   });
 
   test("zonder bus (ontbreekt of faalt) doen de hooks het oude werk en gooien ze niet", async () => {
-    const kapot = { ...bus, list: () => { throw new Error("stuk"); }, idleGemeld: async () => { throw new Error("stuk"); } } as unknown as Bus;
+    const kapot = { ...bus, list: () => { throw new Error("stuk"); }, ongelezen: () => { throw new Error("stuk"); }, idleGemeld: async () => { throw new Error("stuk"); } } as unknown as Bus;
     for (const b of [null, kapot]) {
       const o = { ...opt, bus: b };
       expect((await verwerk("UserPromptSubmit", inv("w1"), W(), o)).stdout).toBe("");
@@ -142,5 +142,54 @@ describe("hooks → bus", () => {
     await bus.send("lead-x", "w1", "twee");
     const u = await verwerk("UserPromptSubmit", inv("w1"), W(), opt);
     expect(context(u.stdout)).toBe(seintje(2));
+  });
+
+  test("Stop blokkeert alleen bij een stijging sinds het laatste seintje: een sessie die niet leest krijgt geen extra ronde per Stop", async () => {
+    await bus.send("lead-x", "w1", "een");
+    const eerste = await verwerk("Stop", inv("w1"), W(), opt);
+    expect(reden(eerste.stdout)).toBe(seintje(1));
+    expect(leesRecord(staat, "w1")?.seintje_n).toBe(1);
+    // dezelfde stand, nieuwe beurt, niet gelezen: geen block meer
+    const nogmaals = await verwerk("Stop", inv("w1"), W(), opt);
+    expect(nogmaals.stdout).toBe("");
+    // een nieuw bericht (stijging): weer één block
+    klok += 61_000;
+    await bus.send("lead-x", "w1", "twee");
+    const derde = await verwerk("Stop", inv("w1"), W(), opt);
+    expect(reden(derde.stdout)).toBe(seintje(2));
+    // gelezen en leeg: de teller gaat terug, en een volgend bericht blokkeert weer
+    bus.ack("w1", bus.inbox("w1").map((e) => e.id));
+    expect((await verwerk("Stop", inv("w1"), W(), opt)).stdout).toBe("");
+    expect(leesRecord(staat, "w1")?.seintje_n).toBe(0);
+    klok += 61_000;
+    await bus.send("lead-x", "w1", "drie");
+    expect(reden((await verwerk("Stop", inv("w1"), W(), opt)).stdout)).toBe(seintje(1));
+  });
+
+  test("het seintje van UserPromptSubmit telt als gezien: Stop met dezelfde stand blokkeert niet", async () => {
+    await bus.send("lead-x", "w1", "een");
+    expect(context((await verwerk("UserPromptSubmit", inv("w1"), W(), opt)).stdout)).toBe(seintje(1));
+    expect((await verwerk("Stop", inv("w1"), W(), opt)).stdout).toBe("");
+  });
+
+  test("Stop en SessionEnd wachten hoogstens op hun budget, ook als de bus in het wekvenster wacht (echte wachttijd-route)", async () => {
+    // Een bus waarvan de wekwacht nooit eindigt: zonder tijdsgrens hangt de hook (in het echt tot 5 s, tegen een timeout van 5 s).
+    let wachtAangeroepen = 0;
+    const hangend = maakBus({ staat, nu: () => klok, wekker: geenWekker, machine: "testmachine", wacht: () => (wachtAangeroepen++, new Promise<void>(() => {})) });
+    const budgetten: number[] = [];
+    const o: Opties = { nu: () => klok, bus: hangend, budget: async (ms) => void budgetten.push(ms) };
+    // lead-x kreeg net een wek (venster open) en wacht op w1; w1 stopt nu binnen dat venster
+    await hangend.send("w1", "lead-x", "hoi"); // eerste wek: nu, zet het venster
+    expect(hangend.notifyWhenIdle("lead-x", "w1")).toMatchObject({ ok: true, al_idle: false });
+    const stop = await verwerk("Stop", inv("w1"), W(), o);
+    expect(stop.code).toBe(0);
+    expect(wachtAangeroepen).toBe(1); // de bus zit echt in zijn wekwacht, en de hook kwam toch terug
+    expect(budgetten).toEqual([1000]);
+    // SessionEnd: een tweede abonnement, kleiner budget
+    await verwerk("UserPromptSubmit", inv("w1"), W(), o);
+    expect(hangend.notifyWhenIdle("lead-x", "w1")).toMatchObject({ ok: true });
+    const einde = await verwerk("SessionEnd", inv("w1"), W(), o);
+    expect(einde.code).toBe(0);
+    expect(budgetten.at(-1)).toBe(500);
   });
 });

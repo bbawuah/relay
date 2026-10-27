@@ -572,6 +572,11 @@ export function maakBus(opties: BusOpties): BusMetKlaar {
       });
     },
 
+    ongelezen(naam) {
+      if (!geldigeNaam(naam)) return 0;
+      return metSlot("post", naam, () => ongelezen(naam).length);
+    },
+
     notifyWhenIdle(abonnee, doel): AbonneerUitslag {
       if (!geldigeNaam(abonnee) || !levende().has(abonnee)) return { ok: false, reden: "geen_afzender", melding: `${JSON.stringify(abonnee)} staat niet (meer) in het register, of de naam is ongeldig.` };
       if (geldigeNaam(doel) && heeftTweeling(doel, levende())) return { ok: false, reden: "onbekend", melding: `${JSON.stringify(doel)} is dubbelzinnig: er is een levende sessie met dezelfde naam in andere hoofdletters.` };

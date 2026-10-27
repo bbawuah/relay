@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, readlinkSync, renameSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import { PEERS_BESTANDEN } from "./hooks/peers-kopie";
+import { PEERS_BESTANDEN, peersKopieen } from "./hooks/peers-kopie";
 import { EVENTS, MERK, type Opties, installeer, kiesBun, leesArgs } from "./installeer-hooks";
 
 // Alles in een wegwerpmap; de echte ~/.claude wordt nooit gelezen of geschreven.
@@ -83,12 +83,21 @@ describe("installeer-hooks", () => {
     expect(readdirSync(join(doel, "peers")).sort()).toEqual(["bus.ts", "standaard.ts", "types.ts", "uuid.ts", "wekker.ts"]);
     expect(readdirSync(join(doel, "hooks"))).toEqual(["register.ts"]);
     expect(statSync(join(doel, "hook.sh")).mode & 0o111).toBeGreaterThan(0);
+    // nieuwe mappen zijn van de eigenaar alleen (0700, onder een gangbare umask)
+    for (const m of [doel, join(doel, "peers"), join(doel, "hooks")]) expect(statSync(m).mode & 0o077).toBe(0);
   });
 
-  test("elk lokaal importbestand van de gekopieerde peers-bestanden staat zelf in de kopielijst (anders laadt de geïnstalleerde hook geen bus)", () => {
-    for (const b of PEERS_BESTANDEN) {
-      const tekst = readFileSync(join(import.meta.dir, "peers", b), "utf8");
-      for (const m of tekst.matchAll(/from "\.\/([\w-]+)"/g)) expect(PEERS_BESTANDEN).toContain(`${m[1]}.ts`);
+  test("elk lokaal import van een gekopieerd bestand (from, import \"…\", import(\"…\"), ook ../) staat zelf in de kopieën (anders laadt de geïnstalleerde hook geen bus)", () => {
+    const kopieen = peersKopieen(join(import.meta.dir, "hooks"), "/doel");
+    const gekopieerd = new Set(kopieen.map(([, naar]) => naar));
+    expect(kopieen.length).toBeGreaterThan(0);
+    for (const [van, naar] of kopieen) {
+      const tekst = readFileSync(van, "utf8");
+      const imports = [...tekst.matchAll(/(?:\bfrom\s+|\bimport\s+|\bimport\(\s*|\brequire\(\s*)["'](\.{1,2}\/[^"']+)["']/g)].map((m) => m[1]);
+      for (const imp of imports) {
+        const doel = join(dirname(naar), `${imp}.ts`);
+        expect(gekopieerd.has(doel) || gekopieerd.has(join(dirname(naar), imp))).toBe(true);
+      }
     }
   });
 

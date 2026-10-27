@@ -274,7 +274,7 @@ CODEX_HOME_GEKOZEN=""
 codex_controles() {
   CODEX_HOME_GEKOZEN="${CODEX_HOME:-$HOME/.codex}"
   case $CODEX_HOME_GEKOZEN in /*) ;; *) CODEX_HOME_GEKOZEN="$PWD/$CODEX_HOME_GEKOZEN" ;; esac
-  local cfg="$CODEX_HOME_GEKOZEN/config.toml" uit
+  local cfg="$CODEX_HOME_GEKOZEN/config.toml" uit rc
   eigen_worktree || fout "--vendor codex eist een eigen worktree als --map (git worktree add), niet de hoofdcheckout of een map zonder eigen worktree: $map"
   command -v "$BUN" >/dev/null 2>&1 || fout "--vendor codex heeft bun nodig om de grenzen-hook in $cfg te controleren"
   if [ "$t3" = 1 ]; then
@@ -283,7 +283,18 @@ codex_controles() {
     codex_sandbox
   fi
   # In T3 kan hosted web search niet per thread uit (geen -c); dan moet de config het zelf niet aanzetten (--web-search).
-  uit=$("$BUN" "$HIER/hooks/codex-controle.ts" "$cfg" $([ "$t3" != 1 ] || echo --web-search) 2>&1) || fout "Codex-config niet in orde, de grenzen zouden niet gelden: $uit"
+  # Exit 1 = de grenzen-hook ontbreekt of is niet vertrouwd; exit 3 = web search staat aan (alleen met --web-search).
+  rc=0
+  if [ "$t3" = 1 ]; then
+    uit=$("$BUN" "$HIER/hooks/codex-controle.ts" "$cfg" --web-search --project "$map" 2>&1) || rc=$?
+  else
+    uit=$("$BUN" "$HIER/hooks/codex-controle.ts" "$cfg" 2>&1) || rc=$?
+  fi
+  case $rc in
+    0) ;;
+    3) fout "$uit" ;;
+    *) fout "Codex-config niet in orde, de grenzen zouden niet gelden: $uit" ;;
+  esac
 }
 
 t3_controleer_map() {

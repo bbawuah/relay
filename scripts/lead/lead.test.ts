@@ -1270,13 +1270,14 @@ exit 1
     schrijfConfig({ bovenaan: 'web_search = "live"' });
     expect(codex(["--map", wt, "--droog"]).uit).toContain(UIT);
     // T3: geen -c mogelijk, dus weigeren als de config hem aanzet (ook --droog); niets geschreven of gestart
-    for (const bovenaan of ['web_search = "live"', 'web_search = "cached"', "[tools]\nweb_search = true", "[tools.web_search]\ncontext_size = \"low\"", "[features]\nweb_search_request = true"]) {
+    for (const bovenaan of ['web_search = "live"', 'web_search = "cached"', 'web_search = "onbekend"', "web_search = true", "[features]\nweb_search_cached = true", "[tools]\nweb_search = true", "[tools.web_search]\ncontext_size = \"low\"", "[features]\nweb_search_request = true"]) {
       schrijfConfig({ bovenaan: bovenaan.startsWith("[") ? "" : bovenaan });
       if (bovenaan.startsWith("[")) appendFileSync(join(codexHome, "config.toml"), `\n${bovenaan}\n`);
       for (const extra of [["--t3"], ["--t3", "--droog"]]) {
         const r = codex(["--map", wt, ...extra]);
         expect(r.code).toBe(1);
-        expect(r.fout).toMatch(/hosted web search staat aan/);
+        expect(r.fout).toMatch(/hosted web search kan voor een T3-thread niet uit/);
+        expect(r.fout).not.toMatch(/Codex-config niet in orde|codex-installeer/);
         expect(r.fout).toMatch(/web_search = "disabled"/);
       }
     }
@@ -1287,6 +1288,15 @@ exit 1
       schrijfConfig({ bovenaan });
       expect(codex(["--map", wt, "--t3", "--droog"]).code).toBe(0);
     }
+    // een project-config in de worktree die hem aanzet, telt ook (gemeten: -c wint daarvan in tmux, maar niet in T3)
+    mkdirSync(join(wt, ".codex"));
+    writeFileSync(join(wt, ".codex", "config.toml"), 'web_search = "live"\n');
+    const proj = codex(["--map", wt, "--t3", "--droog"]);
+    expect(proj.code).toBe(1);
+    expect(proj.fout).toMatch(/\.codex\/config\.toml zet hem aan/);
+    expect(codex(["--map", wt, "--droog"]).uit).toContain(UIT); // tmux: -c wint
+    writeFileSync(join(wt, ".codex", "config.toml"), 'web_search = "disabled"\n');
+    expect(codex(["--map", wt, "--t3", "--droog"]).code).toBe(0);
   });
 
   test("tmux in een eigen worktree schrijft de identiteit (0600 in een map 0700); een andere checkout krijgt niets", () => {

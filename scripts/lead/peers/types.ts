@@ -146,8 +146,10 @@ export interface Bus {
   inbox(naam: string): Envelop[];
   /** Markeert deze ids als gelezen. Onbekende ids worden genegeerd. Een `extern` bericht maakt `naam` zelf `extern` (markering `<staat>/peers/extern/<naam>`, geen schrijfactie in het register). */
   ack(naam: string, ids: string[]): void;
-  /** Levende sessies uit het register (toestand niet `weg`). */
+  /** Levende sessies uit het register (toestand niet `weg`). Neemt ook een verlaten wek over (schrijft en kan wachten); voor alleen een telling: `ongelezen`. */
   list(): Peer[];
+  /** Aantal ongelezen berichten van `naam`. Alleen lezen: wekt niemand, neemt niets over, schrijft niets (hoogstens een korte leeslock). 0 bij een ongeldige naam. */
+  ongelezen(naam: string): number;
   /**
    * Eenmalig: zodra `doel` idle, klaar, vrij of weg wordt, krijgt `abonnee` één envelop met soort `idle`
    * (van = doel, tekst = "<doel> is <toestand>", hop 1, nieuwe draad, buiten het inbound-beleid en het tempo).
