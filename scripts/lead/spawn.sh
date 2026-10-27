@@ -2,16 +2,22 @@
 # Start een Claude-sessie in een eigen tmux-venster en geef die een opdracht.
 # Gebruik: scripts/lead/spawn.sh --naam <n> --opdracht <bestand> [--model sonnet|opus]
 #          [--map <pad>] [--lead <unieke naam>] [--sublead [--workflow <JJJJ-MM-DD>]] [--vervolg <tak>] [--t3] [--droog]
-#          [--vendor claude|codex]
+#          [--vendor claude|codex] [--netwerk]
 #          --vendor codex: een Codex-sessie (`codex -C <map>`; --model is dan een Codex-model); standaard claude. Eist een eigen
 #          worktree als --map (nooit de hoofdcheckout) en een Codex-config met de grenzen-hook (grenzen.sh, vertrouwd door
 #          codex-installeer.ts); anders weigert spawn. De rol staat in de pane-omgeving (tmux) en altijd in
 #          <staat>/identiteit/<hash van de checkout>.json (codex-wrap.sh zet die in de omgeving van elke hook, ook in T3).
-#          Sandbox (tmux): de werker draait met een permissieprofiel (workspace-write-achtig, netwerk aan): schrijven alleen in de
-#          worktree, /tmp, TMPDIR, de bun-cache, <common>/objects, refs, logs en worktrees/<naam>; hooks, config, commondir en
+#          Sandbox (tmux): de werker draait met een permissieprofiel (workspace-write-achtig, netwerk UIT): schrijven alleen in de
+#          worktree, een eigen tmp-map /tmp/lab-werker-<naam> (TMPDIR wijst ernaar), de bun-cache, <common>/objects, refs, logs en worktrees/<naam>; hooks, config, commondir en
 #          gitdir blijven read-only; sleutelmappen zijn onleesbaar; geen escalatieverzoeken (-a never). Een T3-thread krijgt
 #          geen -c en dus geen sandbox: --t3 met --vendor codex weigert tenzij --zonder-sandbox, een expliciete escape die alleen
-#          op aanwijzing van Brian mag. De upstream van de werkertak (origin/<tak>) zet spawn vooraf, want .git/config is read-only.
+#          op aanwijzing van Brian mag. Netwerk is standaard uit (ook unix-sockets: EPERM, dus geen tmux send-keys-ontsnapping);
+#          --netwerk zet het aan (Brian of de lead, bewust; niet met --t3). Zonder netwerk draait spawn eerst
+#          `bun install --ignore-scripts --frozen-lockfile` in de worktree (buiten de sandbox, als er een package.json is; geweigerd bij een
+#          bunfig.toml of .npmrc die afwijkt van origin/main) en pusht de werker niet en draait hij geen gh: hij meldt "klaar om te pushen
+#          op <sha>" en de lead pusht met scripts/lead/push-werker.sh. Een bestaande <map>/.codex weigert spawn (die config draait buiten
+#          de sandbox).
+#          De upstream van de werkertak (origin/<tak>) zet spawn vooraf, want .git/config is read-only.
 #          --t3: start de sessie als thread in T3 Code (server op deze machine) in plaats van in tmux; --map moet dan
 #          een eigen worktree zijn. Laatste regel van de uitvoer: t3:<thread-id>.
 #        scripts/lead/spawn.sh --meerdere <lijst> [--model ..] [--map ..] [--lead ..] [--droog]
@@ -40,7 +46,7 @@ for v in WACHT POLS BEWIJS ENTER; do
 done
 [[ $WACHT_VERTROUWEN =~ ^[0-9]+$ ]] || fout "WACHT_VERTROUWEN moet een geheel getal zijn, niet '$WACHT_VERTROUWEN'"
 
-naam="" opdracht="" model="" map="$PWD" lead="" droog=0 sublead=0 vervolg="" workflow="" meerdere="" t3=0 vendor=claude zonder_sandbox=0
+naam="" opdracht="" model="" map="$PWD" lead="" droog=0 sublead=0 vervolg="" workflow="" meerdere="" t3=0 vendor=claude zonder_sandbox=0 netwerk=0
 waarde() { [ "$#" -ge 2 ] || fout "optie $1 heeft een waarde nodig"; }
 while [ $# -gt 0 ]; do
   case $1 in
@@ -56,13 +62,16 @@ while [ $# -gt 0 ]; do
     --meerdere) waarde "$@"; meerdere=$2; shift 2 ;;
     --t3) t3=1; shift ;;
     --zonder-sandbox) zonder_sandbox=1; shift ;;
+    --netwerk) netwerk=1; shift ;;
     --vendor) waarde "$@"; vendor=$2; shift 2 ;;
-    -h|--help) sed -n '2,15p' "$0"; exit 0 ;;
+    -h|--help) awk 'NR > 1 && /^#/ { print; next } NR > 1 { exit }' "$0"; exit 0 ;;
     *) fout "onbekende optie: $1" ;;
   esac
 done
 
 case $vendor in claude|codex) ;; *) fout "--vendor moet claude of codex zijn, niet '$vendor'" ;; esac
+[ "$netwerk" = 0 ] || [ "$vendor" = codex ] || fout "--netwerk hoort bij --vendor codex"
+[ "$netwerk" = 0 ] || [ "$t3" = 0 ] || fout "--netwerk past niet bij --t3: een T3-thread heeft geen sandbox en dus geen netwerkprofiel om aan te zetten"
 
 if [ -n "$meerdere" ]; then
   [ -z "$naam$opdracht$vervolg" ] && [ "$sublead" = 0 ] || fout "--meerdere sluit --naam, --opdracht, --vervolg en --sublead uit"
@@ -76,6 +85,7 @@ if [ -n "$meerdere" ]; then
     case ${n:-} in ""|"#"*) continue ;; esac
     [ -n "${o:-}" ] && [ -z "${extra:-}" ] || fout "$meerdere regel $regelnr: verwacht 'naam opdrachtbestand [model]'"
     [[ $n =~ ^[A-Za-z0-9._-]+$ ]] || fout "$meerdere regel $regelnr: naam '$n' mag alleen letters, cijfers, punt, streepje en underscore bevatten"
+    [[ $n =~ ^[Cc][Oo][Dd][Ee][Xx]-[0-9A-Fa-f]{12}$ ]] && fout "$meerdere regel $regelnr: naam '$n' is gereserveerd (afgeleide namen van Codex-sessies zonder identiteit)"
     for eerder in ${namen[@]+"${namen[@]}"}; do
       [ "$eerder" != "$n" ] || fout "$meerdere regel $regelnr: dubbele naam '$n'; er is nog niets gestart"
     done
@@ -88,6 +98,10 @@ if [ -n "$meerdere" ]; then
     namen+=("$n") opdrachten+=("$o") modellen+=("${m:-$model}")
   done <"$meerdere"
   [ "${#namen[@]}" -gt 0 ] || fout "lijst $meerdere bevat geen sessies"
+  # Zonder netwerk installeert elke sessie in dezelfde --map: parallel `bun install` in één worktree botst (en één Codex-sessie per checkout).
+  if [ "$vendor" = codex ] && [ "$netwerk" = 0 ] && [ "$droog" = 0 ] && [ "$t3" = 0 ] && [ "${#namen[@]}" -gt 1 ]; then
+    fout "--meerdere met --vendor codex en meer dan één sessie weigert zonder --netwerk: de installatie zou parallel in één worktree draaien. Start de sessies apart"
+  fi
   uitmap=$(mktemp -d "${TMPDIR:-/tmp}/spawn-meerdere.XXXXXX")
   pids=()
   for i in "${!namen[@]}"; do
@@ -97,6 +111,7 @@ if [ -n "$meerdere" ]; then
     [ "$droog" = 0 ] || args+=(--droog)
     [ "$t3" = 0 ] || args+=(--t3)
     [ "$zonder_sandbox" = 0 ] || args+=(--zonder-sandbox)
+    [ "$netwerk" = 0 ] || args+=(--netwerk)
     [ "$vendor" = claude ] || args+=(--vendor "$vendor")
     bash "$zelf" "${args[@]}" >"$uitmap/${namen[$i]}.uit" 2>"$uitmap/${namen[$i]}.fout" &
     pids+=($!)
@@ -127,6 +142,7 @@ fi
 
 [ -n "$naam" ] || fout "--naam ontbreekt"
 [[ $naam =~ ^[A-Za-z0-9._-]+$ ]] || fout "naam '$naam' mag alleen letters, cijfers, punt, streepje en underscore bevatten"
+[[ $naam =~ ^[Cc][Oo][Dd][Ee][Xx]-[0-9A-Fa-f]{12}$ ]] && fout "naam '$naam' is gereserveerd: de vorm codex-<12 hex> (hoofd- of kleine letters) is voor afgeleide namen van Codex-sessies zonder identiteit (#685)"
 [ -n "$opdracht" ] || fout "--opdracht ontbreekt"
 case $opdracht in *$'\n'*|*$'\r'*|*"'"*) fout "opdrachtpad mag geen regeleinde of enkele aanhalingsteken bevatten" ;; esac
 [ -f "$opdracht" ] || fout "opdrachtbestand bestaat niet: $opdracht"
@@ -180,6 +196,13 @@ git_schoon() (
   git -c core.fsmonitor= -c core.hooksPath=/dev/null -c core.untrackedCache=false -c diff.ignoreSubmodules=all "$@"
 )
 
+# Git in de gedeelde .git van de lead (of in LEAD_GITDIR), niet via de worktree van de werker; zonder GIT_*, hooks, fsmonitor en replace-refs.
+git_lead() (
+  while IFS= read -r v; do unset "$v"; done < <(compgen -e | grep '^GIT_' || true)
+  export GIT_NO_REPLACE_OBJECTS=1
+  git --git-dir="${LEAD_GITDIR:-$GEMEEN_DIR}" -c core.fsmonitor= -c core.hooksPath=/dev/null -c core.untrackedCache=false -c diff.ignoreSubmodules=all -c core.commitGraph=false "$@"
+)
+
 t3_bin() {
   if [ -n "${LAB_T3:-}" ]; then echo "$LAB_T3"; return; fi
   command -v t3 2>/dev/null && return
@@ -217,22 +240,59 @@ eigen_worktree() {
 # gitdir, die een git in die worktree naar een andere common dir sturen), een profiel met `read` op die bestanden wel.
 # Weigert (nooit half): een pad met ' " \ of een regeleinde kan niet veilig in de TOML.
 codex_sandbox() {
-  local c e h t b rest m
+  local c e h t b rest m ch
   c=$GEMEEN_DIR e=$EIGEN_DIR h=${HOME:-}
   m=$(cd "$map" && pwd -P) || fout "--vendor codex: $map is niet te openen"
   [ -n "$h" ] && [ -d "$h" ] || fout "--vendor codex: HOME ontbreekt, de sandbox kan niet gebouwd worden"
   h=$(cd "$h" && pwd -P)
-  t=$(cd /tmp && pwd -P)
-  for rest in "$m" "$c" "$e" "$h" "$t" "${TMPDIR:-}"; do
+  t=$(cd "${LAB_WERKER_TMPWORTEL:-/tmp}" && pwd -P) || fout "--vendor codex: de tmp-wortel ${LAB_WERKER_TMPWORTEL:-/tmp} bestaat niet"
+  ch=$CODEX_HOME_GEKOZEN
+  for rest in "$m" "$c" "$e" "$h" "$t" "$naam" "$ch"; do
     case $rest in *\'*|*\"*|*\\*|*$'\n'*) fout "--vendor codex: een pad bevat ', \" of \\ en kan niet in de sandbox-config: $rest" ;; esac
   done
   b="$h/.bun/install/cache"
   SANDBOX_FS="\"/\"=\"read\",\"$m\"=\"write\",\"$c/objects\"=\"write\",\"$c/refs\"=\"write\",\"$c/logs\"=\"write\""
   SANDBOX_FS="$SANDBOX_FS,\"$e\"=\"write\",\"$e/commondir\"=\"read\",\"$e/gitdir\"=\"read\",\"$e/config.worktree\"=\"read\""
-  SANDBOX_FS="$SANDBOX_FS,\"$t\"=\"write\",\"$b\"=\"write\""
-  if [ -n "${TMPDIR:-}" ] && [ -d "$TMPDIR" ]; then SANDBOX_FS="$SANDBOX_FS,\"$(cd "$TMPDIR" && pwd -P)\"=\"write\""; fi
+  # HEAD van de worktree read-only: anders wijst de werker hem naar een andere tak (push-werker leest de tak uit de identiteit, dit is de
+  # tweede laag). Een commit schrijft de tak in refs/ en de index in $e, niet HEAD.
+  SANDBOX_FS="$SANDBOX_FS,\"$e/HEAD\"=\"read\""
+  # refs/replace read-only (refs/ is schrijfbaar): een replace-ref laat merge-base, log en diff van de lead liegen. <worktree>/.git
+  # (het bestand dat naar de gitdir wijst) read-only: het zou de gitdir kunnen omleggen.
+  SANDBOX_FS="$SANDBOX_FS,\"$c/refs/replace\"=\"read\",\"$m/.git\"=\"read\""
+  # Eigen tmp-map als enige tmp-root: niet /tmp als geheel en niet de TMPDIR van de lead (daar staan sessiemappen en sockets van anderen).
+  WERKTMP="$t/lab-werker-$naam"
+  SANDBOX_FS="$SANDBOX_FS,\"$WERKTMP\"=\"write\""
+  # De bun-cache alleen schrijfbaar als de werker zelf mag installeren (--netwerk). Anders vervangt hij een pakket in de cache en linkt de
+  # volgende `bun install` van de lead het in, waarna `bun run check` het als de lead draait. Gelezen mag hij ("/"="read").
+  [ "$netwerk" = 0 ] || SANDBOX_FS="$SANDBOX_FS,\"$b\"=\"write\""
+  # De projectconfig van Codex (<worktree>/.codex/config.toml) draait zijn mcp_servers buiten de sandbox en mag het profiel aanvullen:
+  # read-only, ook als de map nog niet bestaat.
+  SANDBOX_FS="$SANDBOX_FS,\"$m/.codex\"=\"read\""
   # Sleutelmappen onleesbaar (dezelfde lijst als grenzen.sh), want een write_stdin gaat langs die hook.
-  SANDBOX_FS="$SANDBOX_FS,\"$h/.config/klaarover\"=\"none\",\"$h/.config/douane\"=\"none\",\"$h/.config/agentwerkbank\"=\"none\",\"$h/.codex/auth.json\"=\"none\""
+  SANDBOX_FS="$SANDBOX_FS,\"$h/.config/klaarover\"=\"none\",\"$h/.config/douane\"=\"none\",\"$h/.config/agentwerkbank\"=\"none\""
+  # De CODEX_HOME die spawn gebruikt (kan een andere zijn dan ~/.codex): transcripten, geschiedenis, logs, sqlite-staat, config en sleutel.
+  # Codex en zijn hooks lezen die buiten de sandbox; de shell van de werker hoeft ze niet te lezen. Leesbaar blijven shell_snapshots/,
+  # skills/, prompts/, rules/ en AGENTS.md. De sqlite-bestanden zijn die welke er nu staan (nieuwe komen niet vanzelf op de lijst).
+  local d f k
+  for d in "$ch" "$h/.codex"; do
+    for k in auth.json sessions archived_sessions history.jsonl log config.toml config.toml.voor-peerbus; do
+      SANDBOX_FS="$SANDBOX_FS,\"$d/$k\"=\"none\""
+    done
+    for f in "$d"/*.sqlite*; do
+      [ -e "$f" ] || continue
+      case $f in *\'*|*\"*|*\\*) continue ;; esac
+      SANDBOX_FS="$SANDBOX_FS,\"$f\"=\"none\""
+    done
+    [ "$ch" != "$h/.codex" ] || break
+  done
+  # Inloggegevens en tokens: een denylist (alles blijft leesbaar tenzij hier genoemd), geen allowlist. Met --netwerk is een leesbaar
+  # token een directe exfiltratieroute. ~/.codex als geheel staat er niet bij (zie hierboven: alleen wat de shell niet nodig heeft).
+  local k
+  for k in .ssh .config/gh .netrc .git-credentials .aws .azure .kube .docker .npmrc .config/op Library/Keychains \
+    .config/glab-cli .gnupg .config/gcloud "Library/Application Support/com.vercel.cli" \
+    .claude/projects .claude/.credentials.json .claude/history.jsonl .claude.json; do
+    SANDBOX_FS="$SANDBOX_FS,\"$h/$k\"=\"none\""
+  done
 }
 
 # Een andere sessie in dezelfde checkout? Dan weigeren (de identiteit is per checkout, niet per sessie).
@@ -262,8 +322,11 @@ schrijf_identiteit() {
   inst=$(identiteit_pad)
   mkdir -p "$STAAT/identiteit" && chmod 700 "$STAAT/identiteit"
   tmp=$(mktemp "$inst.XXXXXX")
-  jq -n --arg n "$naam" --arg r "$rol" --arg l "$lead" --arg o "$opdracht" --arg s "$spawn_id" --argjson ts "$(( $(date +%s) * 1000 ))" \
-    '{naam: $n, rol: $r, lead: $l, opdracht: $o, spawn_id: $s, ts: $ts}' >"$tmp" || { rm -f "$tmp"; fout "kon $inst niet schrijven"; }
+  # De tak van de worktree op dit moment, uit de gitdir aan de kant van de lead: push-werker.sh pusht alleen die tak.
+  local tak=""
+  if [ -n "${EIGEN_DIR:-}" ]; then tak=$(git_schoon --git-dir="$EIGEN_DIR" symbolic-ref -q --short HEAD 2>/dev/null || true); fi
+  jq -n --arg n "$naam" --arg r "$rol" --arg l "$lead" --arg o "$opdracht" --arg s "$spawn_id" --arg k "$tak" --argjson ts "$(( $(date +%s) * 1000 ))" \
+    '{naam: $n, rol: $r, lead: $l, opdracht: $o, spawn_id: $s, ts: $ts} + (if $k == "" then {} else {tak: $k} end)' >"$tmp" || { rm -f "$tmp"; fout "kon $inst niet schrijven"; }
   chmod 600 "$tmp"
   mv "$tmp" "$inst"
   ID_GESCHREVEN=$inst
@@ -279,6 +342,9 @@ codex_controles() {
   case $CODEX_HOME_GEKOZEN in /*) ;; *) CODEX_HOME_GEKOZEN="$PWD/$CODEX_HOME_GEKOZEN" ;; esac
   local cfg="$CODEX_HOME_GEKOZEN/config.toml" uit rc
   eigen_worktree || fout "--vendor codex eist een eigen worktree als --map (git worktree add), niet de hoofdcheckout of een map zonder eigen worktree: $map"
+  if [ -e "$map/.codex" ] || [ -L "$map/.codex" ]; then
+    fout "--vendor codex weigert: $map/.codex bestaat (getrackt of niet). Codex laadt <worktree>/.codex/config.toml bij de start; zijn mcp_servers draaien buiten de sandbox en hij kan het profiel aanvullen. Haal de map weg of start in een andere worktree"
+  fi
   command -v "$BUN" >/dev/null 2>&1 || fout "--vendor codex heeft bun nodig om de grenzen-hook in $cfg te controleren"
   if [ "$t3" = 1 ]; then
     [ "$zonder_sandbox" = 1 ] || fout "--t3 met --vendor codex weigert: een T3-thread krijgt geen -c per thread en dus niet de sandbox van de tmux-werker (schrijven alleen in de worktree, hooks en config read-only). Start in tmux. --zonder-sandbox is een expliciete escape (de thread draait dan zonder die sandbox) en mag alleen op aanwijzing van Brian"
@@ -435,14 +501,17 @@ if [ "$vendor" = codex ]; then
   # CODEX_HOME vast in het startcommando: de pane erft de omgeving van de tmux-server, niet die van deze aanroep, en
   # codex_controles heeft juist de config van dit pad gecontroleerd. (Een T3-thread draait onder T3's eigen CODEX_HOME.)
   codex_home_q=" CODEX_HOME=$(printf '%q' "$CODEX_HOME_GEKOZEN")"
-  cmd="env LAB_AGENT_NAAM=$naam LAB_AGENT_ROL=$rol LAB_LEAD_NAAM=$lead LAB_OPDRACHT=$opdracht_q LAB_SPAWN_ID=$spawn_id$staat_q$codex_home_q codex -C $(printf '%q' "$map")"
+  tmp_q=""
+  [ "$t3" = 1 ] || tmp_q=" TMPDIR=$(printf '%q' "$WERKTMP")"
+  cmd="env LAB_AGENT_NAAM=$naam LAB_AGENT_ROL=$rol LAB_LEAD_NAAM=$lead LAB_OPDRACHT=$opdracht_q LAB_SPAWN_ID=$spawn_id$tmp_q$staat_q$codex_home_q codex -C $(printf '%q' "$map")"
   [ -z "$model" ] || cmd="$cmd -m $model"
   # Hosted web search uit voor werkers (de uitkomst loopt langs geen hook); --search nooit meegeven. In T3 kan dit niet per
   # thread: codex_controles weigert daar als de config het aanzet. Het -c zet de TUI in embedded mode (zoals de MCP-c's).
   [ "$t3" = 1 ] || cmd="$cmd -c 'web_search=\"disabled\"'"
-  # Sandbox: een permissieprofiel (zie codex_sandbox) met netwerk, en nooit een escalatieverzoek (-a never): zonder mens in de
+  # Sandbox: een permissieprofiel (zie codex_sandbox) zonder netwerk (met --netwerk wel), en nooit een escalatieverzoek (-a never): zonder mens in de
   # pane zou een verzoek om buiten de sandbox te draaien blijven hangen, en een goedkeuring zou de sandbox ophouden te zijn.
-  [ "$t3" = 1 ] || cmd="$cmd -a never -c 'default_permissions=\"lab-werker\"' -c 'permissions.lab-werker.filesystem={$SANDBOX_FS}' -c 'permissions.lab-werker.network={enabled=true}'"
+  net=false; [ "$netwerk" = 0 ] || net=true
+  [ "$t3" = 1 ] || cmd="$cmd -a never -c 'default_permissions=\"lab-werker\"' -c 'permissions.lab-werker.filesystem={$SANDBOX_FS}' -c 'permissions.lab-werker.network={enabled=$net}'"
   # De peers-MCP alleen voor deze sessie (-c), nooit globaal in ~/.codex.
   server="${LAB_PEERS_SERVER:-$HIER/peers/server.ts}"
   bun_abs=$(command -v "$BUN" 2>/dev/null || true)
@@ -476,6 +545,10 @@ fi
 if [ "$vendor" = codex ]; then
   # Codex kent geen SendMessage: het rapport aan de lead is de tool send van de MCP-server peers.
   zin="${zin//via SendMessage (to: $lead)/met de tool send van MCP-server peers (naar: $lead)}"
+  # Zonder netwerk kan de werker niet pushen: de lead pusht en opent de PR.
+  if [ "$t3" = 0 ] && [ "$netwerk" = 0 ]; then
+    zin="$zin Je hebt geen netwerk: push niet en draai geen gh. Commit in je worktree en meld in je rapport \"klaar om te pushen op <sha>\"; de lead pusht (met scripts/lead/push-werker.sh, nooit met een push vanuit jouw worktree) en opent de PR. Draai nodige postinstall-scripts zelf in je sandbox (spawn installeert met --ignore-scripts)."
+  fi
 fi
 zin="$zin Sluit je laatste rapport aan de lead af met een vaste slotregel (laatste regel, kaal): \`vrij\` als je klaar en opgeruimd bent, of \`wacht op achtergrondrun tot ~HH:MM\` (hoogstens 2 uur vooruit) als je op een achtergrondrun wacht. \"vrij\" ergens anders in de tekst telt niet."
 
@@ -489,6 +562,7 @@ if [ "$droog" = 1 ]; then
   echo "droog: tmux set -p -t <pane> @agent_rol $rol; tmux set -p -t <pane> @agent_naam $naam"
   if [ "$vendor" = codex ]; then
     echo "droog: schrijf de identiteit (naam=$naam rol=$rol) naar $(identiteit_pad) (0600 in een map 0700); codex-wrap.sh zet die in elke hook"
+    [ "$t3" = 1 ] || [ "$netwerk" = 1 ] || [ ! -f "$map/package.json" ] || echo "droog: bun install --ignore-scripts --frozen-lockfile in $map (buiten de sandbox, zonder netwerk kan de werker het niet)"
     echo "droog: gecontroleerd: $map is een eigen worktree en $CODEX_HOME_GEKOZEN/config.toml heeft de vertrouwde, actuele grenzen-hook"
   fi
   echo "droog: wacht (max ${WACHT}s) tot de pane '$KLAAR_TEKST' of de promptregel toont"
@@ -514,6 +588,42 @@ fi
 
 if [ "$vendor" = codex ]; then
   identiteit_vrij
+  # Zonder netwerk kan de werker niet installeren: doe het hier, buiten de sandbox. Dit draait code van de worktree buiten de sandbox,
+  # dus: geen lifecycle-scripts, alleen wat het lockfile vastlegt, en geen bunfig.toml/.npmrc die afwijkt van origin/main
+  # (die kunnen registry of cache omleggen). Vóór schrijf_identiteit: een mislukking laat niets achter, en er loopt geen
+  # werker in deze map (identiteit_vrij).
+  if [ "$t3" = 0 ] && [ "$netwerk" = 0 ] && [ -f "$map/package.json" ]; then
+    # De werker kan package.json, bun.lock, bunfig.toml, .npmrc en .env* in zijn worktree vervangen (bij een herstart of --vervolg komen ze van
+    # hem): een afhankelijkheid http://…/x.tgz?data=… is een GET buiten de sandbox, een file:-afhankelijkheid kopieert mappen,
+    # bunfig/.npmrc/.env (BUN_CONFIG_REGISTRY) leggen registry en cache om, en een symlink laat find/bun een map volgen die niet in de
+    # vergelijking zit. Daarom alleen installeren als ze identiek zijn aan origin/main, gelezen uit een tijdelijke bare repo van de lead die
+    # vers van origin haalt (fetch controleert de hashes): de gedeelde .git zelf is niet te vertrouwen, want de werker kan in objects/
+    # een los object of pack onder de sha van een bestaande blob zetten, en refs/remotes/origin/main is ook schrijfbaar.
+    bron=$(mktemp -d) || fout "kon geen tijdelijke map maken voor de vergelijking met origin/main"
+    bronrepo="$bron/bron.git"
+    url=$(git_lead config --get remote.origin.url 2>/dev/null || true)
+    vertrouwd=""
+    if [ -n "$url" ] && LEAD_GITDIR="$bronrepo" git_lead init -q --bare 2>/dev/null &&
+      LEAD_GITDIR="$bronrepo" git_lead fetch -q --no-tags --depth=1 "$url" refs/heads/main 2>/dev/null; then
+      vertrouwd=$(LEAD_GITDIR="$bronrepo" git_lead rev-parse --verify -q 'FETCH_HEAD^{commit}' 2>/dev/null || true)
+    fi
+    if [ -z "$vertrouwd" ]; then
+      rm -rf "$bron"
+      fout "kon origin/main niet ophalen om package.json, bun.lock, bunfig.toml, .npmrc en .env* te vergelijken; geen bun install buiten de sandbox. Start met --netwerk (dan installeert de werker zelf)"
+    fi
+    afwijking=""
+    while IFS= read -r -d '' f; do
+      rel=${f#"$map"/}
+      if [ -L "$f" ] || ! LEAD_GITDIR="$bronrepo" git_lead show "$vertrouwd:$rel" 2>/dev/null | cmp -s - "$f"; then
+        afwijking=$rel
+        break
+      fi
+    done < <(find "$map" \( -name node_modules -o -name .git \) -prune -o \( -type l -o -name package.json -o -name bunfig.toml -o -name .npmrc -o -name '.env*' -o -name bun.lock -o -name bun.lockb \) -print0)
+    rm -rf "$bron"
+    [ -z "$afwijking" ] || fout "$afwijking in $map wijkt af van origin/main (of is nieuw, of een symlink): bun install buiten de sandbox zou hem volgen. Herstel het bestand, of start met --netwerk: dan draait de werker zelf bun install in de sandbox"
+    (cd "$map" && "$BUN" install --ignore-scripts --frozen-lockfile >&2) || fout "bun install --ignore-scripts --frozen-lockfile in $map mislukte; de werker heeft zonder netwerk geen installatie. Los het op of start met --netwerk"
+  fi
+  mkdir -p -m 700 "$WERKTMP" 2>/dev/null || [ "$t3" = 1 ] || fout "kon de tmp-map $WERKTMP niet maken"
   schrijf_identiteit
   codex_upstream
 fi
