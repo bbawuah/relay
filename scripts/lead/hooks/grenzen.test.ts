@@ -1099,6 +1099,11 @@ describe("grenzen.sh: apply_patch van Codex", () => {
       expect(run(wrap(add(".GIT/hooks/pre-push")), HOOFD, "werker").code).toBe(2);
       expect(run(wrap(add(`${HOOFD.toLowerCase()}/.git/config`)), WORKTREE, "werker").code).toBe(2);
       expect(run(wrap(add(`${HOOFD.toUpperCase()}/.Git/hooks/x`)), WORKTREE, "werker").code).toBe(2);
+      // Buiten .git beslist git; alleen op macOS (APFS, hoofdletterongevoelig) bestaat het pad in kleine letters.
+      // Op Linux is het fs hoofdlettergevoelig en bestaat dat pad niet, dus daar is dit geen hoofdcheckout.
+      if (process.platform === "darwin") {
+        expect(run(wrap(add(`${HOOFD.toLowerCase()}/nieuw.txt`)), WORKTREE, "werker").code).toBe(2);
+      }
       expect(run(wrap(add(`${HOOFD.toLowerCase()}/.git/config`)), WORKTREE, "lead").code).toBe(0);
     });
     test("N2: een min-regel die niet exact matcht telt niet als krimp (38 KB + fuzzy min van 5000 en plus van 5500)", () => {
