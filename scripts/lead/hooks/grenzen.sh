@@ -51,6 +51,11 @@ if tool in ("Grep", "Glob"):
     if re.search(r"\.config/(klaarover|douane|agentwerkbank)", p):
         weiger("zoeken in een sleutelmap mag niet.")
 
+def vault_weiger(na, grens):
+    weiger(f"deze notitie wordt {na / 1024:.0f} KB; de limiet voor een vaultnotitie is {grens / 1024:.0f} KB (LAB_VAULT_MAX_KB). "
+           "Agents lezen een heel bestand terug, dus splits per spoor (bv. CONTRACT-<spoor>.md, PLAN-<deel>.md) "
+           "en laat het hoofdbestand naar de delen verwijzen; afgerond werk naar archief/.")
+
 # Grootte van vaultnotities (19 okt 2026): een Write of Edit (ook MultiEdit) op een .md onder
 # ~/vault-b-status geeft geen resultaat > 40 KB (LAB_VAULT_MAX_KB) als het bestand nieuw is of groeit;
 # een Edit die een te groot bestand gelijk houdt of kleiner maakt mag. Uitgezonderd: lead.md in de
@@ -90,9 +95,185 @@ if tool in ("Write", "Edit", "MultiEdit"):
                 na = len(tekst.encode("utf-8"))
         voor = len(huidig.encode("utf-8")) if huidig is not None else None
         if na > grens and (voor is None or na > voor):
-            weiger(f"deze notitie wordt {na / 1024:.0f} KB; de limiet voor een vaultnotitie is {grens / 1024:.0f} KB (LAB_VAULT_MAX_KB). "
-                   "Agents lezen een heel bestand terug, dus splits per spoor (bv. CONTRACT-<spoor>.md, PLAN-<deel>.md) "
-                   "en laat het hoofdbestand naar de delen verwijzen; afgerond werk naar archief/.")
+            vault_weiger(na, grens)
+
+import subprocess
+# De gedeelde hoofdcheckout: git-dir gelijk aan git-common-dir (geen linked worktree) én de werkboom is
+# een van de paden in LAB_HOOFDCHECKOUT (dubbele punt als scheiding; standaard de checkout van Brian).
+# Zonder dat tweede kenmerk zou ook een eigen clone (zelfde vorm) als hoofdcheckout tellen.
+hoofd_paden = {os.path.realpath(os.path.expanduser(x)) for x in
+               os.environ.get("LAB_HOOFDCHECKOUT", "~/Desktop/LAB-BAWUAH/lab-bawuah").split(":") if x}
+hoofd_lc = {h.lower() for h in hoofd_paden}
+hoofd_cache = {}
+def is_hoofd(pad):
+    # binnen <hoofdcheckout>/.git (hooks, config) faalt git rev-parse --show-toplevel: dat telt ook als hoofdcheckout
+    # hoofdletterongevoelig (APFS): realpath herstelt de hoofdletters niet, dus alles in kleine letters
+    echt = os.path.realpath(pad).lower()
+    for h in hoofd_lc:
+        g = os.path.join(h, ".git")
+        if echt == g or echt.startswith(g + os.sep):
+            return True
+    while pad and not os.path.isdir(pad) and os.path.dirname(pad) != pad:
+        pad = os.path.dirname(pad)
+    if pad in hoofd_cache:
+        return hoofd_cache[pad]
+    uit = False
+    try:
+        env = {k: v for k, v in os.environ.items() if not k.startswith("GIT_")}
+        r = subprocess.run(["git", "-C", pad, "rev-parse", "--git-dir", "--git-common-dir", "--show-toplevel"], capture_output=True, text=True, timeout=5, env=env)
+        regels = r.stdout.split("\n")
+        if r.returncode == 0 and len(regels) >= 3 and regels[0] and regels[1] and regels[2]:
+            gd, cd, top = (os.path.realpath(os.path.join(pad, x)) for x in regels[:3])
+            uit = gd == cd and top.lower() in hoofd_lc
+    except Exception:
+        uit = False
+    hoofd_cache[pad] = uit
+    return uit
+
+# apply_patch van Codex (27 okt 2026, peerbus spoor E): de patch staat in tool_input.command en valt onder
+# dezelfde regels als Write/Edit plus de sleutelregel. Per bestand in de patch (Add, Update, Delete en
+# het doel van Move to; paden relatief aan cwd):
+#   - een sleutelbestand (config.properties, config.json, .env*, ~/.claude, ~/.codex, ~/.config/klaarover|
+#     douane|agentwerkbank) wordt niet aangeraakt, ook niet verwijderd of als doel van een verplaatsing
+#   - een .md in de vault geeft geen resultaat > LAB_VAULT_MAX_KB als het bestand nieuw is of groeit
+#   - een agent (LAB_AGENT_ROL anders dan lead, of een subagent) schrijft niet in de gedeelde hoofdcheckout
+# Een patch die niet te lezen is (geen Begin/End, onbekende kop, regel zonder + - spatie) wordt geweigerd.
+# Niet gedekt: `apply_patch` als shellcommando (Bash), een symlink die pas na de patch ontstaat, en
+# een Update waarvan de context niet in het bestand staat (dan telt de som van de + regels).
+if tool == "apply_patch":
+    inv = ti.get("command")
+    if not isinstance(inv, str):
+        inv = ti.get("input") if isinstance(ti.get("input"), str) else None
+    def patch_weiger(reden):
+        weiger(f"apply_patch niet te lezen ({reden}); faalt dicht. Gebruik de vorm *** Begin Patch / *** Add|Update|Delete File: pad / *** End Patch.")
+    if inv is None:
+        patch_weiger("tool_input.command ontbreekt of is geen tekst")
+    regels = inv.strip("\n").replace("\r\n", "\n").split("\n")
+    if regels[0].strip() != "*** Begin Patch" or regels[-1].strip() != "*** End Patch":
+        patch_weiger("Begin Patch of End Patch ontbreekt")
+    cwd_p = str(d.get("cwd") or os.getcwd())
+    def patch_pad(x):
+        x = x.strip()
+        if not x:
+            patch_weiger("leeg pad")
+        if x.startswith("~"):
+            weiger(f"een patchpad dat met ~ begint ({x[:40]!r}) wordt niet aangevuld (Codex doet dat waarschijnlijk niet, dus de toets zou een ander bestand zien dan de patch). Gebruik een absoluut pad of een pad relatief aan de werkmap.")
+        return os.path.normpath(os.path.join(cwd_p, x))
+    bestanden = []  # dicts: bron, doel, soort, plus (lijst), oud/nieuw per hunk
+    huidig_b = None
+    for r in regels[1:-1]:
+        m = re.match(r"^\*\*\* (Add|Update|Delete) File: (.*)$", r)
+        if m:
+            huidig_b = {"soort": m.group(1), "bron": patch_pad(m.group(2)), "doel": None, "hunks": [[]]}
+            bestanden.append(huidig_b)
+            continue
+        if r.startswith("*** Move to: "):
+            if huidig_b is None or huidig_b["soort"] != "Update" or huidig_b["doel"]:
+                patch_weiger("Move to hoort bij een Update File")
+            huidig_b["doel"] = patch_pad(r[len("*** Move to: "):])
+            continue
+        if huidig_b is None:
+            patch_weiger(f"regel buiten een bestand: {r[:40]!r}")
+        if r == "*** End of File":
+            continue
+        if r.startswith("@@"):
+            if huidig_b["soort"] != "Update":
+                patch_weiger("@@ buiten een Update File")
+            if huidig_b["hunks"][-1]:
+                huidig_b["hunks"].append([])
+            continue
+        if r.startswith("***"):
+            patch_weiger(f"onbekende kop: {r[:40]!r}")
+        if huidig_b["soort"] == "Delete":
+            patch_weiger("een Delete File heeft geen inhoud")
+        if huidig_b["soort"] == "Add" and not r.startswith("+"):
+            patch_weiger("een Add File bestaat alleen uit +regels")
+        if r == "" or r[0] in " +-":
+            huidig_b["hunks"][-1].append((r[:1], r[1:]))
+        else:
+            patch_weiger(f"regel zonder + - of spatie: {r[:40]!r}")
+    if not bestanden:
+        patch_weiger("geen bestand in de patch")
+    home_p = os.path.realpath(os.path.expanduser("~"))
+    zware_mappen = set()
+    for z in (os.path.join(home_p, ".claude"), os.path.join(home_p, ".codex"), os.path.expanduser(os.environ.get("CODEX_HOME", ""))):
+        if z:
+            zware_mappen.update({z.lower(), os.path.realpath(z).lower()})
+    def patch_sleutel(pad):
+        # hoofdletterongevoelig (APFS): namen en mappen worden in kleine letters vergeleken
+        for kandidaat in {pad.lower(), os.path.realpath(pad).lower()}:
+            naam = os.path.basename(kandidaat)
+            if naam.endswith(".example"):
+                continue
+            if naam in ("config.properties", "config.json") or re.fullmatch(r"\.env(\..+)?", naam):
+                return True
+            if re.search(r"\.config/(klaarover|douane|agentwerkbank)(/|$)", kandidaat):
+                return True
+            for zwaar in zware_mappen:
+                if kandidaat == zwaar or kandidaat.startswith(zwaar + os.sep):
+                    return True
+        return False
+    vault_p = os.path.realpath(os.path.join(home_p, "vault-b-status"))
+    def patch_na(b, huidig_t):
+        # tekst na de patch (bytes) van één bestand; bij een Update zonder passende context een schatting
+        if b["soort"] == "Add":
+            return len(("\n".join(t for _, t in b["hunks"][0]) + "\n").encode("utf-8"))
+        tekst = huidig_t if huidig_t is not None else ""
+        schatting = len(tekst.encode("utf-8"))
+        exact, pos = True, 0
+        for h in b["hunks"]:
+            oud = [t for k, t in h if k != "+"]
+            nieuw = [t for k, t in h if k != "-"]
+            plus = sum(len(t.encode("utf-8")) + 1 for k, t in h if k == "+")
+            o, n = "\n".join(oud), "\n".join(nieuw)
+            i = tekst.find(o, pos) if (exact and o) else -1
+            if i >= 0:
+                tekst = tekst[:i] + n + tekst[i + len(o):]
+                pos = i + len(n)
+                schatting = len(tekst.encode("utf-8"))
+            else:
+                # geen passende context (of een hunk met alleen +regels): vanaf hier telt de som van de + regels,
+                # ook voor de hunks erna
+                exact = False
+                # min-regels tellen niet mee: Codex past met een fuzzy match (spaties aan het eind), dus een
+                # niet-exacte min-regel kan niet als krimp gelden (strenger)
+                schatting += plus
+        return schatting
+    doelen = []
+    for b in bestanden:
+        for pad in (b["bron"], b["doel"]):
+            if pad:
+                if patch_sleutel(pad):
+                    weiger("dit is een sleutelbestand (of ~/.claude, ~/.codex). Sleutels aanraken mag niet, ook niet via apply_patch; vraag het Brian.")
+                if pad not in doelen:
+                    doelen.append(pad)
+        if b["soort"] == "Delete":
+            continue
+        pad = os.path.realpath(b["doel"] or b["bron"])
+        rel = os.path.relpath(pad, vault_p).lower()
+        if pad.lower().endswith(".md") and not rel.startswith("..") and rel != "lead.md" and rel.split(os.sep)[0] not in ("archief", "emb-gemma"):
+            try:
+                grens = int(float(os.environ.get("LAB_VAULT_MAX_KB", "40")) * 1024)
+            except ValueError:
+                sys.exit(5)
+            def lees(p_):
+                try:
+                    with open(p_, "rb") as f:
+                        return f.read().decode("utf-8", "replace")
+                except OSError:
+                    return None
+            bron_t = lees(b["bron"]) if b["soort"] == "Update" else None
+            na = patch_na(b, bron_t)
+            doel_t = lees(pad)
+            voor = len(doel_t.encode("utf-8")) if doel_t is not None else None
+            if na > grens and (voor is None or na > voor):
+                vault_weiger(na, grens)
+    rol_p = os.environ.get("LAB_AGENT_ROL", "")
+    if (rol_p and rol_p != "lead") or d.get("agent_id") or d.get("agent_type"):
+        for pad in doelen:
+            if is_hoofd(os.path.dirname(pad)):
+                weiger(f"apply_patch schrijft in de gedeelde hoofdcheckout ({pad}); agents werken daar nooit. "
+                       "Werk in je eigen worktree of clone: gebruik paden daarin.")
 
 if tool == "Bash":
     c = str(ti.get("command", ""))
@@ -833,35 +1014,11 @@ if tool == "Bash":
     # en `--work-tree`.
     rol = os.environ.get("LAB_AGENT_ROL", "")
     if (rol and rol != "lead") or is_subagent:
-        import subprocess
         GIT_SCHRIJF = {"checkout", "switch", "reset", "restore", "clean", "fetch", "pull", "push", "commit", "merge",
                        "rebase", "cherry-pick", "am", "apply", "revert", "add", "rm", "mv"}
         PAKKET = ("bun", "npm", "pnpm", "yarn")
         PAKKET_INSTALL = ("install", "i", "ci", "add", "remove", "rm", "update", "upgrade", "link", "unlink")
         SCRIPT_SCHRIJF = re.compile(r"(format|fmt|fix)([:_-].*)?")
-        # De gedeelde hoofdcheckout: git-dir gelijk aan git-common-dir (geen linked worktree) én de werkboom is
-        # een van de paden in LAB_HOOFDCHECKOUT (dubbele punt als scheiding; standaard de checkout van Brian).
-        # Zonder dat tweede kenmerk zou ook een eigen clone (zelfde vorm) als hoofdcheckout tellen.
-        hoofd_paden = {os.path.realpath(os.path.expanduser(x)) for x in
-                       os.environ.get("LAB_HOOFDCHECKOUT", "~/Desktop/LAB-BAWUAH/lab-bawuah").split(":") if x}
-        hoofd_cache = {}
-        def is_hoofd(pad):
-            while pad and not os.path.isdir(pad) and os.path.dirname(pad) != pad:
-                pad = os.path.dirname(pad)
-            if pad in hoofd_cache:
-                return hoofd_cache[pad]
-            uit = False
-            try:
-                env = {k: v for k, v in os.environ.items() if not k.startswith("GIT_")}
-                r = subprocess.run(["git", "-C", pad, "rev-parse", "--git-dir", "--git-common-dir", "--show-toplevel"], capture_output=True, text=True, timeout=5, env=env)
-                regels = r.stdout.split("\n")
-                if r.returncode == 0 and len(regels) >= 3 and regels[0] and regels[1] and regels[2]:
-                    gd, cd, top = (os.path.realpath(os.path.join(pad, x)) for x in regels[:3])
-                    uit = gd == cd and top in hoofd_paden
-            except Exception:
-                uit = False
-            hoofd_cache[pad] = uit
-            return uit
         def heeft(a, *vlaggen):
             return any(x in vlaggen or any(x.startswith(v + "=") for v in vlaggen if v.startswith("--")) for x in a)
         def tool_schrijft(w):
