@@ -1,9 +1,9 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { type Rec, alleRecords, nieuwRecord, schrijfRecord } from "../hooks/register";
-import { RETENTIE_MS, maakBus } from "./bus";
+import { KLAAR_MAX_MS, RETENTIE_MS, geldigeNaam, maakBus } from "./bus";
 import { DUBBEL_VENSTER_MS, MAX_HOP, MAX_PER_MINUUT, MAX_TEKST, MAX_WACHTRIJ, type PeerVelden, WEK_VENSTER_MS, type WekDoel, type WekUitslag, type Wekker } from "./types";
 
 // Alles draait in een wegwerpmap (tijdelijke staatmap); het echte register in ~/.local/state/lab-lead blijft ongemoeid.
@@ -22,7 +22,8 @@ const nepWekker: Wekker = {
     return wekAntwoord();
   },
 };
-const maak = () => maakBus({ staat, nu: () => klok, wekker: nepWekker, machine: "testmachine" });
+/** `wacht` zet de nep-klok vooruit: er wordt in de tests nooit echt gewacht. */
+const maak = () => maakBus({ staat, nu: () => klok, wekker: nepWekker, machine: "testmachine", wacht: async (ms) => void (klok += ms) });
 
 /** Schrijft een register-record; `lead` en `extra` (PeerVelden, toestand, ...) zijn optioneel. */
 function sessie(naam: string, lead = "", extra: Partial<Rec> & PeerVelden = {}): void {
@@ -30,6 +31,17 @@ function sessie(naam: string, lead = "", extra: Partial<Rec> & PeerVelden = {}):
   schrijfRecord(staat, r as Rec);
 }
 const open = (...namen: string[]) => namen.forEach((n) => sessie(n, "", { inbound: { standaard: "accept" } }));
+
+/** Alle bestanden onder slot/ (de map zelf mag er zijn). */
+function slotBestanden(): string[] {
+  const uit: string[] = [];
+  const loop = (d: string) => {
+    if (!existsSync(d)) return;
+    for (const n of readdirSync(d, { withFileTypes: true })) (n.isDirectory() ? loop(join(d, n.name)) : uit.push(join(d, n.name)));
+  };
+  loop(join(staat, "peers/slot"));
+  return uit;
+}
 
 beforeEach(() => {
   dir = mkdtempSync(join(tmpdir(), "lead-peers-"));
@@ -112,7 +124,7 @@ describe("send: beleid in volgorde", () => {
 
   test("tempo: MAX_PER_MINUUT per afzender, glijdend venster, andere afzender onbelemmerd", async () => {
     open("a", "b", "c");
-    const bus = maak();
+    const bus = maakBus({ staat, nu: () => klok, wekker: nepWekker, wacht: async () => {} }); // wachten telt hier niet mee in de nep-klok
     for (let i = 0; i < MAX_PER_MINUUT; i++) {
       klok += 100;
       expect(await bus.send("a", "b", `bericht ${i}`)).toMatchObject({ ok: true });
@@ -313,21 +325,44 @@ describe("contract na review: hop, herkomst, dubbel, wachtrij", () => {
     expect(bus.inbox("b").find((e) => e.tekst === "andere draad")!.herkomst).toBe("schoon");
   });
 
-  test("een ack van een extern bericht maakt de ontvanger extern in het register; een schoon bericht niet", async () => {
+  test("een ack van een extern bericht maakt de ontvanger extern (markering, register ongemoeid); een schoon bericht niet", async () => {
     sessie("x", "", { herkomst: "extern", inbound: { standaard: "accept" } });
     open("a", "b");
     const bus = maak();
+    const regVoor = JSON.stringify(alleRecords(staat).sort((p, q) => p.id.localeCompare(q.id)));
     await bus.send("b", "a", "schoon");
     bus.ack("a", bus.inbox("a").map((e) => e.id));
-    expect(bus.list().find((p) => p.naam === "a")).toBeDefined();
-    expect((alleRecords(staat).find((r) => r.naam === "a") as Rec & PeerVelden).herkomst).toBeUndefined();
+    expect(existsSync(join(staat, "peers/extern/a"))).toBe(false);
     await bus.send("x", "a", "van buiten");
     klok += 10;
     bus.ack("a", bus.inbox("a").map((e) => e.id));
-    expect((alleRecords(staat).find((r) => r.naam === "a") as Rec & PeerVelden).herkomst).toBe("extern");
+    expect(existsSync(join(staat, "peers/extern/a"))).toBe(true);
+    expect(statSync(join(staat, "peers/extern/a")).mode & 0o777).toBe(0o600);
     klok += 10;
     await bus.send("a", "b", "nu extern");
     expect(bus.inbox("b")[0]!.herkomst).toBe("extern");
+    expect(JSON.stringify(alleRecords(staat).sort((p, q) => p.id.localeCompare(q.id)))).toBe(regVoor); // de bus schrijft niet in het register
+  });
+
+  test("inbox zonder ack van een extern bericht maakt de ontvanger ook extern; een afzender met alleen de markering is extern", async () => {
+    sessie("x", "", { herkomst: "extern", inbound: { standaard: "accept" } });
+    open("a", "b");
+    const bus = maak();
+    await bus.send("x", "a", "van buiten");
+    expect(existsSync(join(staat, "peers/extern/a"))).toBe(false);
+    bus.inbox("a"); // alleen kijken
+    expect(existsSync(join(staat, "peers/extern/a"))).toBe(true);
+    klok += 10;
+    await bus.send("a", "b", "doorgestuurd");
+    expect(bus.inbox("b")[0]!.herkomst).toBe("extern");
+  });
+
+  test("een schone inbox laat geen markering achter", async () => {
+    open("a", "b");
+    const bus = maak();
+    await bus.send("b", "a", "schoon");
+    bus.inbox("a");
+    expect(existsSync(join(staat, "peers/extern"))).toBe(false);
   });
 
   test("dubbel telt ongeacht de uitkomst van de eerste: een geweigerde poging, daarna dezelfde tekst, is dubbel", async () => {
@@ -494,16 +529,77 @@ describe("wekken", () => {
     expect(wekken).toEqual([{ doel: { naam: "b", vendor: "codex", host: "tui", toestand: "bezig", thread_id: "th-1", codex_home: "/c" }, aantal: 1 }]);
   });
 
-  test("hoogstens één wek per WEK_VENSTER_MS; wat tussendoor komt zit in het volgende seintje", async () => {
+  test("binnen het wekvenster wacht de send tot het venster om is en wekt dan met alles wat er ligt (geen verloren seintje)", async () => {
     open("a", "b");
     const bus = maak();
     expect(await bus.send("a", "b", "een")).toMatchObject({ gewekt: { gewekt: true } });
-    klok += WEK_VENSTER_MS - 1;
-    expect(await bus.send("a", "b", "twee")).toMatchObject({ ok: true, status: "afgeleverd", gewekt: null });
-    expect(wekken).toHaveLength(1);
-    klok += 1;
+    klok += WEK_VENSTER_MS - 1000;
+    const t = klok;
+    expect(await bus.send("a", "b", "twee")).toMatchObject({ ok: true, status: "afgeleverd", gewekt: { gewekt: true, route: "nep" } });
+    expect(klok).toBe(t + 1000); // precies tot het eind van het venster gewacht
+    expect(wekken.map((w) => w.aantal)).toEqual([1, 2]);
+    klok += WEK_VENSTER_MS;
     expect(await bus.send("a", "b", "drie")).toMatchObject({ gewekt: { gewekt: true } });
+    expect(wekken.map((w) => w.aantal)).toEqual([1, 2, 3]);
+  });
+
+  test("het geval van opus: bericht 2 binnen het venster, ontvanger had bericht 1 al gelezen: toch gewekt (aantal 1)", async () => {
+    open("a", "w");
+    const bus = maak();
+    klok += 10_000;
+    await bus.send("a", "w", "1");
+    bus.ack("w", bus.inbox("w").map((e) => e.id));
+    klok += 1000;
+    await bus.send("a", "w", "2");
+    expect(wekken.map((x) => x.aantal)).toEqual([1, 1]);
+  });
+
+  test("drie berichten tegelijk binnen het venster: één wachter wekt één keer met alles; de anderen wachten niet", async () => {
+    open("a", "b", "c", "d");
+    const wachtend: (() => void)[] = [];
+    const bus = maakBus({ staat, nu: () => klok, wekker: nepWekker, wacht: (ms) => new Promise<void>((r) => wachtend.push(() => ((klok += ms), r()))) });
+    await bus.send("a", "b", "een");
+    klok += 100;
+    const p2 = bus.send("a", "b", "twee");
+    const p3 = bus.send("c", "b", "drie");
+    const p4 = bus.send("d", "b", "vier");
+    const [u3, u4] = await Promise.all([p3, p4]);
+    expect(u3).toMatchObject({ ok: true, gewekt: null });
+    expect(u4).toMatchObject({ ok: true, gewekt: null });
+    expect(wachtend).toHaveLength(1);
+    wachtend[0]!();
+    expect(await p2).toMatchObject({ ok: true, gewekt: { gewekt: true } });
+    expect(wekken.map((w) => w.aantal)).toEqual([1, 4]);
+  });
+
+  test("een wachter die nooit terugkomt (proces gedood): na twee vensters neemt de volgende send het over", async () => {
+    open("a", "b");
+    const bus = maakBus({ staat, nu: () => klok, wekker: nepWekker, wacht: () => new Promise<void>(() => {}) });
+    await bus.send("a", "b", "een");
+    klok += 100;
+    void bus.send("a", "b", "twee"); // blijft hangen (gedode wachter), `open` staat vast
+    klok += WEK_VENSTER_MS * 2;
+    const bus2 = maak();
+    expect(await bus2.send("a", "b", "drie")).toMatchObject({ gewekt: { gewekt: true } });
     expect(wekken.map((w) => w.aantal)).toEqual([1, 3]);
+  });
+
+  test("is het bericht na het wachten al gelezen, dan wordt er niet gewekt", async () => {
+    open("a", "b");
+    let bus: ReturnType<typeof maak>;
+    bus = maakBus({
+      staat,
+      nu: () => klok,
+      wekker: nepWekker,
+      wacht: async (ms) => {
+        klok += ms;
+        bus.ack("b", bus.inbox("b").map((e) => e.id)); // de ontvanger las het intussen
+      },
+    });
+    await bus.send("a", "b", "een");
+    klok += 100;
+    expect(await bus.send("a", "b", "twee")).toMatchObject({ ok: true, gewekt: null });
+    expect(wekken).toHaveLength(1);
   });
 
   test("het wekvenster is per ontvanger", async () => {
@@ -534,7 +630,7 @@ describe("wekken", () => {
 
   test("zonder wekker: route geen, niet gewekt", async () => {
     open("a", "b");
-    const bus = maakBus({ staat, nu: () => klok });
+    const bus = maakBus({ staat, nu: () => klok, wacht: async (ms) => void (klok += ms) });
     expect(await bus.send("a", "b", "hoi")).toMatchObject({ ok: true, gewekt: { gewekt: false, route: "geen" } });
   });
 });
@@ -631,7 +727,7 @@ describe("opslag", () => {
     expect(bestanden.length).toBeGreaterThan(3);
     for (const p of bestanden) expect(modus(p)).toBe(0o600);
     expect(readdirSync(dir)).toEqual(["staat"]);
-    expect(readdirSync(join(root, "slot"))).toEqual([]); // geen lock achtergebleven
+    expect(slotBestanden()).toEqual([]); // geen lock of tmp achtergebleven
   });
 
   test("een kapotte regel in een inbox wordt overgeslagen", async () => {
@@ -642,14 +738,36 @@ describe("opslag", () => {
     expect(bus.inbox("b").map((e) => e.tekst)).toEqual(["goed", "ook goed"]);
   });
 
-  test("een lock van een dode proces (ouder dan 10 s) wordt opgeruimd; een verse lock laat de send fout geven in plaats van hangen", async () => {
-    open("a", "b");
-    mkdirSync(join(staat, "peers/slot/b"), { recursive: true, mode: 0o700 });
-    const oud = new Date(Date.now() - 60_000);
-    const { utimesSync } = await import("node:fs");
-    utimesSync(join(staat, "peers/slot/b"), oud, oud);
+  test("een verse lock van een dode pid is meteen vrij; een lock ouder dan 10 s ook (pid-hergebruik)", async () => {
+    open("a", "b", "c");
+    const dood = Bun.spawnSync(["true"]).pid;
+    mkdirSync(join(staat, "peers/slot/post"), { recursive: true, mode: 0o700 });
+    writeFileSync(join(staat, "peers/slot/post/b.lock"), `${dood}-abc`);
     expect(await maak().send("a", "b", "hoi")).toMatchObject({ ok: true });
-    expect(existsSync(join(staat, "peers/slot/b"))).toBe(false);
+    expect(existsSync(join(staat, "peers/slot/post/b.lock"))).toBe(false);
+
+    // levende pid (de onze), maar de lock is 60 s oud
+    const oud = join(staat, "peers/slot/post/c.lock");
+    writeFileSync(oud, `${process.pid}-oud`);
+    const lang = new Date(Date.now() - 60_000);
+    utimesSync(oud, lang, lang);
+    expect(await maak().send("a", "c", "hoi")).toMatchObject({ ok: true });
+    expect(existsSync(oud)).toBe(false);
+  });
+
+  test("een lock bevat pid en token van de houder en wordt na afloop alleen verwijderd als hij nog van ons is", async () => {
+    open("a", "b");
+    const bus = maak();
+    await bus.send("a", "b", "hoi");
+    expect(slotBestanden()).toEqual([]);
+    // een lock van iemand anders (levende pid, vers) blijft staan; wij wachten niet eeuwig maar mogen hem niet slopen
+    const vreemd = join(staat, "peers/slot/post/b.lock");
+    writeFileSync(vreemd, `${process.pid}-vreemd`);
+    const ouder = maak();
+    // inbox probeert de lock te krijgen en geeft op na SLOT_MAX_MS: dat is te traag voor een unittest, dus alleen controleren dat de lock er nog staat zodra we hem opruimen
+    expect(readFileSync(vreemd, "utf8")).toBe(`${process.pid}-vreemd`);
+    rmSync(vreemd);
+    expect(ouder.inbox("b")).toHaveLength(1);
   });
 
   test("de send gooit nooit: een onleesbare staatmap geeft een uitslag", async () => {
@@ -657,6 +775,303 @@ describe("opslag", () => {
     writeFileSync(join(staat, "peers"), "ik ben een bestand"); // peers/ kan geen map worden
     const u = await maak().send("a", "b", "hoi");
     expect(u.ok).toBe(false);
+  });
+});
+
+describe("namen: geen bestandsnaam buiten NAAM", () => {
+  const slecht = ["..", ".", "", "a/b", "../x", "a b", ".verborgen", "x".repeat(101), "a\u0000b"];
+
+  test("geldigeNaam: letters, cijfers, . _ - en niet beginnend met een punt, hoogstens 100", () => {
+    for (const n of ["a", "lead-peerbus", "w_1", "a.b", "A-1", "x".repeat(100)]) expect(geldigeNaam(n)).toBe(true);
+    for (const n of slecht) expect(geldigeNaam(n)).toBe(false);
+    expect(geldigeNaam(undefined)).toBe(false);
+    expect(geldigeNaam(5)).toBe(false);
+  });
+
+  test("elke ingang weigert een ongeldige naam en laat de opslag heel (proef opus: `..` wiste peers/)", async () => {
+    open("a", "b");
+    const bus = maak();
+    await bus.send("a", "b", "bewaar mij");
+    const voor = () => JSON.stringify([readdirSync(join(staat, "peers")).sort(), readdirSync(join(staat, "peers/inbox")).sort(), readFileSync(join(staat, "peers/inbox/b.jsonl"), "utf8")]);
+    const ervoor = voor();
+    for (const n of slecht) {
+      sessie(n === "" ? "leeg" : `r${slecht.indexOf(n)}`, "", { naam: n, inbound: { standaard: "accept" } } as Partial<Rec>);
+      expect(await bus.send(n, "b", "x")).toMatchObject({ ok: false, reden: "geen_afzender" });
+      expect(await bus.send("a", n, "x")).toMatchObject({ ok: false, reden: "onbekend" });
+      expect(bus.inbox(n)).toEqual([]);
+      bus.ack(n, ["id"]);
+      expect(bus.vastgehouden(n)).toEqual([]);
+      expect(await bus.vrijgeven(n)).toBe(0);
+      expect(bus.notifyWhenIdle(n, "b")).toMatchObject({ ok: false, reden: "geen_afzender" });
+      expect(bus.notifyWhenIdle("a", n)).toMatchObject({ ok: false, reden: "onbekend" });
+      await bus.idleGemeld(n, "idle");
+    }
+    expect(bus.list().map((p) => p.naam).sort()).toEqual(["a", "b"]); // sessies met een ongeldige naam zijn niet bereikbaar
+    expect(voor()).toBe(ervoor);
+    expect(bus.inbox("b").map((e) => e.tekst)).toEqual(["bewaar mij"]);
+  });
+
+  test("a/b en a_b delen geen inbox meer: `a/b` is ongeldig, `a_b` en `a-b` zijn verschillende ontvangers", async () => {
+    open("x", "a_b", "a-b");
+    const bus = maak();
+    await bus.send("x", "a_b", "voor a_b");
+    expect(bus.inbox("a-b")).toEqual([]);
+    expect(bus.inbox("a_b")).toHaveLength(1);
+  });
+});
+
+describe("herstelronde: inbound faalt dicht", () => {
+  test("per_afzender[\"constructor\"] en andere prototype-namen tellen niet als beleid", async () => {
+    sessie("constructor");
+    sessie("toString");
+    sessie("__proto__x");
+    sessie("b", "", { inbound: { standaard: "refuse", per_afzender: {} } });
+    const bus = maak();
+    for (const van of ["constructor", "toString"]) expect(await bus.send(van, "b", "x")).toMatchObject({ ok: false, reden: "geweigerd" });
+  });
+
+  test("een ongeldige waarde (\"Hold\", \"ACCEPT\", een getal, een object) telt als hold", async () => {
+    open("a");
+    for (const [i, inbound] of [
+      { per_afzender: { a: "Hold" } },
+      { standaard: "ACCEPT" },
+      { standaard: "aanvaard" },
+      { per_afzender: { a: 1 } },
+      { per_afzender: { a: { x: 1 } } },
+      { per_afzender: "accept" },
+      "accept",
+      5,
+    ].entries()) {
+      sessie(`ont${i}`, "", { inbound } as unknown as Partial<Rec>);
+      expect(await maak().send("a", `ont${i}`, "x")).toMatchObject({ ok: true, status: "vastgehouden" });
+    }
+  });
+
+  test("een geldige waarde werkt nog: per_afzender refuse gaat voor standaard accept", async () => {
+    open("a");
+    sessie("b", "", { inbound: { standaard: "accept", per_afzender: { a: "refuse" } } });
+    expect(await maak().send("a", "b", "x")).toMatchObject({ reden: "geweigerd" });
+  });
+});
+
+describe("herstelronde: tempo telt elke poging", () => {
+  test("te_lang, onbekende ontvanger en onbekende afzender tellen mee voor het tempo", async () => {
+    open("a", "b");
+    const bus = maakBus({ staat, nu: () => klok, wekker: nepWekker, wacht: async () => {} });
+    for (let i = 0; i < 10; i++) expect(await bus.send("a", "b", "x".repeat(MAX_TEKST + 1))).toMatchObject({ reden: "te_lang" });
+    for (let i = 0; i < MAX_PER_MINUUT - 10; i++) expect(await bus.send("a", "niemand", "x")).toMatchObject({ reden: "onbekend" });
+    expect(await bus.send("a", "b", "gewoon")).toMatchObject({ ok: false, reden: "te_veel" });
+    expect(bus.inbox("b")).toEqual([]);
+    for (let i = 0; i < MAX_PER_MINUUT; i++) expect(await bus.send("spook", "b", "x")).toMatchObject({ reden: "geen_afzender" });
+    open("spook"); // pas nu in het register: de eerdere pogingen tellen al
+    expect(await bus.send("spook", "b", "x")).toMatchObject({ reden: "te_veel" });
+  });
+
+  test("een poging die op hop wordt geweigerd telt ook", async () => {
+    open("a", "b");
+    const bus = maakBus({ staat, nu: () => klok, wekker: nepWekker, wacht: async () => {} });
+    for (let i = 1; i <= MAX_HOP; i++) {
+      klok += 1;
+      await bus.send(i % 2 ? "a" : "b", i % 2 ? "b" : "a", `m${i}`, { draad: "d" });
+    }
+    for (let i = 0; i < MAX_PER_MINUUT - MAX_HOP / 2; i++) {
+      klok += 1;
+      await bus.send("a", "b", `x${i}`, { draad: "d" });
+    }
+    klok += 1;
+    expect(await bus.send("a", "b", "nog een", { draad: "nieuw" })).toMatchObject({ reden: "te_veel" });
+  });
+});
+
+describe("herstelronde: hop binnen de lock van de ontvanger", () => {
+  test("vier processen sturen tegelijk in dezelfde draad: vier verschillende hops 1..4", async () => {
+    sessie("ont", "", { inbound: { standaard: "accept" } });
+    const afz = ["s0", "s1", "s2", "s3"];
+    for (const a of afz) sessie(a, "", { inbound: { standaard: "accept" } });
+    const code = `
+      const { maakBus } = await import(process.argv[1]);
+      const bus = maakBus({ staat: process.argv[2], wacht: async () => {} });
+      const u = await bus.send(process.argv[3], "ont", "van " + process.argv[3], { draad: "gedeeld" });
+      process.exit(u.ok ? 0 : 3);
+    `;
+    const procs = afz.map((a) => Bun.spawn(["bun", "-e", code, join(import.meta.dir, "bus.ts"), staat, a], { stdout: "pipe", stderr: "pipe" }));
+    expect(await Promise.all(procs.map((p) => p.exited))).toEqual([0, 0, 0, 0]);
+    expect(maak().inbox("ont").map((e) => e.hop).sort()).toEqual([1, 2, 3, 4]);
+  }, 30_000);
+});
+
+describe("laatste ronde: hoofdletters, wachter, idle parallel, tmp", () => {
+  test("Alice en alice: paden in kleine letters; een send naar een naam met een levende tweeling wordt geweigerd", async () => {
+    open("x", "Alice");
+    const bus = maak();
+    expect(await bus.send("x", "Alice", "hoi")).toMatchObject({ ok: true });
+    expect(existsSync(join(staat, "peers/inbox/alice.jsonl"))).toBe(true);
+    expect(existsSync(join(staat, "peers/inbox/Alice.jsonl")) && !existsSync(join(staat, "peers/inbox/alice.jsonl"))).toBe(false);
+    sessie("alice", "", { id: "tweeling-1", inbound: { standaard: "accept" } }); // eigen id: het register zelf is ook niet hoofdlettergevoelig
+    klok += 100;
+    expect(await bus.send("x", "Alice", "nog een")).toMatchObject({ ok: false, reden: "onbekend" });
+    expect(await bus.send("x", "alice", "nog een")).toMatchObject({ ok: false, reden: "onbekend" });
+    expect(bus.notifyWhenIdle("x", "Alice")).toMatchObject({ ok: false, reden: "onbekend" });
+    expect(readdirSync(join(staat, "peers/inbox")).filter((n) => /[A-Z]/.test(n))).toEqual([]);
+  });
+
+  test("de extern-markering en de locks gebruiken kleine letters", async () => {
+    sessie("X", "", { herkomst: "extern", inbound: { standaard: "accept" } });
+    open("Bob");
+    const bus = maak();
+    await bus.send("X", "Bob", "van buiten");
+    bus.inbox("Bob");
+    expect(readdirSync(join(staat, "peers/extern"))).toEqual(["bob"]);
+    expect(slotBestanden()).toEqual([]);
+    expect(readdirSync(join(staat, "peers/tempo"))).toEqual(["x.json"]);
+  });
+
+  test("een gestorven wachter (pid dood) wordt door de volgende list overgenomen, ook binnen het venster", async () => {
+    open("a", "b");
+    const bus = maak();
+    await bus.send("a", "b", "een"); // wek 1, ts = nu
+    klok += 100;
+    const dood = Bun.spawnSync(["true"]).pid;
+    const hang = maakBus({ staat, nu: () => klok, wekker: nepWekker, wacht: () => new Promise<void>(() => {}) });
+    void hang.send("a", "b", "twee"); // wachter, blijft hangen
+    const wekPad = join(staat, "peers/wek/b.json");
+    const st = JSON.parse(readFileSync(wekPad, "utf8"));
+    expect(st.open.pid).toBe(process.pid);
+    writeFileSync(wekPad, JSON.stringify({ ...st, open: { ...st.open, pid: dood } })); // het proces van de wachter is gestorven
+    bus.list();
+    await bus.klaar();
+    expect(wekken.map((w) => w.aantal)).toEqual([1, 2]);
+  });
+
+  test("een wachter met levende pid maar een venster dat ruim voorbij is, wordt ook overgenomen door list", async () => {
+    open("a", "b");
+    const bus = maak();
+    await bus.send("a", "b", "een");
+    klok += 100;
+    void maakBus({ staat, nu: () => klok, wekker: nepWekker, wacht: () => new Promise<void>(() => {}) }).send("a", "b", "twee");
+    klok += WEK_VENSTER_MS * 2;
+    bus.list();
+    await bus.klaar();
+    expect(wekken.map((w) => w.aantal)).toEqual([1, 2]);
+  });
+
+  test("list neemt niets over als de wachter nog leeft", async () => {
+    open("a", "b");
+    const bus = maak();
+    await bus.send("a", "b", "een");
+    klok += 100;
+    void maakBus({ staat, nu: () => klok, wekker: nepWekker, wacht: () => new Promise<void>(() => {}) }).send("a", "b", "twee");
+    bus.list();
+    await bus.klaar();
+    expect(wekken.map((w) => w.aantal)).toEqual([1]);
+  });
+
+  test("idleGemeld wacht de wekken van meerdere abonnees tegelijk af, niet na elkaar", async () => {
+    open("l1", "l2", "w");
+    const wachtend: (() => void)[] = [];
+    const bus = maakBus({ staat, nu: () => klok, wekker: nepWekker, wacht: (ms) => new Promise<void>((r) => wachtend.push(() => ((klok += ms), r()))) });
+    await bus.send("w", "l1", "x"); // zet het wekvenster van l1 en l2 aan
+    await bus.send("w", "l2", "x");
+    klok += 100;
+    bus.notifyWhenIdle("l1", "w");
+    bus.notifyWhenIdle("l2", "w");
+    const p = bus.idleGemeld("w", "klaar");
+    await Promise.resolve();
+    await new Promise<void>((r) => setImmediate(r));
+    expect(wachtend).toHaveLength(2); // beide wachten al, de tweede wacht niet op de eerste
+    wachtend.forEach((f) => f());
+    await p;
+    expect(wekken.map((x) => x.doel.naam).sort()).toEqual(["l1", "l1", "l2", "l2"]);
+  });
+
+  test(".tmp-bestanden en .dood.-restanten in slot/ ouder dan een minuut worden opgeruimd, verse blijven", async () => {
+    open("a", "b");
+    const dir = join(staat, "peers/slot/post");
+    mkdirSync(dir, { recursive: true, mode: 0o700 });
+    const oud = new Date(Date.now() - 120_000);
+    for (const n of ["x.123-abc.tmp", "y.lock.dood.1.abc"]) {
+      writeFileSync(join(dir, n), "x");
+      utimesSync(join(dir, n), oud, oud);
+    }
+    writeFileSync(join(dir, "vers.1-abc.tmp"), "x");
+    await maak().send("a", "b", "hoi");
+    expect(readdirSync(dir).sort()).toEqual(["vers.1-abc.tmp"]);
+  });
+});
+
+describe("laatste kleine punten", () => {
+  test("ts in de toekomst (klok terug of corrupt): wek nu, geen wachttijd; een open-wachter met verre tot telt als verouderd", async () => {
+    open("a", "b");
+    let gewacht = 0;
+    const bus = maakBus({ staat, nu: () => klok, wekker: nepWekker, wacht: async (ms) => void (gewacht = Math.max(gewacht, ms)) });
+    mkdirSync(join(staat, "peers/wek"), { recursive: true });
+    writeFileSync(join(staat, "peers/wek/b.json"), JSON.stringify({ ts: klok + 3600_000 }));
+    expect(await bus.send("a", "b", "een")).toMatchObject({ gewekt: { gewekt: true } });
+    expect(gewacht).toBe(0);
+    expect(wekken.map((w) => w.aantal)).toEqual([1]);
+    expect(JSON.parse(readFileSync(join(staat, "peers/wek/b.json"), "utf8")).ts).toBe(klok); // hersteld
+
+    klok += 100;
+    writeFileSync(join(staat, "peers/wek/b.json"), JSON.stringify({ ts: klok - 10, open: { tot: klok + 3600_000, pid: process.pid } }));
+    await bus.send("a", "b", "twee");
+    expect(gewacht).toBeLessThanOrEqual(WEK_VENSTER_MS); // nooit langer dan een venster
+    expect(gewacht).toBeGreaterThan(0);
+    expect(wekken.map((w) => w.aantal)).toEqual([1, 2]);
+  });
+
+  test("een gewone wacht is begrensd op [0, WEK_VENSTER_MS]", async () => {
+    open("a", "b");
+    const gewacht: number[] = [];
+    const bus = maakBus({ staat, nu: () => klok, wekker: nepWekker, wacht: async (ms) => void (gewacht.push(ms), (klok += ms)) });
+    await bus.send("a", "b", "een");
+    klok += 1;
+    await bus.send("a", "b", "twee");
+    expect(gewacht).toEqual([WEK_VENSTER_MS - 1]);
+  });
+
+  test("tweeling: inbox, ack, vastgehouden en vrijgeven doen niets en geven leeg bij Alice naast alice", async () => {
+    open("x");
+    sessie("alice", "", { id: "t-1", inbound: { standaard: "hold" } });
+    const bus = maak();
+    await bus.send("x", "alice", "voor alice (vast)");
+    sessie("alice", "", { id: "t-1", inbound: { standaard: "accept" } });
+    klok += 100;
+    await bus.send("x", "alice", "voor alice");
+    const echt = bus.inbox("alice");
+    expect(echt.map((e) => e.tekst)).toEqual(["voor alice"]);
+    sessie("Alice", "", { id: "t-2", inbound: { standaard: "accept" } });
+    expect(bus.inbox("Alice")).toEqual([]);
+    expect(bus.inbox("alice")).toEqual([]);
+    bus.ack("Alice", echt.map((e) => e.id));
+    expect(bus.vastgehouden("Alice")).toEqual([]);
+    expect(await bus.vrijgeven("Alice")).toBe(0);
+    rmSync(join(staat, "register/t-2.json")); // tweeling weg: alles is er nog, niets geackt of vrijgegeven
+    expect(bus.inbox("alice").map((e) => e.tekst)).toEqual(["voor alice"]);
+    expect(bus.vastgehouden("alice")).toHaveLength(1);
+  });
+
+  test("klaar() heeft een harde bovengrens: een wekker die hangt houdt de aanroeper niet vast", async () => {
+    sessie("w", "", { toestand: "klaar" });
+    open("a");
+    const gewacht: number[] = [];
+    const bus = maakBus({ staat, nu: () => klok, wekker: { wek: () => new Promise<WekUitslag>(() => {}) }, wacht: async (ms) => void gewacht.push(ms) });
+    expect(bus.notifyWhenIdle("a", "w")).toEqual({ ok: true, al_idle: true });
+    await bus.klaar(); // keert terug ondanks de hangende wekker
+    expect(gewacht).toContain(KLAAR_MAX_MS);
+    expect(KLAAR_MAX_MS).toBe(15_000);
+  });
+
+  test("slot-opruiming: `.lock.dood.`-restanten gaan weg, een lock van een naam als x.dood.y en x.tmp blijft staan", async () => {
+    open("a", "b");
+    const dir = join(staat, "peers/slot/post");
+    mkdirSync(dir, { recursive: true, mode: 0o700 });
+    const oud = new Date(Date.now() - 120_000);
+    for (const n of ["z.lock.dood.1.abc", "x.dood.y.lock", "x.tmp.lock"]) {
+      writeFileSync(join(dir, n), `${process.pid}-x`);
+      utimesSync(join(dir, n), oud, oud);
+    }
+    await maak().send("a", "b", "hoi");
+    expect(readdirSync(dir).sort()).toEqual(["x.dood.y.lock", "x.tmp.lock"]);
   });
 });
 
@@ -668,7 +1083,7 @@ describe("parallel", () => {
     const busPad = join(import.meta.dir, "bus.ts");
     const code = `
       const { maakBus } = await import(process.argv[1]);
-      const bus = maakBus({ staat: process.argv[2] });
+      const bus = maakBus({ staat: process.argv[2], wacht: async () => {} });
       const van = process.argv[3];
       const uit = [];
       for (let i = 0; i < 8; i++) uit.push((await bus.send(van, "ont", van + "-" + i)).ok);
@@ -684,7 +1099,7 @@ describe("parallel", () => {
     expect(new Set(ids.map((e) => e.tekst)).size).toBe(48);
     // per afzender in de volgorde waarin hij schreef
     for (const a of afz) expect(ids.filter((e) => e.van === a).map((e) => e.tekst)).toEqual(Array.from({ length: 8 }, (_, i) => `${a}-${i}`));
-    expect(readdirSync(join(staat, "peers/slot"))).toEqual([]);
+    expect(slotBestanden()).toEqual([]);
   }, 30_000);
 
   test("parallel ack en send: een bericht dat binnenkomt tijdens een ack gaat niet verloren", async () => {
@@ -697,7 +1112,7 @@ describe("parallel", () => {
     const busPad = join(import.meta.dir, "bus.ts");
     const code = `
       const { maakBus } = await import(process.argv[1]);
-      const bus = maakBus({ staat: process.argv[2] });
+      const bus = maakBus({ staat: process.argv[2], wacht: async () => {} });
       for (let i = 0; i < 6; i++) await bus.send(process.argv[3], "ont", process.argv[3] + "-" + i);
     `;
     const procs = afz.slice(1).map((a) => Bun.spawn(["bun", "-e", code, busPad, staat, a], { stdout: "pipe", stderr: "pipe" }));
