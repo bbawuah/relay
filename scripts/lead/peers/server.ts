@@ -82,7 +82,7 @@ async function roepAan(bus: Bus, ikzelf: string, naam: string, a: Record<string,
 
 const PROTOCOLLEN = ["2024-11-05", "2025-03-26", "2025-06-18"];
 /** Details van een fout gaan naar stderr (kort, zonder stack); het model krijgt altijd dezelfde tekst, zonder paden. */
-const logFout = (wat: string, e: unknown) => process.stderr.write(`peers-mcp: ${wat}: ${e instanceof Error ? e.message : String(e)}\n`);
+const logFout = (wat: string, e: unknown): void => void process.stderr.write(`peers-mcp: ${wat}: ${e instanceof Error ? e.message : String(e)}\n`);
 const VASTE_FOUT = "interne fout: de peerbus kon dit niet uitvoeren (details staan in de serverlog).";
 
 /** Verwerkt één JSON-RPC-bericht. Notificaties (zonder id) krijgen geen antwoord. */
