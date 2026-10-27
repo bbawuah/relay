@@ -8,7 +8,8 @@
 //   bun scripts/lead/peers/cli.ts vrijgeven <naam> [id…]       voor Brian of de lead, niet voor de MCP
 // Afzender = env LAB_AGENT_NAAM. Staatmap = env LAB_LEAD_STAAT (zoals de hooks).
 
-import type { Omgeving } from "../hooks/register";
+import { type Omgeving, staatMap } from "../hooks/register";
+import { geldigeNaam, markeerExtern } from "./bus";
 import { standaardBus } from "./standaard";
 import { type Bus, toon } from "./types";
 
@@ -25,12 +26,22 @@ function neemWaarde(args: string[], vlag: string): { waarde?: string; rest: stri
   return { waarde, rest: [...args.slice(0, i), ...args.slice(i + 2)] };
 }
 
-export async function draai(args: string[], env: Omgeving, bus: Bus, leesStdin: () => Promise<string> = () => Bun.stdin.text()): Promise<CliUitslag> {
+/** Draait de opdracht en wacht daarna op wekken die de bus op de achtergrond start (anders stopt het proces vóór het seintje). */
+export async function draai(args: string[], env: Omgeving, bus: Bus & { klaar?: () => Promise<void> }, leesStdin: () => Promise<string> = () => Bun.stdin.text()): Promise<CliUitslag> {
+  const uit = await draaiOpdracht(args, env, bus, leesStdin);
+  await bus.klaar?.();
+  return uit;
+}
+
+async function draaiOpdracht(args: string[], env: Omgeving, bus: Bus, leesStdin: () => Promise<string> = () => Bun.stdin.text()): Promise<CliUitslag> {
   const ok = (uit: string): CliUitslag => ({ code: 0, uit: uit ? `${uit}\n` : "", fout: "" });
   const mis = (fout: string): CliUitslag => ({ code: 1, uit: "", fout: `${fout}\n` });
   const [cmd, ...rest] = args;
   const ikzelf = env.LAB_AGENT_NAAM || "";
   const eisIk = () => (ikzelf ? null : mis("LAB_AGENT_NAAM ontbreekt: ik weet niet namens wie ik spreek."));
+  const naamFout = (naam: string | undefined) => (geldigeNaam(naam) ? null : mis(`ongeldige naam ${JSON.stringify(naam ?? "")}: toegestaan zijn letters, cijfers, . _ - (hoogstens 100, niet beginnend met een punt).`));
+  /** vasthouden en vrijgeven zijn voor Brian (geen rol) en de lead; een werker mag het niet. */
+  const eisBeheer = () => (!env.LAB_AGENT_ROL || env.LAB_AGENT_ROL === "lead" ? null : mis(`${cmd} is voor Brian of de lead (LAB_AGENT_ROL is "${env.LAB_AGENT_ROL}").`));
 
   switch (cmd) {
     case "send": {
@@ -42,6 +53,8 @@ export async function draai(args: string[], env: Omgeving, bus: Bus, leesStdin: 
       if (a.fout) return mis(a.fout);
       const [naar, tekstArg, ...teveel] = a.rest;
       if (!naar || tekstArg === undefined || teveel.length > 0) return mis(GEBRUIK);
+      const nf = naamFout(naar);
+      if (nf) return nf;
       const tekst = tekstArg === "-" ? (await leesStdin()).replace(/\n$/, "") : tekstArg;
       const u = await bus.send(ikzelf, naar, tekst, { ...(d.waarde ? { draad: d.waarde } : {}), ...(a.waarde ? { antwoord_op: a.waarde } : {}) });
       if (!u.ok) return mis(`niet verstuurd (${u.reden}): ${u.melding}`);
@@ -49,7 +62,7 @@ export async function draai(args: string[], env: Omgeving, bus: Bus, leesStdin: 
       return ok(`${u.status} ${u.id}${wek}`);
     }
     case "inbox": {
-      const geen = eisIk();
+      const geen = eisIk() ?? naamFout(ikzelf);
       if (geen) return geen;
       const berichten = bus.inbox(ikzelf);
       if (berichten.length === 0) return ok("Geen berichten.");
@@ -67,19 +80,31 @@ export async function draai(args: string[], env: Omgeving, bus: Bus, leesStdin: 
       const geen = eisIk();
       if (geen) return geen;
       if (rest.length !== 1) return mis(GEBRUIK);
+      const nf = naamFout(rest[0]);
+      if (nf) return nf;
       const u = bus.notifyWhenIdle(ikzelf, rest[0]!);
       if (!u.ok) return mis(`niet geabonneerd (${u.reden}): ${u.melding}`);
       return ok(u.al_idle ? `${rest[0]} is al idle, klaar, vrij of weg: de melding staat al in je inbox.` : `Je krijgt één melding zodra ${rest[0]} idle, klaar, vrij of weg is.`);
     }
     case "vasthouden": {
+      const rol = eisBeheer();
+      if (rol) return rol;
       if (rest.length !== 1) return mis(GEBRUIK);
+      const nf = naamFout(rest[0]);
+      if (nf) return nf;
       const vast = bus.vastgehouden(rest[0]!);
       if (vast.length === 0) return ok("Niets vastgehouden.");
+      // Wie externe inhoud ziet, is zelf extern (markering; spoor D wist hem bij SessionStart).
+      if (ikzelf && vast.some((e) => e.herkomst === "extern")) markeerExtern(staatMap(env), ikzelf);
       return ok(vast.map(toon).join("\n\n"));
     }
     case "vrijgeven": {
+      const rol = eisBeheer();
+      if (rol) return rol;
       const [naam, ...ids] = rest;
       if (!naam) return mis(GEBRUIK);
+      const nf = naamFout(naam);
+      if (nf) return nf;
       const n = await bus.vrijgeven(naam, ids);
       return ok(`${n} bericht${n === 1 ? "" : "en"} vrijgegeven aan ${naam}.`);
     }

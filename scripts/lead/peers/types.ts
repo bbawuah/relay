@@ -47,7 +47,7 @@ export type Envelop = {
   hop: number;
   /**
    * `extern` als de afzendersessie op dat moment `extern` was, of als de draad al een `extern` bericht bevat.
-   * Een ontvanger die een `extern` bericht ackt, wordt zelf `extern` (Rec.herkomst), zodat doorsturen het label houdt.
+   * Een ontvanger die een `extern` bericht ziet (inbox) of ackt, wordt zelf `extern` (markering `<staat>/peers/extern/<naam>`), zodat doorsturen het label houdt.
    */
   herkomst: Herkomst;
   soort: Soort;
@@ -90,7 +90,7 @@ export function seintje(aantal: number): string {
 /**
  * Velden die de peerbus aan het bestaande register-record (scripts/lead/hooks/register.ts, `Rec`) toevoegt.
  * Allemaal optioneel: een oud record zonder deze velden is een Claude-TUI-sessie, schoon, met het standaardbeleid.
- * Spoor D schrijft ze vanuit hooks en spawn.sh; de Bus leest ze en schrijft alleen `herkomst` (bij een ack van een `extern` bericht).
+ * Spoor D schrijft ze vanuit hooks en spawn.sh; de Bus leest ze en schrijft nooit in het register (zie `herkomst`).
  */
 export type PeerVelden = {
   vendor?: Vendor;
@@ -103,7 +103,11 @@ export type PeerVelden = {
   t3_thread?: string;
   /** Claude: pad van de inbox-socket ($CLAUDE_CODE_MESSAGING_SOCKET bij SessionStart). */
   socket?: string;
-  /** `extern` na WebFetch/WebSearch, een MCP-tool buiten `peers`, of een ack van een `extern` bericht. SessionStart (ook /clear) → `schoon`. */
+  /**
+   * `extern` na WebFetch/WebSearch of een MCP-tool buiten `peers` (spoor D schrijft dit). De Bus telt een sessie ook als `extern`
+   * als de markering `<staat>/peers/extern/<naam>` bestaat: die zet de Bus zelf zodra de sessie een `extern` bericht ziet of ackt.
+   * SessionStart (ook /clear) → `schoon`: spoor D zet `herkomst` terug en wist die markering.
+   */
   herkomst?: Herkomst;
   /** Standaard: accept van de eigen lead en van eigen werkers (rec.lead === afzender of afzender.lead === naam), anders hold. `per_afzender` gaat voor `standaard`. */
   inbound?: { standaard?: Inbound; per_afzender?: Record<string, Inbound> };
@@ -138,9 +142,9 @@ export type AbonneerUitslag = { ok: true; al_idle: boolean } | { ok: false; rede
 export interface Bus {
   /** Valideert, past het beleid toe, slaat op en wekt de ontvanger (via de Wekker voor zijn host). Gooit nooit. */
   send(van: string, naar: string, tekst: string, opties?: SendOpties): Promise<SendUitslag>;
-  /** Ongelezen berichten van `naam`, oudste eerst, hoogstens MAX_WACHTRIJ. Verandert niets. */
+  /** Ongelezen berichten van `naam`, oudste eerst, hoogstens MAX_WACHTRIJ. Verandert niets, behalve: een `extern` bericht maakt de kijker extern (markering `<staat>/peers/extern/<naam>`), ook zonder ack. */
   inbox(naam: string): Envelop[];
-  /** Markeert deze ids als gelezen. Onbekende ids worden genegeerd. Een `extern` bericht maakt `naam` zelf `extern`. */
+  /** Markeert deze ids als gelezen. Onbekende ids worden genegeerd. Een `extern` bericht maakt `naam` zelf `extern` (markering `<staat>/peers/extern/<naam>`, geen schrijfactie in het register). */
   ack(naam: string, ids: string[]): void;
   /** Levende sessies uit het register (toestand niet `weg`). */
   list(): Peer[];

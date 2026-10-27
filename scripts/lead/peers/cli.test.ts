@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { type Rec, nieuwRecord, schrijfRecord } from "../hooks/register";
@@ -14,7 +14,7 @@ let dir: string;
 let staat: string;
 let klok: number;
 
-const bus = () => maakBus({ staat, nu: () => klok, machine: "testmachine" });
+const bus = () => maakBus({ staat, nu: () => klok, machine: "testmachine", wacht: async (ms) => void (klok += ms) });
 const env = (naam: string) => ({ LAB_AGENT_NAAM: naam, LAB_LEAD_STAAT: staat });
 function sessie(naam: string, lead = "", extra: Partial<Rec> & Record<string, unknown> = {}): void {
   schrijfRecord(staat, { ...nieuwRecord(`id-${naam}`, { LAB_AGENT_NAAM: naam, LAB_LEAD_NAAM: lead }, `/w/${naam}`, T0), inbound: { standaard: "accept" }, ...extra } as Rec);
@@ -147,6 +147,64 @@ describe("cli list, notify-when-idle, vasthouden, vrijgeven", () => {
     const r = await cli("a", "wat");
     expect(r.code).toBe(1);
     expect(r.fout).toContain("Gebruik");
+  });
+});
+
+describe("cli: namen, rol en extern", () => {
+  test("een ongeldige naam (`..`, `.`, pad) geeft een fout en laat de opslag heel", async () => {
+    await cli("a", "send", "b", "bewaar");
+    for (const n of ["..", ".", "a/b", "../x"]) {
+      for (const args of [["send", n, "x"], ["notify-when-idle", n], ["vasthouden", n], ["vrijgeven", n]]) {
+        const r = await draai(args, { ...env("a"), LAB_AGENT_ROL: "lead" }, bus());
+        expect(r.code).toBe(1);
+        expect(r.fout).toContain("ongeldige naam");
+      }
+      expect((await draai(["inbox"], env(n), bus())).code).toBe(1);
+    }
+    expect((await cli("b", "inbox")).uit).toContain("bewaar");
+  });
+
+  test("vasthouden en vrijgeven: toegestaan zonder rol (Brian) en voor de lead, geweigerd voor een andere rol", async () => {
+    sessie("h", "", { inbound: { standaard: "hold" } });
+    await cli("a", "send", "h", "wacht");
+    for (const rol of ["agent", "worker", "reviewer"]) {
+      for (const args of [["vasthouden", "h"], ["vrijgeven", "h"]]) {
+        const r = await draai(args, { ...env("a"), LAB_AGENT_ROL: rol }, bus());
+        expect(r.code).toBe(1);
+        expect(r.fout).toContain("voor Brian of de lead");
+      }
+    }
+    expect(bus().vastgehouden("h")).toHaveLength(1);
+    expect((await draai(["vasthouden", "h"], { LAB_LEAD_STAAT: staat, LAB_AGENT_ROL: "" }, bus())).code).toBe(0);
+    expect((await draai(["vasthouden", "h"], { LAB_LEAD_STAAT: staat }, bus())).code).toBe(0);
+    expect((await draai(["vrijgeven", "h"], { ...env("a"), LAB_AGENT_ROL: "lead" }, bus())).uit).toContain("1 bericht vrijgegeven");
+  });
+
+  test("inbox --niet-acken van een extern bericht en vasthouden van een extern bericht maken de kijker extern (markering)", async () => {
+    sessie("x", "", { herkomst: "extern" });
+    sessie("h", "", { inbound: { standaard: "hold" } });
+    await cli("x", "send", "b", "van buiten");
+    await cli("x", "send", "h", "vast van buiten");
+    expect(existsSync(join(staat, "peers/extern/b"))).toBe(false);
+    await cli("b", "inbox", "--niet-acken");
+    expect(existsSync(join(staat, "peers/extern/b"))).toBe(true);
+    expect(existsSync(join(staat, "peers/extern/a"))).toBe(false);
+    await draai(["vasthouden", "h"], { ...env("a"), LAB_AGENT_ROL: "lead" }, bus());
+    expect(existsSync(join(staat, "peers/extern/a"))).toBe(true);
+  });
+});
+
+describe("cli: wacht op de wek van notify-when-idle", () => {
+  test("de CLI geeft pas terug als de achtergrondwek klaar is", async () => {
+    sessie("w", "", { toestand: "klaar" });
+    const wekken: number[] = [];
+    const b = maakBus({ staat, nu: () => klok, wekker: { wek: async (_d, n) => (wekken.push(n), { gewekt: true, route: "nep" }) }, wacht: async (ms) => void (klok += ms) });
+    await b.send("w", "a", "zet het wekvenster van a aan");
+    klok += 100;
+    const r = await draai(["notify-when-idle", "w"], env("a"), b);
+    expect(r.code).toBe(0);
+    expect(r.uit).toContain("al idle");
+    expect(wekken).toEqual([1, 2]); // de tweede wek (binnen het venster) is afgewacht vóór de CLI terugkeerde
   });
 });
 
