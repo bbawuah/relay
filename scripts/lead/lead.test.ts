@@ -783,6 +783,37 @@ describe("spawn.sh", () => {
       expect(r.fout).toMatch(/achter op origin\/main/);
     });
 
+    test("een hangende fetch stopt na LAB_SPAWN_FETCH_S: git zelf is weg (geen wees), spawn gaat door met een waarschuwing", () => {
+      // Nep-ssh op PATH (GIT_SSH_COMMAND='ssh -oBatchMode=yes'): noteert de pid van git (zijn ouder) en zichzelf, en hangt.
+      const pids = join(dir, "ssh-pids");
+      schrijfBin("ssh", `#!/bin/sh\necho "$PPID $$ $*" > ${pids}\nexec sleep 30\n`);
+      git(repo, "remote", "set-url", "origin", "ssh://hangt.invalid/x.git");
+      const r = draai(SPAWN, args(), basis({ LAB_SPAWN_FETCH_S: "1" }));
+      const [gitPid, sshPid, ...sshArgs] = readFileSync(pids, "utf8").trim().split(" ");
+      try {
+        expect(r.code).toBe(0);
+        expect(r.fout).toMatch(/waarschuwing: ophalen van origin\/main mislukte \(exit 143\)/);
+        expect(sshArgs).toContain("-oBatchMode=yes");
+        expect(() => process.kill(Number(gitPid), 0)).toThrow();
+      } finally {
+        try {
+          process.kill(Number(sshPid));
+        } catch {
+          // al weg
+        }
+      }
+    });
+
+    test("--meerdere: de ouder toetst eenmaal, de kinderen niet", () => {
+      mergeOpMain("scripts/lead/nieuw.sh");
+      writeFileSync(join(dir, "lijst.txt"), `w1 ${opdracht()}\nw2 ${opdracht()}\n`);
+      const r = draai(SPAWN, ["--meerdere", join(dir, "lijst.txt"), "--lead", "l", "--droog"], basis({ LAB_SPAWN_NIET_ACTUEEL_OK: "1" }));
+      expect(r.fout.match(/doorgaan op LAB_SPAWN_NIET_ACTUEEL_OK=1/g)?.length).toBe(1);
+      // een LAB_SPAWN_ACTUEEL_GETOETST van buiten (niet de ouder) slaat de toets niet over
+      const zelf = draai(SPAWN, args(), basis({ LAB_SPAWN_ACTUEEL_GETOETST: "1" }));
+      expect(zelf.code).toBe(1);
+    });
+
     test("geen origin/main of geen repo: waarschuwing en door", () => {
       git(repo, "remote", "remove", "origin");
       const r = draai(SPAWN, args(), basis());
