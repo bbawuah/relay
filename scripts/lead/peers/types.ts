@@ -142,7 +142,7 @@ export type AbonneerUitslag = { ok: true; al_idle: boolean } | { ok: false; rede
 export interface Bus {
   /** Valideert, past het beleid toe, slaat op en wekt de ontvanger (via de Wekker voor zijn host). Gooit nooit. */
   send(van: string, naar: string, tekst: string, opties?: SendOpties): Promise<SendUitslag>;
-  /** Ongelezen berichten van `naam`, oudste eerst, hoogstens MAX_WACHTRIJ. Verandert niets. */
+  /** Ongelezen berichten van `naam`, oudste eerst, hoogstens MAX_WACHTRIJ. Verandert niets, behalve: een `extern` bericht maakt de kijker extern (markering `<staat>/peers/extern/<naam>`), ook zonder ack. */
   inbox(naam: string): Envelop[];
   /** Markeert deze ids als gelezen. Onbekende ids worden genegeerd. Een `extern` bericht maakt `naam` zelf `extern` (markering `<staat>/peers/extern/<naam>`, geen schrijfactie in het register). */
   ack(naam: string, ids: string[]): void;
