@@ -80,7 +80,7 @@ describe("installeer-hooks", () => {
   test("kopieert hook.sh (uitvoerbaar), hook.ts, register.ts, codex-adapter.ts en de peerbus (peers/ en hooks/register.ts)", () => {
     installeer(opties());
     expect(readdirSync(doel).sort()).toEqual(["codex-adapter.ts", "hook.sh", "hook.ts", "hooks", "peers", "register.ts"]);
-    expect(readdirSync(join(doel, "peers")).sort()).toEqual(["bus.ts", "standaard.ts", "types.ts", "uuid.ts", "wekker.ts"]);
+    expect(readdirSync(join(doel, "peers")).sort()).toEqual(["afgeleide-naam.ts", "bus.ts", "standaard.ts", "types.ts", "uuid.ts", "wekker.ts"]);
     expect(readdirSync(join(doel, "hooks"))).toEqual(["register.ts"]);
     expect(statSync(join(doel, "hook.sh")).mode & 0o111).toBeGreaterThan(0);
     // nieuwe mappen zijn van de eigenaar alleen (0700, onder een gangbare umask)
