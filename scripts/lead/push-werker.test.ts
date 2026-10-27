@@ -30,6 +30,12 @@ const push = (args: string[], opties: { cwd?: string; rol?: string | null } = {}
   const r = Bun.spawnSync(["bash", SCRIPT, ...args], { cwd: opties.cwd ?? lead, env });
   return { code: r.exitCode, uit: r.stdout.toString(), fout: r.stderr.toString() };
 };
+// De identiteit die spawn.sh bij de start schrijft: <staat>/identiteit/<sha256(realpath(worktree)) eerste 24 hex>.json met de tak.
+const schrijfId = (pad: string, inhoud: object) => {
+  const hash = new Bun.CryptoHasher("sha256").update(realpathSync(pad)).digest("hex").slice(0, 24);
+  mkdirSync(join(staat, "identiteit"), { recursive: true });
+  writeFileSync(join(staat, "identiteit", `${hash}.json`), JSON.stringify(inhoud));
+};
 const remote = (tak: string) => uit(origin, "rev-parse", "--verify", "--quiet", `refs/heads/${tak}`);
 
 beforeEach(() => {
@@ -52,6 +58,7 @@ beforeEach(() => {
   git(lead, "config", "core.hooksPath", hooks);
   wt = join(dir, "werker");
   git(lead, "worktree", "add", "-q", "-b", "werk", wt);
+  schrijfId(wt, { naam: "w", tak: "werk" });
 });
 afterEach(() => rmSync(dir, { recursive: true, force: true }));
 
@@ -103,7 +110,7 @@ describe("push-werker.sh", () => {
     const sha = commit(wt, "werk.txt");
     const r = push([wt, sha, "andere"]);
     expect(r.code).toBe(1);
-    expect(r.fout).toMatch(/de tak van .* is 'werk', niet 'andere'/);
+    expect(r.fout).toMatch(/spawn legde de tak 'werk' vast .* niet 'andere'/);
     expect(remote("andere")).toBe("");
   });
 
@@ -112,10 +119,10 @@ describe("push-werker.sh", () => {
     const tweede = commit(wt, "twee.txt");
     const r = push([wt, eerste, "werk"]);
     expect(r.code).toBe(1);
-    expect(r.fout).toMatch(/niet de gemelde/);
+    expect(r.fout).toMatch(/niet op de gemelde/);
     expect(push([wt, tweede.slice(0, 10), "werk"]).fout).toMatch(/volledige sha/);
     expect(push([join(dir, "bestaat-niet"), tweede, "werk"]).fout).toMatch(/worktree bestaat niet/);
-    expect(push([dir, tweede, "werk"]).fout).toMatch(/geen worktree van deze repo/);
+    expect(push([dir, tweede, "werk"]).fout).toMatch(/niet \(eenduidig\) in git worktree list/);
     expect(remote("werk")).toBe("");
   });
 
@@ -144,13 +151,55 @@ describe("push-werker.sh", () => {
     // een tweede worktree met een identiteit (spawn.sh --vendor codex) is ook een werker
     const andere = join(dir, "andere-werker");
     git(lead, "worktree", "add", "-q", "-b", "twee", andere);
-    const hash = new Bun.CryptoHasher("sha256").update(realpathSync(andere)).digest("hex").slice(0, 24);
-    mkdirSync(join(staat, "identiteit"), { recursive: true });
-    writeFileSync(join(staat, "identiteit", `${hash}.json`), "{}");
+    schrijfId(andere, {});
     const r2 = push([wt, sha, "werk"], { cwd: andere });
     expect(r2.code).toBe(1);
     expect(r2.fout).toMatch(/worktree van een werker/);
     expect(remote("werk")).toBe("");
+  });
+
+  test("weigert als de identiteit geen tak vastlegt of een andere tak (ook als HEAD en de tak zelf kloppen)", () => {
+    const sha = commit(wt, "werk.txt");
+    schrijfId(wt, { naam: "w" });
+    expect(push([wt, sha, "werk"]).fout).toMatch(/legt geen tak vast/);
+    schrijfId(wt, { naam: "w", tak: "andere" });
+    expect(push([wt, sha, "werk"]).fout).toMatch(/legde de tak 'andere' vast/);
+    rmSync(join(staat, "identiteit"), { recursive: true });
+    expect(push([wt, sha, "werk"]).fout).toMatch(/geen identiteit voor/);
+    expect(remote("werk")).toBe("");
+  });
+
+  test("weigert als de werker <gitdir>/HEAD naar een andere tak heeft gezet", () => {
+    const sha = commit(wt, "werk.txt");
+    git(lead, "branch", "andere");
+    const gitdir = uit(wt, "rev-parse", "--absolute-git-dir");
+    writeFileSync(join(gitdir, "HEAD"), "ref: refs/heads/andere\n");
+    const r = push([wt, sha, "werk"]);
+    expect(r.code).toBe(1);
+    expect(r.fout).toMatch(/HEAD van .* wijst naar 'ref: refs\/heads\/andere'/);
+    expect(remote("werk")).toBe("");
+  });
+
+  test("een refs/replace-ref kan de fast-forward-toets niet misleiden (aanval: wees-commit vervangen door origin/<tak>)", () => {
+    // origin/werk staat op een eigen geschiedenis; de werker maakt een wees-commit en een replace-ref die hem in de ogen van
+    // `merge-base --is-ancestor` laat afstammen van die tip. Met GIT_NO_REPLACE_OBJECTS is het geen fast-forward en weigert het script.
+    const ander = join(dir, "ander");
+    mkdirSync(ander);
+    git(ander, "init", "-q", "-b", "main");
+    const tip = commit(ander, "los");
+    git(ander, "push", "-q", origin, "HEAD:refs/heads/werk");
+    git(lead, "fetch", "-q", "origin", "werk");
+    const sha = commit(wt, "werk.txt");
+    const boom = uit(wt, "rev-parse", `${sha}^{tree}`);
+    // replace: de ouder van <sha> lijkt origin/werk te zijn
+    const nep = uit(wt, "commit-tree", boom, "-p", tip, "-m", "nep");
+    git(wt, "replace", sha, nep);
+    // controle dat de aanval werkt: zonder GIT_NO_REPLACE_OBJECTS zegt git dat <sha> van de tip afstamt
+    expect(git(wt, "merge-base", "--is-ancestor", tip, sha).exitCode).toBe(0);
+    const r = push([wt, sha, "werk"]);
+    expect(r.code).toBe(1);
+    expect(r.fout).toMatch(/geen fast-forward/);
+    expect(remote("werk")).toBe(tip);
   });
 
   test("--droog toetst alles maar pusht niet", () => {

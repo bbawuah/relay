@@ -455,3 +455,25 @@ describe("bronscan: git in de lead-tooling loopt via de helper", () => {
     expect(dood, `uitzonderingen zonder treffer: ${dood.join("; ")}`).toEqual([]);
   });
 });
+
+describe("gitHard en replace-refs", () => {
+  test("een refs/replace-ref van een werker verandert niets aan wat gitHard ziet (GIT_NO_REPLACE_OBJECTS=1)", () => {
+    const repo = path.join(dir, "replace-repo");
+    mkdirSync(repo);
+    rauw(repo, "init", "-q", "-b", "main");
+    writeFileSync(path.join(repo, "a"), "a");
+    rauw(repo, "add", "a");
+    rauw(repo, "commit", "-q", "-m", "een");
+    const een = rauw(repo, "rev-parse", "HEAD");
+    writeFileSync(path.join(repo, "b"), "b");
+    rauw(repo, "add", "b");
+    rauw(repo, "commit", "-q", "-m", "twee");
+    const twee = rauw(repo, "rev-parse", "HEAD");
+    // de aanval: `twee` wordt in de ogen van git een commit zonder ouder
+    const boom = rauw(repo, "rev-parse", `${twee}^{tree}`);
+    const los = rauw(repo, "commit-tree", boom, "-m", "los");
+    rauw(repo, "replace", twee, los);
+    expect(Bun.spawnSync(["git", "-C", repo, "merge-base", "--is-ancestor", een, twee], { env: env() }).exitCode).toBe(1); // git liegt
+    expect(gitHard(repo, ["merge-base", "--is-ancestor", een, twee]).code).toBe(0); // gitHard niet
+  });
+});

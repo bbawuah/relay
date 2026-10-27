@@ -196,6 +196,13 @@ git_schoon() (
   git -c core.fsmonitor= -c core.hooksPath=/dev/null -c core.untrackedCache=false -c diff.ignoreSubmodules=all "$@"
 )
 
+# Git in de gedeelde .git van de lead, niet via de worktree van de werker; zonder GIT_*, hooks, fsmonitor en replace-refs.
+git_lead() (
+  while IFS= read -r v; do unset "$v"; done < <(compgen -e | grep '^GIT_' || true)
+  export GIT_NO_REPLACE_OBJECTS=1
+  git --git-dir="$GEMEEN_DIR" -c core.fsmonitor= -c core.hooksPath=/dev/null -c core.untrackedCache=false -c diff.ignoreSubmodules=all "$@"
+)
+
 t3_bin() {
   if [ -n "${LAB_T3:-}" ]; then echo "$LAB_T3"; return; fi
   command -v t3 2>/dev/null && return
@@ -245,6 +252,12 @@ codex_sandbox() {
   b="$h/.bun/install/cache"
   SANDBOX_FS="\"/\"=\"read\",\"$m\"=\"write\",\"$c/objects\"=\"write\",\"$c/refs\"=\"write\",\"$c/logs\"=\"write\""
   SANDBOX_FS="$SANDBOX_FS,\"$e\"=\"write\",\"$e/commondir\"=\"read\",\"$e/gitdir\"=\"read\",\"$e/config.worktree\"=\"read\""
+  # HEAD van de worktree read-only: anders wijst de werker hem naar een andere tak (push-werker leest de tak uit de identiteit, dit is de
+  # tweede laag). Een commit schrijft de tak in refs/ en de index in $e, niet HEAD.
+  SANDBOX_FS="$SANDBOX_FS,\"$e/HEAD\"=\"read\""
+  # refs/replace read-only (refs/ is schrijfbaar): een replace-ref laat merge-base, log en diff van de lead liegen. <worktree>/.git
+  # (het bestand dat naar de gitdir wijst) read-only: het zou de gitdir kunnen omleggen.
+  SANDBOX_FS="$SANDBOX_FS,\"$c/refs/replace\"=\"read\",\"$m/.git\"=\"read\""
   # Eigen tmp-map als enige tmp-root: niet /tmp als geheel en niet de TMPDIR van de lead (daar staan sessiemappen en sockets van anderen).
   WERKTMP="$t/lab-werker-$naam"
   SANDBOX_FS="$SANDBOX_FS,\"$WERKTMP\"=\"write\",\"$b\"=\"write\""
@@ -253,6 +266,12 @@ codex_sandbox() {
   SANDBOX_FS="$SANDBOX_FS,\"$m/.codex\"=\"read\""
   # Sleutelmappen onleesbaar (dezelfde lijst als grenzen.sh), want een write_stdin gaat langs die hook.
   SANDBOX_FS="$SANDBOX_FS,\"$h/.config/klaarover\"=\"none\",\"$h/.config/douane\"=\"none\",\"$h/.config/agentwerkbank\"=\"none\",\"$h/.codex/auth.json\"=\"none\""
+  # Inloggegevens en tokens: een denylist (alles blijft leesbaar tenzij hier genoemd), geen allowlist. Met --netwerk is een leesbaar
+  # token een directe exfiltratieroute. ~/.codex als geheel staat er niet bij: Codex en zijn hooks (grenzen.sh) lezen daar zelf.
+  local k
+  for k in .ssh .config/gh .netrc .git-credentials .aws .azure .kube .docker .npmrc .config/op Library/Keychains; do
+    SANDBOX_FS="$SANDBOX_FS,\"$h/$k\"=\"none\""
+  done
 }
 
 # Een andere sessie in dezelfde checkout? Dan weigeren (de identiteit is per checkout, niet per sessie).
@@ -282,8 +301,11 @@ schrijf_identiteit() {
   inst=$(identiteit_pad)
   mkdir -p "$STAAT/identiteit" && chmod 700 "$STAAT/identiteit"
   tmp=$(mktemp "$inst.XXXXXX")
-  jq -n --arg n "$naam" --arg r "$rol" --arg l "$lead" --arg o "$opdracht" --arg s "$spawn_id" --argjson ts "$(( $(date +%s) * 1000 ))" \
-    '{naam: $n, rol: $r, lead: $l, opdracht: $o, spawn_id: $s, ts: $ts}' >"$tmp" || { rm -f "$tmp"; fout "kon $inst niet schrijven"; }
+  # De tak van de worktree op dit moment, uit de gitdir aan de kant van de lead: push-werker.sh pusht alleen die tak.
+  local tak=""
+  if [ -n "${EIGEN_DIR:-}" ]; then tak=$(git_schoon --git-dir="$EIGEN_DIR" symbolic-ref -q --short HEAD 2>/dev/null || true); fi
+  jq -n --arg n "$naam" --arg r "$rol" --arg l "$lead" --arg o "$opdracht" --arg s "$spawn_id" --arg k "$tak" --argjson ts "$(( $(date +%s) * 1000 ))" \
+    '{naam: $n, rol: $r, lead: $l, opdracht: $o, spawn_id: $s, ts: $ts} + (if $k == "" then {} else {tak: $k} end)' >"$tmp" || { rm -f "$tmp"; fout "kon $inst niet schrijven"; }
   chmod 600 "$tmp"
   mv "$tmp" "$inst"
   ID_GESCHREVEN=$inst
@@ -504,7 +526,7 @@ if [ "$vendor" = codex ]; then
   zin="${zin//via SendMessage (to: $lead)/met de tool send van MCP-server peers (naar: $lead)}"
   # Zonder netwerk kan de werker niet pushen: de lead pusht en opent de PR.
   if [ "$t3" = 0 ] && [ "$netwerk" = 0 ]; then
-    zin="$zin Je hebt geen netwerk: push niet en draai geen gh. Commit in je worktree en meld in je rapport \"klaar om te pushen op <sha>\"; de lead pusht (met scripts/lead/push-werker.sh, nooit met een git push in jouw worktree) en opent de PR. Draai nodige postinstall-scripts zelf in je sandbox (spawn installeert met --ignore-scripts)."
+    zin="$zin Je hebt geen netwerk: push niet en draai geen gh. Commit in je worktree en meld in je rapport \"klaar om te pushen op <sha>\"; de lead pusht (met scripts/lead/push-werker.sh, nooit met een push vanuit jouw worktree) en opent de PR. Draai nodige postinstall-scripts zelf in je sandbox (spawn installeert met --ignore-scripts)."
   fi
 fi
 zin="$zin Sluit je laatste rapport aan de lead af met een vaste slotregel (laatste regel, kaal): \`vrij\` als je klaar en opgeruimd bent, of \`wacht op achtergrondrun tot ~HH:MM\` (hoogstens 2 uur vooruit) als je op een achtergrondrun wacht. \"vrij\" ergens anders in de tekst telt niet."
@@ -550,12 +572,19 @@ if [ "$vendor" = codex ]; then
   # (die kunnen registry of cache omleggen). Vóór schrijf_identiteit: een mislukking laat niets achter, en er loopt geen
   # werker in deze map (identiteit_vrij).
   if [ "$t3" = 0 ] && [ "$netwerk" = 0 ] && [ -f "$map/package.json" ]; then
-    for cfgbestand in bunfig.toml .npmrc; do
-      if [ -e "$map/$cfgbestand" ] || [ -L "$map/$cfgbestand" ]; then
-        git_schoon -C "$map" show "origin/main:$cfgbestand" 2>/dev/null | cmp -s - "$map/$cfgbestand" ||
-          fout "$map/$cfgbestand wijkt af van origin/main (of is er nieuw): bun install buiten de sandbox zou hem volgen (registry, cache). Zet hem terug of start met --netwerk"
+    # De werker kan package.json, bun.lock, bunfig.toml en .npmrc in zijn worktree vervangen (bij een herstart of --vervolg komen ze van
+    # hem): een afhankelijkheid http://…/x.tgz?data=… is een GET buiten de sandbox, een file:-afhankelijkheid kopieert mappen, en
+    # bunfig/.npmrc leggen registry en cache om. Daarom alleen installeren als ze identiek zijn aan origin/main, gelezen met een sha die
+    # de werker niet kan schrijven (ls-remote + fetch in de gitdir van de lead; origin/main in refs/ is schrijfbaar).
+    vertrouwd=$(git_lead ls-remote origin refs/heads/main 2>/dev/null | cut -f1 | head -n 1 || true)
+    if [ -n "$vertrouwd" ] && git_lead fetch -q origin refs/heads/main 2>/dev/null; then :; else vertrouwd=""; fi
+    [ -n "$vertrouwd" ] || fout "kon origin/main niet ophalen om package.json, bun.lock, bunfig.toml en .npmrc te vergelijken; geen bun install buiten de sandbox. Start met --netwerk (dan installeert de werker zelf)"
+    while IFS= read -r -d '' f; do
+      rel=${f#"$map"/}
+      if [ -L "$f" ] || ! git_lead show "$vertrouwd:$rel" 2>/dev/null | cmp -s - "$f"; then
+        fout "$rel in $map wijkt af van origin/main (of is nieuw, of een symlink): bun install buiten de sandbox zou hem volgen. Herstel het bestand, of start met --netwerk: dan draait de werker zelf bun install in de sandbox"
       fi
-    done
+    done < <(find "$map" \( -name node_modules -o -name .git \) -prune -o \( -name package.json -o -name bunfig.toml -o -name .npmrc -o -name bun.lock -o -name bun.lockb \) -print0)
     (cd "$map" && "$BUN" install --ignore-scripts --frozen-lockfile >&2) || fout "bun install --ignore-scripts --frozen-lockfile in $map mislukte; de werker heeft zonder netwerk geen installatie. Los het op of start met --netwerk"
   fi
   mkdir -p -m 700 "$WERKTMP" 2>/dev/null || [ "$t3" = 1 ] || fout "kon de tmp-map $WERKTMP niet maken"
