@@ -1192,7 +1192,10 @@ exit 1
     for (const pad of [gem, `${gem}/hooks`, `${gem}/config`, `${gem}/info`, `${gem}/worktrees`]) expect(regels.some((x) => x === `${pad}=write`)).toBe(false);
     // sleutelmappen onleesbaar
     expect(regels.some((x) => x.endsWith("/.config/klaarover=none"))).toBe(true);
-    expect(regels.some((x) => x.endsWith("/.codex/auth.json=none"))).toBe(true);
+    // ~/.codex als geheel dicht, met een paar leesmappen erin weer open (een diepere regel wint)
+    expect(regels.some((x) => x.endsWith("/.codex=none"))).toBe(true);
+    expect(regels.some((x) => x.endsWith("/.codex/skills=read"))).toBe(true);
+    expect(regels.some((x) => x.endsWith("/.codex/sessions=none") || x.endsWith("/.codex/auth.json=none"))).toBe(false);
   });
 
   test("sandbox: een pad met een quote of backslash weigert spawn (nooit een halve sandbox)", () => {
