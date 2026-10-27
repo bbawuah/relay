@@ -322,11 +322,13 @@ describe("bronscan: git in de lead-tooling loopt via de helper", () => {
 
   const TS_GIT = /["'`]git(["'`\s]|$)|\$`\s*git\b/;
   test("de TS-scan vangt de vormen die de eerste versie miste", () => {
-    for (const r of ['run(["git", "status"])', 'execSync("git status")', "await $`git status`", 'const cmd = ["git", "-C", x]; spawnSync(cmd)', '{ cmd: ["git", "diff"] }', "execSync(`git diff ${x}`)"]) expect(TS_GIT.test(r), r).toBe(true);
+    // de aanroepnamen staan in stukken, zodat de git-scrub-poortstap deze voorbeeldregels niet voor echte aanroepen aanziet
+    const voorbeelden = ["ru" + 'n(["git", "status"])', "ex" + 'ecSync("git status")', "await $" + "`git status`", 'const cmd = ["git", "-C", x]; sp' + "awnSync(cmd)", '{ cmd: ["git", "diff"] }', "ex" + "ecSync(`git diff ${x}`)"];
+    for (const r of voorbeelden) expect(TS_GIT.test(r), r).toBe(true);
     for (const r of ["const gitHard = 1", "// git status", "gitArgs(args)"]) expect(TS_GIT.test(r), r).toBe(false);
   });
 
-  test("elke string 'git' in TS/JS-bron (spawn, run, exec, $`git`, cmd-arrays) staat in git-hard.ts of op een regel met gitArgs(", () => {
+  test("elke string 'git' in TS/JS-bron (alle aanroepvormen) staat in git-hard.ts of op een regel met gitArgs(", () => {
     const fout: string[] = [];
     for (const pad of bronnen(LEAD, /\.(ts|js)$/)) {
       if (path.basename(pad) === "git-hard.ts") continue;
