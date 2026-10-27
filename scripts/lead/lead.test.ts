@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { appendFileSync, chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { appendFileSync, chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -1174,7 +1174,7 @@ exit 1
   test("sandbox: een pad met een quote of backslash weigert spawn (nooit een halve sandbox)", () => {
     const slecht = join(dir, "slecht'pad");
     mkdirSync(slecht);
-    const r = draai(SPAWN, ["--naam", "cx1", "--opdracht", opdracht(), "--lead", "lead-x", "--vendor", "codex", "--map", wt, "--droog"], basis({ TMPDIR: slecht }));
+    const r = draai(SPAWN, ["--naam", "cx1", "--opdracht", opdracht(), "--lead", "lead-x", "--vendor", "codex", "--map", wt, "--droog"], basis({ HOME: slecht }));
     expect(r.code).toBe(1);
     expect(r.fout).toMatch(/kan niet in de sandbox-config/);
   });
@@ -1269,46 +1269,166 @@ exit 1
     expect(existsSync(join(gem, "hooks", "x"))).toBe(false);
   }, 120_000);
 
-  test("netwerk uit is de standaard: --netwerk zet het aan; de startzin zegt niet pushen en meldt 'klaar om te pushen'; bun install vooraf", () => {
+  /** Een nep-bun: `install` wordt gelogd (argumenten, cwd, aantal identiteitsbestanden op dat moment); al het andere gaat naar de echte bun. */
+  const nepBun = (faal = false) => {
+    const pad = join(bin, "nep-bun");
+    writeFileSync(
+      pad,
+      [
+        "#!/usr/bin/env bash",
+        `if [ "$1" = install ]; then echo "install $* | $PWD | ids=$(ls "${idDir()}" 2>/dev/null | wc -l | tr -d ' ')" >> "${join(dir, "install.log")}"; ${faal ? "exit 1" : "exit 0"}; fi`,
+        `exec "${process.execPath}" "$@"`,
+        "",
+      ].join("\n"),
+      { mode: 0o755 },
+    );
+    return pad;
+  };
+  const installLog = () => (existsSync(join(dir, "install.log")) ? readFileSync(join(dir, "install.log"), "utf8") : "");
+
+  test("netwerk uit is de standaard: --netwerk zet het aan; de startzin zegt niet pushen en meldt 'klaar om te pushen'; geen install-regel zonder package.json", () => {
     writeFileSync(join(dir, "pane.txt"), "Ask Codex\n• Ran ls\n");
     const uit = codex(["--map", wt, "--droog"]);
     expect(uit.uit).toContain("network={enabled=false}");
     expect(uit.uit).toContain("push niet en draai geen gh");
     expect(uit.uit).toContain("klaar om te pushen op <sha>");
-    expect(uit.uit).toContain(`droog: bun install in ${wt}`);
+    expect(uit.uit).toContain("scripts/lead/push-werker.sh, nooit met een git push in jouw worktree");
+    expect(uit.uit).not.toContain("droog: bun install"); // K5: geen package.json
+    writeFileSync(join(wt, "package.json"), "{}\n");
+    expect(codex(["--map", wt, "--droog"]).uit).toContain(`droog: bun install --ignore-scripts --frozen-lockfile in ${wt}`);
     const aan = codex(["--map", wt, "--droog", "--netwerk"]);
     expect(aan.uit).toContain("network={enabled=true}");
     expect(aan.uit).not.toContain("push niet en draai geen gh");
     expect(aan.uit).not.toContain("droog: bun install");
-    // T3 heeft geen sandbox en dus geen netwerkvlag-effect: geen pushverbod in de startzin
+    // K2: --t3 --netwerk weigert
+    const t3 = codex(["--map", wt, "--t3", "--netwerk", "--droog"]);
+    expect(t3.code).toBe(1);
+    expect(t3.fout).toMatch(/--netwerk past niet bij --t3/);
     expect(codex(["--map", wt, "--t3", "--droog"]).uit).not.toContain("push niet en draai geen gh");
     // --netwerk hoort bij codex
     const cl = draai(SPAWN, ["--naam", "w", "--opdracht", opdracht(), "--lead", "l", "--netwerk", "--droog"], basis());
     expect(cl.code).toBe(1);
     expect(cl.fout).toMatch(/--netwerk hoort bij --vendor codex/);
+    // de helptekst toont de hele kop (tot de laatste commentaarregel)
+    const h = draai(SPAWN, ["--help"], basis());
+    expect(h.uit).toContain("Zie scripts/lead/README.md.");
+    expect(h.uit).toContain("--netwerk");
   });
 
-  test("bun install draait in de worktree vóór de start (alleen met package.json en zonder --netwerk); een mislukte install start niets", () => {
+  test("--meerdere: --netwerk gaat door naar elke sessie; zonder netwerk weigert codex met meer dan één sessie (parallelle install in één worktree)", () => {
     writeFileSync(join(dir, "pane.txt"), "Ask Codex\n• Ran ls\n");
-    const nep = join(bin, "nep-install.sh");
-    const logPad = join(dir, "install.log");
-    writeFileSync(nep, ["#!/usr/bin/env bash", `echo "install in $PWD" >> "${logPad}"`, '[ -z "${NEP_INSTALL_FAAL:-}" ]', ""].join("\n"), { mode: 0o755 });
-    // zonder package.json: niet
-    codex(["--map", wt], { LAB_SPAWN_INSTALL: nep });
-    expect(existsSync(join(dir, "install.log"))).toBe(false);
-    writeFileSync(join(wt, "package.json"), "{}\n");
+    const lijst = join(dir, "lijst.txt");
+    writeFileSync(lijst, `a ${opdracht()}\nb ${opdracht()}\n`);
+    const aan = draai(SPAWN, ["--meerdere", lijst, "--lead", "l", "--map", wt, "--vendor", "codex", "--netwerk"], basis());
+    expect(aan.fout).not.toMatch(/parallel in één worktree/);
+    expect(log("spawn.log")).toContain("network={enabled=true}"); // de kindsessie kreeg --netwerk
+    expect(log("spawn.log")).not.toContain("enabled=false");
     rmSync(idDir(), { recursive: true, force: true });
-    codex(["--map", wt, "--netwerk"], { LAB_SPAWN_INSTALL: nep });
-    expect(existsSync(join(dir, "install.log"))).toBe(false); // met netwerk installeert de werker zelf
-    rmSync(idDir(), { recursive: true, force: true });
-    codex(["--map", wt], { LAB_SPAWN_INSTALL: nep });
-    expect(readFileSync(join(dir, "install.log"), "utf8")).toMatch(/^install in \S*eigen-worktree\n$/);
-    // mislukt: foutmelding, geen identiteit
-    rmSync(idDir(), { recursive: true, force: true });
-    const r = codex(["--map", wt], { LAB_SPAWN_INSTALL: nep, NEP_INSTALL_FAAL: "1" });
-    expect(r.code).toBe(1);
-    expect(r.fout).toMatch(/bun install in .* mislukte/);
+    const uit = draai(SPAWN, ["--meerdere", lijst, "--lead", "l", "--map", wt, "--vendor", "codex"], basis());
+    expect(uit.code).toBe(1);
+    expect(uit.fout).toMatch(/parallel in één worktree/);
     expect(idBestanden()).toEqual([]);
+  });
+
+  test("M1: bun install draait met --ignore-scripts --frozen-lockfile, vóór de identiteit, alleen met package.json en zonder --netwerk; mislukt = niets gestart", () => {
+    writeFileSync(join(dir, "pane.txt"), "Ask Codex\n• Ran ls\n");
+    const bun = nepBun();
+    const env = { LAB_LEAD_BUN: bun };
+    codex(["--map", wt], env);
+    expect(installLog()).toBe(""); // geen package.json
+    writeFileSync(join(wt, "package.json"), "{}\n");
+    codex(["--map", wt, "--netwerk"], env);
+    expect(installLog()).toBe(""); // met netwerk installeert de werker zelf
+    rmSync(idDir(), { recursive: true, force: true });
+    codex(["--map", wt], env);
+    expect(installLog()).toMatch(/^install install --ignore-scripts --frozen-lockfile \| \S*eigen-worktree \| ids=0\n$/); // nog geen identiteit
+    expect(idBestanden().length).toBe(1);
+    // een lopende andere sessie in deze checkout: geweigerd vóór de install
+    const voor = installLog();
+    const r2 = codex(["--map", wt], env, "cx2");
+    expect(r2.code).toBe(1);
+    expect(r2.fout).toMatch(/draagt al de identiteit/);
+    expect(installLog()).toBe(voor);
+    // mislukte install: foutmelding, geen identiteit
+    rmSync(idDir(), { recursive: true, force: true });
+    const r = codex(["--map", wt], { LAB_LEAD_BUN: nepBun(true) });
+    expect(r.code).toBe(1);
+    expect(r.fout).toMatch(/bun install --ignore-scripts --frozen-lockfile in .* mislukte/);
+    expect(idBestanden()).toEqual([]);
+  });
+
+  test("M1: een afwijkende of nieuwe bunfig.toml/.npmrc weigert de install; één die gelijk is aan origin/main mag", () => {
+    writeFileSync(join(dir, "pane.txt"), "Ask Codex\n• Ran ls\n");
+    writeFileSync(join(wt, "package.json"), "{}\n");
+    const env = { LAB_LEAD_BUN: nepBun() };
+    writeFileSync(join(wt, ".npmrc"), "registry=http://kwaad.example/\n");
+    const r = codex(["--map", wt], env);
+    expect(r.code).toBe(1);
+    expect(r.fout).toMatch(/\.npmrc wijkt af van origin\/main/);
+    expect(installLog()).toBe("");
+    expect(idBestanden()).toEqual([]);
+    rmSync(join(wt, ".npmrc"));
+    // gelijk aan origin/main: toegestaan
+    git(repo, "checkout", "-q", "main");
+    writeFileSync(join(repo, "bunfig.toml"), "[install]\n");
+    git(repo, "add", "bunfig.toml");
+    git(repo, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "-m", "bunfig");
+    git(repo, "push", "-q", "origin", "main");
+    git(repo, "fetch", "-q", "origin");
+    writeFileSync(join(wt, "bunfig.toml"), "[install]\n");
+    expect(codex(["--map", wt], env).fout).not.toMatch(/wijkt af/);
+    expect(installLog()).toContain("install install");
+    rmSync(idDir(), { recursive: true, force: true });
+    writeFileSync(join(wt, "bunfig.toml"), "[install]\nregistry = \"http://kwaad.example/\"\n");
+    expect(codex(["--map", wt], env).fout).toMatch(/bunfig\.toml wijkt af/);
+  });
+
+  test("M1 (echte bun): een postinstall in de worktree draait niet; zonder --ignore-scripts zou hij wel draaien", () => {
+    writeFileSync(join(dir, "pane.txt"), "Ask Codex\n• Ran ls\n");
+    const marker = join(dir, "postinstall-draaide");
+    const pkg = JSON.stringify({ name: "x", version: "1.0.0", scripts: { postinstall: `touch ${marker}` } });
+    writeFileSync(join(wt, "package.json"), pkg);
+    const schoon = { PATH: process.env.PATH ?? "", HOME: process.env.HOME ?? "" };
+    // een lockfile maken zonder scripts, en de controle dat scripts zonder de vlag wel draaien (in een kopie)
+    expect(Bun.spawnSync([process.execPath, "install", "--ignore-scripts"], { cwd: wt, env: schoon }).exitCode).toBe(0);
+    expect(existsSync(marker)).toBe(false);
+    const kopie = join(dir, "kopie");
+    mkdirSync(kopie);
+    writeFileSync(join(kopie, "package.json"), pkg);
+    expect(Bun.spawnSync([process.execPath, "install"], { cwd: kopie, env: schoon }).exitCode).toBe(0);
+    expect(existsSync(marker)).toBe(true);
+    rmSync(marker);
+    git(wt, "add", "-A");
+    codex(["--map", wt], { LAB_LEAD_BUN: process.execPath });
+    expect(idBestanden().length).toBe(1); // spawn kwam voorbij de install
+    expect(existsSync(marker)).toBe(false);
+  });
+
+  test("M3: de profielregel zet <worktree>/.codex op read; een bestaande .codex (ook niet-getrackt, ook een symlink) weigert spawn", () => {
+    writeFileSync(join(dir, "pane.txt"), "Ask Codex\n• Ran ls\n");
+    const r = codex(["--map", wt, "--droog"]);
+    const fs = /-c 'permissions\.lab-werker\.filesystem=\{([^']*)\}'/.exec(r.uit)?.[1] ?? "";
+    expect(fs.split(",").map((x) => x.replace(/"/g, ""))).toContain(`${realpathSync(wt)}/.codex=read`);
+    symlinkSync(dir, join(wt, ".codex"));
+    const s2 = codex(["--map", wt, "--droog"]);
+    expect(s2.code).toBe(1);
+    expect(s2.fout).toMatch(/\.codex bestaat/);
+    expect(idBestanden()).toEqual([]);
+  });
+
+  test("Z1: de werker krijgt een eigen tmp-map als enige tmp-root; TMPDIR wijst ernaar; /tmp en de TMPDIR van de lead zijn niet schrijfbaar", () => {
+    writeFileSync(join(dir, "pane.txt"), "Ask Codex\n• Ran ls\n");
+    const lt = join(dir, "lead-tmp");
+    mkdirSync(lt);
+    const r = codex(["--map", wt, "--droog"], { TMPDIR: lt });
+    const fs = /-c 'permissions\.lab-werker\.filesystem=\{([^']*)\}'/.exec(r.uit)?.[1] ?? "";
+    const regels = fs.split(",").map((x) => x.replace(/"/g, ""));
+    const tmp = realpathSync("/tmp");
+    expect(regels).toContain(`${tmp}/lab-werker-cx1=write`);
+    expect(regels).not.toContain(`${tmp}=write`);
+    expect(regels.some((x) => x.startsWith(`${realpathSync(lt)}=`))).toBe(false);
+    expect(r.uit).toContain(`TMPDIR=${tmp}/lab-werker-cx1 `);
+    expect(codex(["--map", wt, "--t3", "--droog"]).uit).not.toContain("TMPDIR=");
   });
 
   // Echte afdwinging (zoals hierboven, nep-Responses-server): met netwerk uit geven een unix-socket (stand-in), een tmux-socket
@@ -1324,12 +1444,18 @@ exit 1
     const unix = Bun.listen({ unix: sock, socket: { data() {} } });
     const tcp = Bun.listen({ hostname: "127.0.0.1", port: 0, socket: { data() {} } });
     Bun.spawnSync(["tmux", "-S", tsock, "-f", "/dev/null", "new-session", "-d", "-s", "nw"], { env: { PATH: process.env.PATH ?? "", HOME: thuis } });
+    // werktmp: de eigen tmp-map van de werker bestaat (spawn maakt hem in een echte run); /tmp zelf en de map van de test niet schrijfbaar
+    const werktmp = "/tmp/lab-werker-nwproef";
+    mkdirSync(werktmp, { recursive: true });
     const shell = [
-      `nc -U -w1 ${sock} </dev/null && echo SOCK-OK`,
-      `tmux -S ${tsock} list-sessions >/dev/null && echo TMUX-OK`,
-      `nc -z -w1 127.0.0.1 ${tcp.port} && echo TCP-OK`,
+      `nc -U -w1 ${sock} </dev/null; echo SOCK-RC=$?`,
+      `tmux -S ${tsock} list-sessions >/dev/null; echo TMUX-RC=$?`,
+      `nc -z -w1 127.0.0.1 ${tcp.port}; echo TCP-RC=$?`,
+      `mkdir -p ${wt}/.codex; echo CODEXDIR-RC=$?`,
+      `touch ${kort}/x; echo TMPROOT-RC=$?`,
+      `touch ${werktmp}/x; echo WERKTMP-RC=$?`,
     ].join("; ");
-    const r = codex(["--map", wt, "--droog", ...extra], { TMPDIR: join(dir, "sbtmp-net"), HOME: thuis });
+    const r = codex(["--map", wt, "--droog", ...extra], { TMPDIR: join(dir, "sbtmp-net"), HOME: thuis }, "nwproef");
     const cArgs = [...r.uit.matchAll(/-c '((?:default_permissions|permissions\.)[^']*)'/g)].map((m) => m[1]);
     let verzoeken = 0;
     let uitvoer = "";
@@ -1367,22 +1493,33 @@ exit 1
       server.stop(true);
       unix.stop(true);
       tcp.stop(true);
+      rmSync(werktmp, { recursive: true, force: true });
+      rmSync(join(wt, ".codex"), { recursive: true, force: true });
       Bun.spawnSync(["tmux", "-S", tsock, "kill-server"], { env: { PATH: process.env.PATH ?? "" } });
       rmSync(kort, { recursive: true, force: true });
     }
     return uitvoer;
   };
 
-  test("netwerk uit (echte codex): unix-socket, tmux-socket en uitgaand TCP geven EPERM; met --netwerk slagen ze", async () => {
+  test("netwerk uit (echte codex): unix-socket, tmux-socket en uitgaand TCP geven EPERM; met --netwerk slagen ze; .codex en /tmp blijven dicht", async () => {
+    // Alleen lokaal gemeten (macOS-seatbelt met de echte codex): in CI bewijst dit niets, daar slaat hij over.
     if (process.platform !== "darwin" || !Bun.which("codex") || !Bun.which("tmux") || !Bun.which("nc")) {
       console.log("netwerk-afdwinging niet getoetst: geen macOS, codex, tmux of nc");
       return;
     }
+    const rc = (u: string, k: string) => /^(\d+)$/.exec(new RegExp(`${k}=(\\d+)`).exec(u)?.[1] ?? "")?.[1];
     const uit = await netwerkProef([]);
-    for (const x of ["SOCK-OK", "TMUX-OK", "TCP-OK"]) expect(uit).not.toContain(x);
+    for (const k of ["SOCK-RC", "TMUX-RC", "TCP-RC"]) expect([k, rc(uit, k)]).not.toEqual([k, "0"]);
+    for (const k of ["SOCK-RC", "TMUX-RC", "TCP-RC"]) expect([k, rc(uit, k) !== undefined]).toEqual([k, true]); // de probe draaide echt
     expect(uit).toMatch(/[Oo]peration not permitted/);
     const aan = await netwerkProef(["--netwerk"]);
-    for (const x of ["SOCK-OK", "TMUX-OK", "TCP-OK"]) expect(aan).toContain(x);
+    for (const k of ["SOCK-RC", "TMUX-RC", "TCP-RC"]) expect([k, rc(aan, k)]).toEqual([k, "0"]);
+    // onafhankelijk van het netwerk: .codex aanmaken en /tmp-root schrijven faalt, de eigen tmp-map werkt
+    for (const u of [uit, aan]) {
+      expect(rc(u, "CODEXDIR-RC")).not.toBe("0");
+      expect(rc(u, "TMPROOT-RC")).not.toBe("0");
+      expect(rc(u, "WERKTMP-RC")).toBe("0");
+    }
   }, 240_000);
 
   test("hosted web search: tmux zet hem uit met -c (ook zonder MCP, ook als de config hem aanzet); T3 weigert als de config hem aanzet", () => {
@@ -1417,14 +1554,16 @@ exit 1
       schrijfConfig({ bovenaan });
       expect(codex(["--map", wt, "--t3", "--droog"]).code).toBe(0);
     }
-    // een project-config in de worktree die hem aanzet, telt ook (gemeten: -c wint daarvan in tmux, maar niet in T3)
+    // een <worktree>/.codex (project-config) wordt geweigerd, ook als hij hem uitzet: zijn mcp_servers draaien buiten de sandbox
     mkdirSync(join(wt, ".codex"));
-    writeFileSync(join(wt, ".codex", "config.toml"), 'web_search = "live"\n');
-    const proj = codex(["--map", wt, "--t3", "--droog"]);
-    expect(proj.code).toBe(1);
-    expect(proj.fout).toMatch(/\.codex\/config\.toml zet hem aan/);
-    expect(codex(["--map", wt, "--droog"]).uit).toContain(UIT); // tmux: -c wint
     writeFileSync(join(wt, ".codex", "config.toml"), 'web_search = "disabled"\n');
+    for (const extra of [[], ["--t3"], ["--droog"], ["--t3", "--droog"]]) {
+      const proj = codex(["--map", wt, ...extra]);
+      expect(proj.code).toBe(1);
+      expect(proj.fout).toMatch(/\.codex bestaat/);
+    }
+    expect(idBestanden()).toEqual([]);
+    rmSync(join(wt, ".codex"), { recursive: true });
     expect(codex(["--map", wt, "--t3", "--droog"]).code).toBe(0);
   });
 
