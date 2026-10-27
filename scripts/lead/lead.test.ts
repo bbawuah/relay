@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { appendFileSync, chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import { appendFileSync, chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { deflateSync } from "node:zlib";
 import { dirname, join } from "node:path";
@@ -1442,6 +1442,14 @@ exit 1
     symlinkSync(join(dir, "vreemd"), join(wt, "koppeling"));
     weiger(/koppeling in .* wijkt af/);
     rmSync(join(wt, "koppeling"));
+    // een node_modules die een symlink is (root of in een workspace): bun install zou erdoorheen schrijven; find slaat hem over
+    mkdirSync(join(dir, "buiten"));
+    symlinkSync(join(dir, "buiten"), join(wt, "node_modules"));
+    weiger(/node_modules in .* is een symlink/);
+    rmSync(join(wt, "node_modules"));
+    symlinkSync(join(dir, "buiten"), join(wt, "packages/a/node_modules"));
+    weiger(/packages\/a\/node_modules in .* is een symlink/);
+    rmSync(join(wt, "packages/a/node_modules"));
     // een bestand in node_modules telt niet
     rmSync(join(wt, "bun.lock"));
     writeFileSync(join(wt, "bun.lock"), "{}\n");
@@ -1546,19 +1554,20 @@ exit 1
 
   // Echte afdwinging (zoals hierboven, nep-Responses-server): met netwerk uit geven een unix-socket (stand-in), een tmux-socket
   // (wegwerp-tmux via -S) en een uitgaande TCP-verbinding EPERM; met --netwerk slagen ze (positieve controle, de omweg uit de README).
-  const netwerkProef = async (extra: string[], eigenShell?: (thuis: string) => string, metHooks = false): Promise<string> => {
+  const netwerkProef = async (extra: string[], eigenShell?: (thuis: string) => string, metHooks = false, naSpawn?: () => void): Promise<string> => {
     const codexBin = Bun.which("codex");
     writeFileSync(join(dir, "pane.txt"), "Ask Codex\n• Ran ls\n");
     const thuis = join(dir, "thuis-net");
     mkdirSync(thuis, { recursive: true });
-    const kort = mkdtempSync(join("/tmp", "nw-"));
+    // Een kort pad in de tmp-map van de test (een unix-socket-pad is op macOS hooguit 104 tekens), tevens de tmp-wortel van de werker.
+    const kort = realpathSync(mkdtempSync(join(tmpdir(), "nw-")));
     const sock = join(kort, "s.sock");
     const tsock = join(kort, "t.sock");
     const unix = Bun.listen({ unix: sock, socket: { data() {} } });
     const tcp = Bun.listen({ hostname: "127.0.0.1", port: 0, socket: { data() {} } });
     Bun.spawnSync(["tmux", "-S", tsock, "-f", "/dev/null", "new-session", "-d", "-s", "nw"], { env: { PATH: process.env.PATH ?? "", HOME: thuis } });
     // werktmp: de eigen tmp-map van de werker bestaat (spawn maakt hem in een echte run); /tmp zelf en de map van de test niet schrijfbaar
-    const werktmp = "/tmp/lab-werker-nwproef";
+    const werktmp = join(kort, "lab-werker-nwproef");
     mkdirSync(werktmp, { recursive: true });
     const shell = eigenShell?.(thuis) ?? [
       `nc -U -w1 ${sock} </dev/null; echo SOCK-RC=$?`,
@@ -1602,18 +1611,10 @@ exit 1
         const inst = Bun.spawnSync([process.execPath, join(import.meta.dir, "hooks", "codex-installeer.ts"), "--codex-home", ch, "--doel", join(ch, "hooks", "lab-lead-hooks")], { env: { PATH: process.env.PATH ?? "", HOME: thuis, CODEX_HOME: ch } });
         expect(inst.stderr.toString() + inst.stdout.toString()).toMatch(/trusted|vertrouwd|geïnstalleerd|ok/i);
         expect(inst.exitCode).toBe(0);
-        // Tijdelijke omweg: de geïnstalleerde codex-wrap.ts importeert ../peers/afgeleide-naam en ../hooks/register, die de installer niet
-        // meekopieert (kapot op main, peers-a repareert dat in fix-codex-wrap). Zonder deze bestanden falen alle hooks, los van het profiel.
-        const hk = join(ch, "hooks");
-        if (!existsSync(join(hk, "peers", "afgeleide-naam.ts"))) {
-          mkdirSync(join(hk, "peers"), { recursive: true });
-          mkdirSync(join(hk, "hooks"), { recursive: true });
-          copyFileSync(join(import.meta.dir, "peers", "afgeleide-naam.ts"), join(hk, "peers", "afgeleide-naam.ts"));
-          copyFileSync(join(import.meta.dir, "hooks", "register.ts"), join(hk, "hooks", "register.ts"));
-        }
       }
-      const r = codex(["--map", wt, "--droog", ...extra], { TMPDIR: join(dir, "sbtmp-net"), HOME: thuis, LAB_WERKER_TMPWORTEL: "/tmp", ...(metHooks ? { CODEX_HOME: ch } : {}) }, "nwproef");
+      const r = codex(["--map", wt, "--droog", ...extra], { TMPDIR: join(dir, "sbtmp-net"), HOME: thuis, LAB_WERKER_TMPWORTEL: kort, ...(metHooks ? { CODEX_HOME: ch } : {}) }, "nwproef");
       expect(r.code, r.fout).toBe(0);
+      naSpawn?.();
       cArgs = [...r.uit.matchAll(/-c '((?:default_permissions|permissions\.)[^']*)'/g)].map((m) => m[1]!);
       const p = Bun.spawn([codexBin!, "exec", "--skip-git-repo-check", ...cArgs.flatMap((c) => ["-c", c]), "doe"], { cwd: wt, env: { PATH: process.env.PATH ?? "", HOME: thuis, CODEX_HOME: ch, ...(metHooks ? { LAB_LEAD_STAAT: staat } : {}) }, stdin: "ignore", stdout: "pipe", stderr: "pipe" });
       const timer = setTimeout(() => p.kill(), 90_000); // echte-klok: een echte codex-run, geen testklok
@@ -1673,6 +1674,8 @@ exit 1
     writeFileSync(join(thuis, "gewoon.txt"), "gewoon\n");
     // CODEX_HOME van de test (niet ~/.codex): wat de shell van de werker niet mag lezen, en wat wel
     const chGeheim = ["sessions/s1.jsonl", "archived_sessions/a1.jsonl", "history.jsonl", "log/codex.log", "state_5.sqlite", "state_5.sqlite-wal", "config.toml", "config.toml.voor-peerbus", "auth.json"].map((f) => join(codexHome, f));
+    // sqlite-bestanden en een onbekend bestand die pas na de start van spawn ontstaan: de hele map is dicht, dus ook die
+    const chLaat = ["state_9.sqlite", "state_9.sqlite-wal", "state_9.sqlite-shm", "logs_3.sqlite", "nieuw/ding.txt"].map((f) => join(codexHome, f));
     const chLeesbaar = ["skills/s.md", "shell_snapshots/snap.sh", "prompts/p.md", "rules/r.md", "AGENTS.md"].map((f) => join(codexHome, f));
     for (const f of [...chGeheim, ...chLeesbaar]) {
       mkdirSync(dirname(f), { recursive: true });
@@ -1693,9 +1696,17 @@ exit 1
         `cat ${h}/gewoon.txt >/dev/null; echo GEWOON-RC=$?`,
         ...geheimen.map((g, i) => `cat "${h}/${g}" >/dev/null; echo GEHEIM${i}-RC=$?`),
         ...chGeheim.map((f, i) => `cat ${f} >/dev/null; echo CHGEHEIM${i}-RC=$?`),
+        ...chLaat.map((f, i) => `cat ${f} >/dev/null; echo CHLAAT${i}-RC=$?`),
         ...chLeesbaar.map((f, i) => `cat ${f} >/dev/null; echo CHLEES${i}-RC=$?`),
         `touch ${cache}/pakket; echo CACHE-RC=$?`,
       ].join("; "),
+      false,
+      () => {
+        for (const f of chLaat) {
+          mkdirSync(dirname(f), { recursive: true });
+          writeFileSync(f, "NEPGEHEIM\n");
+        }
+      },
     );
     const rc = (k: string) => new RegExp(`${k}=(\\d+)`).exec(uit)?.[1];
     // positieve controles: het werkt wel, en gewone bestanden in HOME blijven leesbaar (denylist, geen allowlist)
@@ -1704,6 +1715,7 @@ exit 1
     for (const k of ["REPLACE-RC", "HEAD-RC", "DOTGIT-RC", "REPLACEDIR-RC"]) expect([k, rc(k) !== undefined && rc(k) !== "0"]).toEqual([k, true]);
     for (let i = 0; i < geheimen.length; i++) expect([geheimen[i], rc(`GEHEIM${i}-RC`) !== undefined && rc(`GEHEIM${i}-RC`) !== "0"]).toEqual([geheimen[i], true]);
     for (let i = 0; i < chGeheim.length; i++) expect([chGeheim[i], rc(`CHGEHEIM${i}-RC`) !== undefined && rc(`CHGEHEIM${i}-RC`) !== "0"]).toEqual([chGeheim[i], true]);
+    for (let i = 0; i < chLaat.length; i++) expect([chLaat[i], rc(`CHLAAT${i}-RC`) !== undefined && rc(`CHLAAT${i}-RC`) !== "0"]).toEqual([chLaat[i], true]);
     for (let i = 0; i < chLeesbaar.length; i++) expect([chLeesbaar[i], rc(`CHLEES${i}-RC`)]).toEqual([chLeesbaar[i], "0"]);
     // de bun-cache is zonder --netwerk niet schrijfbaar (een vervangen pakket zou door de volgende install van de lead gelinkt worden)
     expect(rc("CACHE-RC") !== undefined && rc("CACHE-RC") !== "0").toBe(true);

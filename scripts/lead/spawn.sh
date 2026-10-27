@@ -270,23 +270,20 @@ codex_sandbox() {
   SANDBOX_FS="$SANDBOX_FS,\"$m/.codex\"=\"read\""
   # Sleutelmappen onleesbaar (dezelfde lijst als grenzen.sh), want een write_stdin gaat langs die hook.
   SANDBOX_FS="$SANDBOX_FS,\"$h/.config/klaarover\"=\"none\",\"$h/.config/douane\"=\"none\",\"$h/.config/agentwerkbank\"=\"none\""
-  # De CODEX_HOME die spawn gebruikt (kan een andere zijn dan ~/.codex): transcripten, geschiedenis, logs, sqlite-staat, config en sleutel.
-  # Codex en zijn hooks lezen die buiten de sandbox; de shell van de werker hoeft ze niet te lezen. Leesbaar blijven shell_snapshots/,
-  # skills/, prompts/, rules/ en AGENTS.md. De sqlite-bestanden zijn die welke er nu staan (nieuwe komen niet vanzelf op de lijst).
+  # De CODEX_HOME die spawn gebruikt (kan een andere zijn dan ~/.codex) als geheel onleesbaar: transcripten, geschiedenis, logs, sqlite-staat
+  # (ook bestanden die pas na de start ontstaan), config en sleutel. Codex en zijn hooks lezen die buiten de sandbox. Alleen wat de shell
+  # van de werker nodig heeft gaat weer op read (een diepere regel wint van de map, zoals $e/HEAD hierboven): shell_snapshots/, skills/,
+  # prompts/, rules/ en AGENTS.md.
   local d f k
   for d in "$ch" "$h/.codex"; do
-    for k in auth.json sessions archived_sessions history.jsonl log config.toml config.toml.voor-peerbus; do
-      SANDBOX_FS="$SANDBOX_FS,\"$d/$k\"=\"none\""
-    done
-    for f in "$d"/*.sqlite*; do
-      [ -e "$f" ] || continue
-      case $f in *\'*|*\"*|*\\*) continue ;; esac
-      SANDBOX_FS="$SANDBOX_FS,\"$f\"=\"none\""
+    SANDBOX_FS="$SANDBOX_FS,\"$d\"=\"none\""
+    for k in shell_snapshots skills prompts rules AGENTS.md; do
+      SANDBOX_FS="$SANDBOX_FS,\"$d/$k\"=\"read\""
     done
     [ "$ch" != "$h/.codex" ] || break
   done
   # Inloggegevens en tokens: een denylist (alles blijft leesbaar tenzij hier genoemd), geen allowlist. Met --netwerk is een leesbaar
-  # token een directe exfiltratieroute. ~/.codex als geheel staat er niet bij (zie hierboven: alleen wat de shell niet nodig heeft).
+  # token een directe exfiltratieroute. ~/.codex en de CODEX_HOME staan hierboven (als geheel dicht, op een paar leesmappen na).
   local k
   for k in .ssh .config/gh .netrc .git-credentials .aws .azure .kube .docker .npmrc .config/op Library/Keychains \
     .config/glab-cli .gnupg .config/gcloud "Library/Application Support/com.vercel.cli" \
@@ -593,6 +590,10 @@ if [ "$vendor" = codex ]; then
   # (die kunnen registry of cache omleggen). Vóór schrijf_identiteit: een mislukking laat niets achter, en er loopt geen
   # werker in deze map (identiteit_vrij).
   if [ "$t3" = 0 ] && [ "$netwerk" = 0 ] && [ -f "$map/package.json" ]; then
+    # Een node_modules die een symlink is: find slaat hem hieronder over (prune op de naam), maar bun install schrijft erdoorheen naar een
+    # map buiten de worktree. Weiger er elke (ook geneste, buiten echte node_modules-mappen).
+    gekoppeld=$(find "$map" \( -name .git -o \( -name node_modules -type d \) \) -prune -o \( -name node_modules -type l \) -print -quit)
+    [ -z "$gekoppeld" ] || fout "${gekoppeld#"$map"/} in $map is een symlink: bun install buiten de sandbox zou erdoorheen schrijven. Haal hem weg, of start met --netwerk: dan draait de werker zelf bun install in de sandbox"
     # De werker kan package.json, bun.lock, bunfig.toml, .npmrc en .env* in zijn worktree vervangen (bij een herstart of --vervolg komen ze van
     # hem): een afhankelijkheid http://…/x.tgz?data=… is een GET buiten de sandbox, een file:-afhankelijkheid kopieert mappen,
     # bunfig/.npmrc/.env (BUN_CONFIG_REGISTRY) leggen registry en cache om, en een symlink laat find/bun een map volgen die niet in de
