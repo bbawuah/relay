@@ -16,12 +16,17 @@
 // Codex: hook.sh --bron codex <event>; de invoer is bijna gelijk (codex-adapter.ts). Het record krijgt vendor, host,
 // thread_id en codex_home (Codex) of socket (Claude), en herkomst (`extern` na WebFetch/WebSearch/MCP buiten peers).
 //
+// Peerbus: UserPromptSubmit geeft het seintje (aantal ongelezen peer-berichten, nooit de inhoud), Stop blokt één keer met het
+// seintje en Stop/SessionEnd melden de toestand aan de bus (idleGemeld). De bus wordt dynamisch geladen (laadPeers) en
+// ontbreekt hij, dan doen de hooks alleen het werk hierboven.
+//
 // Alleen H6, H7 en H11 mogen blokkeren/wekken; alles faalt open (exit 0, geen uitvoer).
 // Nooit opgeslagen: prompt, tool_input (behalve SendMessage.to en een boolean "vrij"),
 // last_assistant_message, transcripts. Geen netwerk, geen git, geen gh.
 
+import type { Bus } from "../peers/types";
 import { type Bron, PEERS_SEND, herkomstNa, leesBron, peerVelden, sendAfgeleverd } from "./codex-adapter";
-import { type Omgeving, type Rec, dubbeleLeads, eigenLeadNaam, inboxGrootte, inboxMelding, leesOfMaak, leesRecord, lopendeSubagents, isKindProces, meldAdres, nieuwRecord, pakOngelezen, regelsTekst, schrijfRecord, staatMap, tmuxPanes, voorgangerInPane, ververseIdentiteit, wisExternMarkering, wisIdentiteit, zetToestand } from "./register";
+import { type Omgeving, type Rec, type Toestand, dubbeleLeads, eigenLeadNaam, inboxGrootte, inboxMelding, leesOfMaak, leesRecord, lopendeSubagents, isKindProces, meldAdres, nieuwRecord, pakOngelezen, regelsTekst, schrijfRecord, staatMap, tmuxPanes, voorgangerInPane, ververseIdentiteit, wisExternMarkering, wisIdentiteit, zetToestand } from "./register";
 
 export type Uitslag = { code: number; stdout: string; stderr: string };
 export type Opties = {
@@ -34,7 +39,15 @@ export type Opties = {
   panes?: () => Set<string> | null;
   /** Wie de hook aanroept; bepaalt vendor, thread_id en socket in het record. Standaard claude. */
   bron?: Bron;
+  /** De peerbus (seintje en idleGemeld); standaard de bus op de staatmap. Tests geven een nep-bus mee. */
+  bus?: Bus | null;
+  /** Tijdsgrens voor idleGemeld (de hook heeft een eigen timeout); injecteerbaar zodat tests niet op de echte klok wachten. */
+  budget?: (ms: number) => Promise<void>;
 };
+
+/** idleGemeld wacht op de wekker van de bus (≤ 5 s); de hook heeft 5 s (Stop) of 1 s (SessionEnd). Een afgebroken wek (ook een "nu"-wek: die legt `open` met de pid van de hook vast) neemt een volgende `list()` over zodra die pid dood is. */
+export const IDLE_BUDGET_STOP_MS = 1000;
+export const IDLE_BUDGET_EINDE_MS = 500;
 
 export const MAX_BLOKKADES = 3;
 const ROLLEN = ["lead", "agent", "sublead", "vervolg"];
@@ -89,6 +102,51 @@ export function gateReden(lead: string, bron: Bron = "claude"): string {
   );
 }
 
+type Peers = { bus: Bus; seintje: (aantal: number) => string };
+
+/**
+ * De peerbus voor deze staatmap, met het seintje uit het contract (types.ts). In de geïnstalleerde map ligt hij op ./peers
+ * (installeer-hooks.ts kopieert hem erheen), in de repo op ../peers. ./peers gaat voor: een vreemde `peers`-map naast de
+ * installatiemap (../peers) wint dus nooit van de eigen kopie. Dynamisch geladen: ontbreekt hij of faalt het laden,
+ * dan is er geen bus en doen de hooks alleen het oude werk (faalt open).
+ */
+async function laadPeers(env: Omgeving, opties: Opties): Promise<Peers | null> {
+  for (const map of ["./peers", "../peers"]) {
+    try {
+      const t = (await import(`${map}/types`)) as { seintje: (n: number) => string };
+      if (opties.bus !== undefined) return opties.bus ? { bus: opties.bus, seintje: t.seintje } : null;
+      const m = (await import(`${map}/standaard`)) as { standaardBus: (e: Omgeving) => Bus };
+      return { bus: m.standaardBus(env), seintje: t.seintje };
+    } catch {
+      // volgende pad
+    }
+  }
+  return null;
+}
+
+/** Ongelezen peer-berichten van `naam`. Alleen een telling: geen list() (die neemt wekken over, schrijft en wacht op locks). */
+function ongelezen(bus: Bus | null, naam: string): number {
+  if (!bus || !naam) return 0;
+  try {
+    return bus.ongelezen(naam);
+  } catch {
+    return 0;
+  }
+}
+
+/** Lever openstaande idle-abonnementen af. De bus wacht zelf op zijn wekker; een fout hier mag de hook niet breken. */
+async function idleGemeld(bus: Bus | null, naam: string, toestand: Toestand, ms: number, opties: Opties): Promise<void> {
+  if (!bus || !naam) return;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const klaar = bus.idleGemeld(naam, toestand).catch(() => {}); // faalt open
+  const grens = opties.budget ? opties.budget(ms) : new Promise<void>((k) => void (timer = setTimeout(k, ms)));
+  try {
+    await Promise.race([klaar, grens]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
 export async function verwerk(event: string, invoer: Invoer, env: Omgeving, opties: Opties = {}): Promise<Uitslag> {
   const rol = env.LAB_AGENT_ROL || "";
   if (!ROLLEN.includes(rol)) return LEEG;
@@ -107,6 +165,8 @@ export async function verwerk(event: string, invoer: Invoer, env: Omgeving, opti
   const t = nu();
 
   const bron = opties.bron ?? "claude";
+  const peers = event === "UserPromptSubmit" || event === "Stop" || event === "SessionEnd" ? await laadPeers(env, opties) : null;
+  const bus = peers?.bus ?? null;
   const laad = (): Rec => {
     const r = leesOfMaak(staat, sessieId, env, cwd, t);
     const m = r.vendor ? r : { ...r, ...peerVelden(bron, env, sessieId) };
@@ -168,15 +228,19 @@ export async function verwerk(event: string, invoer: Invoer, env: Omgeving, opti
       r.rapport_in_beurt = false;
       r.vrij = false;
       r.einde = null;
+      // Peerbus: alleen het aantal (seintje), nooit de inhoud; die haalt het model zelf op met de tool inbox.
+      // Het model weet nu van dit aantal: Stop blokkeert pas bij een stijging (seintje_n).
+      const n = ongelezen(bus, naamVan(r));
+      r.seintje_n = n;
       schrijfRecord(staat, r);
+      const delen: string[] = [];
       if (isLead) {
         const o = pakOngelezen(staat, lead, t);
-        if (o.regels.length > 0) {
-          const uit = { hookSpecificOutput: { hookEventName: "UserPromptSubmit", additionalContext: `Meldingen van je sessies: ${regelsTekst(o)}` } };
-          return { code: 0, stdout: JSON.stringify(uit), stderr: "" };
-        }
+        if (o.regels.length > 0) delen.push(`Meldingen van je sessies: ${regelsTekst(o)}`);
       }
-      return LEEG;
+      if (n > 0 && peers) delen.push(peers.seintje(n));
+      if (delen.length === 0) return LEEG;
+      return { code: 0, stdout: JSON.stringify({ hookSpecificOutput: { hookEventName: "UserPromptSubmit", additionalContext: delen.join("\n") } }), stderr: "" };
     }
     case "PreToolUse": {
       // H3
@@ -240,7 +304,7 @@ export async function verwerk(event: string, invoer: Invoer, env: Omgeving, opti
     }
     case "Stop":
       ververseIdentiteit(staat, cwd, env.LAB_SPAWN_ID || "", t);
-      return stop(staat, laad(), invoer, isLead, lead, naamVan, t, bron);
+      return stop(staat, laad(), invoer, isLead, lead, naamVan, t, peers, bron, opties);
     case "StopFailure": {
       // H8
       const r = laad();
@@ -275,6 +339,7 @@ export async function verwerk(event: string, invoer: Invoer, env: Omgeving, opti
       schrijfRecord(staat, r);
       // De identiteit van deze spawn (codex-wrap) is niet meer nodig; een nieuwe spawn in dezelfde checkout blijft staan.
       wisIdentiteit(staat, cwd, env.LAB_SPAWN_ID || "", t);
+      await idleGemeld(bus, naamVan(r), "weg", IDLE_BUDGET_EINDE_MS, opties);
       return LEEG;
     }
     default:
@@ -288,22 +353,41 @@ function leesSub(staat: string, agentId: string, ouder: string, env: Omgeving, i
   return { ...oud, soort: "subagent", rol: "subagent", ouder, agent_type: tekst(invoer.agent_type) || oud.agent_type, naam: env.LAB_AGENT_NAAM || oud.naam, lead: ouderRec?.lead || oud.lead };
 }
 
-function stop(staat: string, r: Rec, invoer: Invoer, isLead: boolean, lead: string, naamVan: (r: Rec) => string, t: number, bron: Bron): Uitslag {
+async function stop(staat: string, r: Rec, invoer: Invoer, isLead: boolean, lead: string, naamVan: (r: Rec) => string, t: number, peers: Peers | null, bron: Bron, opties: Opties): Promise<Uitslag> {
+  const bus = peers?.bus ?? null;
   const actief = invoer.stop_hook_active === true;
+  // Peerbus: één keer blokkeren met het seintje (nooit de inhoud); de tweede stop (stop_hook_active) gaat door. Alleen een
+  // stijging sinds het laatste seintje blokkeert: een sessie die niet kan lezen (geen peers-MCP, tweelingnaam) krijgt niet
+  // bij elke Stop een extra ronde. (Gemeten op Codex 0.164.0: na een block is stop_hook_active bij de volgende Stop true.)
+  const geteld = ongelezen(bus, naamVan(r));
+  const n = !actief && geteld > (r.seintje_n ?? 0) ? geteld : 0;
+  const seintjeTekst = n > 0 && peers ? ` ${peers.seintje(n)}` : "";
+  const onthoud = () => {
+    r.seintje_n = geteld;
+  };
 
   if (isLead) {
     // H7: alleen regels die nieuw zijn sinds de laatste keer dat de lead ze zag (H2, H7 of H11).
     if (!actief) {
       const o = pakOngelezen(staat, lead, t);
       if (o.regels.length > 0) {
-        const reden = `Nieuwe meldingen van je sessies: ${regelsTekst(o)}. Verwerk ze voordat je stopt.`;
+        const reden = `Nieuwe meldingen van je sessies: ${regelsTekst(o)}. Verwerk ze voordat je stopt.${seintjeTekst}`;
+        onthoud();
+        schrijfRecord(staat, r);
         return { code: 0, stdout: JSON.stringify({ decision: "block", reason: reden }), stderr: "" };
       }
+      if (n > 0) {
+        onthoud();
+        schrijfRecord(staat, r);
+        return { code: 0, stdout: JSON.stringify({ decision: "block", reason: seintjeTekst.trim() }), stderr: "" };
+      }
     }
+    onthoud();
     zetToestand(r, "idle", t);
     r.tools_in_beurt = 0;
     r.rapport_in_beurt = false;
     schrijfRecord(staat, r);
+    await idleGemeld(bus, naamVan(r), "idle", IDLE_BUDGET_STOP_MS, opties);
     return LEEG;
   }
 
@@ -316,13 +400,21 @@ function stop(staat: string, r: Rec, invoer: Invoer, isLead: boolean, lead: stri
   if (wilBlokkeren) {
     if (r.blokkades < MAX_BLOKKADES) {
       r.blokkades += 1;
+      if (n > 0) onthoud();
       schrijfRecord(staat, r);
-      return { code: 0, stdout: JSON.stringify({ decision: "block", reason: gateReden(lead, bron) }), stderr: "" };
+      return { code: 0, stdout: JSON.stringify({ decision: "block", reason: `${gateReden(lead, bron)}${seintjeTekst}` }), stderr: "" };
     }
     inboxMelding(staat, lead, naam, `${naam} stopte ${MAX_BLOKKADES}× zonder rapport`, t);
     stopte3 = true;
     r.blokkades = 0; // de volgende reeks begint opnieuw; anders komt de melding bij elke Stop terug
   }
+  // Geen gate, wel ongelezen peer-berichten: één keer blokkeren met alleen het seintje.
+  if (!wilBlokkeren && n > 0) {
+    onthoud();
+    schrijfRecord(staat, r);
+    return { code: 0, stdout: JSON.stringify({ decision: "block", reason: seintjeTekst.trim() }), stderr: "" };
+  }
+  onthoud();
   const toestand = r.rapport_in_beurt ? (r.vrij ? "vrij" : "klaar") : "idle";
   // Idle is alleen nieuws bij een overgang: een sessie die idle was en zonder tools weer stopt, meldt niets.
   const herhaaldIdle = toestand === "idle" && r.toestand === "idle" && r.tools_in_beurt === 0;
@@ -333,6 +425,7 @@ function stop(staat: string, r: Rec, invoer: Invoer, isLead: boolean, lead: stri
   // Idle omdat de sessie op eigen lopende subagents wacht is ruis voor de lead; het register toont het wel.
   const zwijg = toestand === "idle" && (wachtOpSubagents || wachtOpRun || stopte3 || herhaaldIdle);
   if (lead && !zwijg) inboxMelding(staat, lead, naam, toestand === "vrij" ? `${naam} klaar en vrij` : toestand === "klaar" ? `${naam} klaar (rapport binnen)` : `${naam} is idle`, t);
+  await idleGemeld(bus, naam, toestand, IDLE_BUDGET_STOP_MS, opties);
   return LEEG;
 }
 

@@ -955,6 +955,44 @@ describe("laatste ronde: hoofdletters, wachter, idle parallel, tmp", () => {
     expect(wekken.map((w) => w.aantal)).toEqual([1, 2]);
   });
 
+  test("een \"nu\"-wek die midden in de wek wordt afgebroken (de hook na zijn budget) gaat niet verloren: list neemt hem over", async () => {
+    open("a", "b");
+    // het wekken zelf hangt: het proces wordt afgebroken voordat de wek klaar is
+    const hangendeWekker: Wekker = { wek: (doel, aantal) => (wekken.push({ doel, aantal }), new Promise<never>(() => {})) };
+    void maakBus({ staat, nu: () => klok, wekker: hangendeWekker, wacht: async (ms) => void (klok += ms) }).send("a", "b", "een");
+    const wekPad = join(staat, "peers/wek/b.json");
+    const st = JSON.parse(readFileSync(wekPad, "utf8"));
+    expect(st.open).toEqual({ tot: klok, pid: process.pid, nu: true }); // de lopende "nu"-wek staat vast
+    expect(wekken.map((w) => w.aantal)).toEqual([1]);
+    // zolang het proces leeft en het venster loopt, neemt list niets over
+    klok += 100;
+    const bus = maak();
+    bus.list();
+    await bus.klaar();
+    expect(wekken.map((w) => w.aantal)).toEqual([1]);
+    // het proces sterft (pid dood): de volgende list wekt alsnog
+    const dood = Bun.spawnSync(["true"]).pid;
+    writeFileSync(wekPad, JSON.stringify({ ...st, open: { ...st.open, pid: dood } }));
+    bus.list();
+    await bus.klaar();
+    expect(wekken.map((w) => w.aantal)).toEqual([1, 1]);
+  });
+
+  test("een \"nu\"-wek die slaagt laat geen open achter; een zender tijdens een lopende \"nu\"-wek krijgt zijn eigen wek aan het eind van het venster", async () => {
+    open("a", "b");
+    const bus = maak();
+    await bus.send("a", "b", "een");
+    const wekPad = join(staat, "peers/wek/b.json");
+    expect(JSON.parse(readFileSync(wekPad, "utf8")).open).toBeUndefined(); // klaar: niets meer open
+    expect(wekken.map((w) => w.aantal)).toEqual([1]);
+    // een lopende "nu"-wek van een ander proces blokkeert een volgende zender niet
+    const st = JSON.parse(readFileSync(wekPad, "utf8"));
+    writeFileSync(wekPad, JSON.stringify({ ...st, open: { tot: klok, pid: process.pid, nu: true } }));
+    klok += 100;
+    await bus.send("a", "b", "twee");
+    expect(wekken.map((w) => w.aantal)).toEqual([1, 2]);
+  });
+
   test("list neemt niets over als de wachter nog leeft", async () => {
     open("a", "b");
     const bus = maak();
@@ -1050,6 +1088,18 @@ describe("laatste kleine punten", () => {
     expect(bus.vastgehouden("alice")).toHaveLength(1);
   });
 
+  test("tweeling: ongelezen telt 0 bij Alice naast alice, en weer 1 als de tweeling weg is", async () => {
+    open("x", "alice");
+    const bus = maak();
+    await bus.send("x", "alice", "voor alice");
+    expect(bus.ongelezen("alice")).toBe(1);
+    sessie("Alice", "", { id: "t-2", inbound: { standaard: "accept" } });
+    expect(bus.ongelezen("alice")).toBe(0);
+    expect(bus.ongelezen("Alice")).toBe(0);
+    rmSync(join(staat, "register/t-2.json"));
+    expect(bus.ongelezen("alice")).toBe(1);
+  });
+
   test("klaar() heeft een harde bovengrens: een wekker die hangt houdt de aanroeper niet vast", async () => {
     sessie("w", "", { toestand: "klaar" });
     open("a");
@@ -1122,4 +1172,27 @@ describe("parallel", () => {
     expect(rest).toHaveLength(18);
     expect(rest.some((e) => e.id === eerste.id)).toBe(false);
   }, 30_000);
+});
+
+describe("ongelezen(naam): een telling zonder bijwerkingen", () => {
+  test("telt de ongelezen berichten; wekt niemand, neemt geen verlaten wek over en schrijft niets", async () => {
+    open("a", "b");
+    const bus = maak();
+    expect(bus.ongelezen("b")).toBe(0);
+    await bus.send("a", "b", "een");
+    klok += 100;
+    // een verlaten wek (proces dood): list() zou hem overnemen en wekken; ongelezen niet
+    const wekPad = join(staat, "peers/wek/b.json");
+    writeFileSync(wekPad, JSON.stringify({ ts: T0, open: { tot: T0 + WEK_VENSTER_MS, pid: 2 ** 22 + 7 } }));
+    klok += 3 * WEK_VENSTER_MS;
+    const voor = { wekken: wekken.length, wek: readFileSync(wekPad, "utf8"), bestanden: slotBestanden().length };
+    expect(bus.ongelezen("b")).toBe(1);
+    expect(bus.ongelezen("b")).toBe(1);
+    expect(wekken).toHaveLength(voor.wekken);
+    expect(readFileSync(wekPad, "utf8")).toBe(voor.wek);
+    expect(slotBestanden()).toHaveLength(voor.bestanden); // geen lock blijft liggen
+    bus.ack("b", bus.inbox("b").map((e) => e.id));
+    expect(bus.ongelezen("b")).toBe(0);
+    expect(bus.ongelezen("../x")).toBe(0); // ongeldige naam: 0, geen pad buiten de staatmap
+  });
 });

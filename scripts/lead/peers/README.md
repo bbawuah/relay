@@ -74,6 +74,8 @@ Het tempo telt elke poging van een afzender met een geldige naam, ook een die om
 
 **Idle-abonnement**: `notifyWhenIdle(abonnee, doel)` geeft `{ok, al_idle}` of een fout (`onbekend`, `geen_afzender`); is het doel al idle, klaar, vrij of weg, dan komt de melding meteen (`al_idle: true`). Anders: `idleGemeld(doel, toestand)` (vanuit de Stop- en SessionEnd-hook) levert bij `idle`, `klaar`, `vrij` of `weg` één envelop met soort `idle` aan elke abonnee en wist het abonnement. Zo'n melding gaat buiten het inbound-beleid om (de abonnee vroeg erom) maar wel binnen `MAX_WACHTRIJ`.
 
+**Telling**: `ongelezen(naam)` geeft alleen het aantal ongelezen berichten (alleen lezen, hoogstens een korte leeslock). De hooks gebruiken dat voor het seintje; `list()` doet dat ook, maar neemt daarbij verlaten wekken over, schrijft en kan op locks wachten, en hoort niet in een hook met een timeout. (Contractwijziging van `Bus` in #679.)
+
 ## Opslag
 
 Onder `<staat>/peers/` (mappen 0700, bestanden 0600):
@@ -164,13 +166,19 @@ claude mcp add peers --scope local -- bun /pad/naar/repo/scripts/lead/peers/serv
 #   {"mcpServers":{"peers":{"command":"bun","args":["/pad/naar/repo/scripts/lead/peers/server.ts"]}}}
 # Claude geeft zijn omgeving door; LAB_AGENT_NAAM en LAB_LEAD_STAAT moeten in de sessie gezet zijn.
 
-# Codex (per run, niets in ~/.codex)
+# Codex (per run, niets in ~/.codex): spawn.sh --vendor codex doet dit zelf
 codex \
-  -c 'mcp_servers.peers.command="bun"' \
+  -c 'mcp_servers.peers.command="/pad/naar/bun"' \
   -c 'mcp_servers.peers.args=["/pad/naar/repo/scripts/lead/peers/server.ts"]' \
-  -c 'mcp_servers.peers.env_vars=["LAB_AGENT_NAAM","LAB_LEAD_NAAM","LAB_LEAD_STAAT"]' \
+  -c 'mcp_servers.peers.env={LAB_AGENT_NAAM="naam",LAB_LEAD_NAAM="lead",LAB_LEAD_STAAT="/pad/naar/staat"}' \
   -c 'mcp_servers.peers.default_tools_approval_mode="approve"'
 ```
+
+Codex geeft een MCP-server niet de omgeving van de sessie door (ook `env_vars` werkt daar niet voor een spawn-omgeving): de identiteit gaat als statische `env`-tabel per spawn mee. Meting (27 okt 2026, Codex 0.164.0):
+
+- Een `-c`-override zet de TUI in embedded mode ("Running without the shared background server"): de MCP-server en de hooks erven dan de omgeving van de pane.
+- Zonder `-c` (en in T3) draait een gedeelde app-server-daemon per `CODEX_HOME`; MCP-servers en hooks erven de omgeving van die daemon, en de cwd van de MCP-server is de cwd van de thread.
+- **Identiteitsfallback.** Ontbreekt `LAB_AGENT_NAAM`, dan zoekt `server.ts` vanaf zijn cwd omhoog naar `<staat>/identiteit/<sha256(echt pad van de checkout)[:24]>.json` (door `spawn.sh --vendor codex` geschreven, alleen voor een eigen worktree, alleen rol `agent`/`sublead`/`vervolg`) en gebruikt naam, lead en spawn-id daaruit. Een gevonden identiteitsbestand wint van een geërfde `LAB_AGENT_NAAM`/`LAB_LEAD_NAAM` (zoals bij `codex-wrap` voor de hooks: een daemon die uit een lead-shell startte erft de naam van die lead); zonder bestand geldt de omgeving. De identiteit wordt eenmalig bij de start van de server bepaald: wijzigt het bestand later, dan blijft deze server bij de oude. **Iedereen met dezelfde cwd krijgt die identiteit**: het is routering, geen authenticatie.
 
 ## End-to-end
 
