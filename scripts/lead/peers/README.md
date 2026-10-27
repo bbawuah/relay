@@ -171,3 +171,25 @@ codex \
   -c 'mcp_servers.peers.env_vars=["LAB_AGENT_NAAM","LAB_LEAD_NAAM","LAB_LEAD_STAAT"]' \
   -c 'mcp_servers.peers.default_tools_approval_mode="approve"'
 ```
+
+## End-to-end
+
+`e2e/demo.ts` bouwt een wegwerpomgeving en loopt de hele stroom door; het draait ook als bun-test (`e2e/demo.test.ts`, dus in `bun test scripts/lead/peers`).
+
+```sh
+bun scripts/lead/peers/e2e/demo.ts     # eindigt met "e2e: groen" (exit 0) of "e2e: rood" (exit 1)
+```
+
+De omgeving: een eigen tmux (`tmux -L peerbus-e2e-<pid> -f /dev/null`, daarna `kill-server`) waarin `e2e/standin-socket.ts` de inbox-socket van de lead nabootst (`$TMPDIR/cc-socks/4242.sock`, `TMPDIR` is de tijdelijke map); een tijdelijke `LAB_LEAD_STAAT` en `HOME`; een nep-`codex` en nep-`t3` voorop in `PATH` die hun argv vastleggen. Er wordt geen echte sessie, geen echt register en geen socket van een andere sessie aangeraakt.
+
+De stroom die getoetst wordt:
+
+```
+lead ──send──▶ bus ──wekker──▶ werker            (seintje(n), nooit inhoud)
+                                 │
+                werker ──MCP inbox──▶ bus        (toon(): kop + inhoud, daarna ack)
+                werker ──MCP send───▶ bus ──wekker (socket)──▶ lead
+lead ──notify_when_idle──▶ bus ◀──idleGemeld── werker klaar ──▶ idle-bericht + seintje
+```
+
+Controles: `codex queue` krijgt exact `--thread=<id> --message <seintje>` met de `CODEX_HOME` van het doel; `t3` doet `thread show` en daarna `thread send` met alleen het seintje; de socket krijgt één regel met alleen het seintje; de inbox toont de kop van `toon()` en is na de ack leeg; het rapport van de werker komt aan en wekt de lead; `notify_when_idle` levert één idle-bericht en een seintje; `list` toont de werker als `klaar`. De CLI en de MCP-server draaien als echte processen. Niet gedekt (spoor F2): een echte Codex- of Claude-sessie, de hooks (`UserPromptSubmit`, `Stop`) en `status.sh`.
