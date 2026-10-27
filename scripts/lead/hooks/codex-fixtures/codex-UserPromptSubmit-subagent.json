@@ -1,0 +1,12 @@
+{
+  "session_id": "01a17ebd-76bc-7472-a451-ac8ef9f536d4",
+  "turn_id": "01a17ebd-7771-73a2-8224-501420f44a0d",
+  "agent_id": "01a17ebd-7761-7030-8d03-37af123c32c1",
+  "agent_type": "default",
+  "transcript_path": "/tmp/codex-meting/ch/sessions/2026/10/27/rollout-2026-10-27T20-01-48-01a17ebd-7761-7030-8d03-37af123c32c1.jsonl",
+  "cwd": "/tmp/codex-meting/wd",
+  "hook_event_name": "UserPromptSubmit",
+  "model": "gpt-6-luna",
+  "permission_mode": "bypassPermissions",
+  "prompt": "zeg hallo"
+}

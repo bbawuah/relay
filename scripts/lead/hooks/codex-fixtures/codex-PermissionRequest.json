@@ -1,0 +1,11 @@
+{
+  "session_id": "01a17eb9-fb4c-7fc1-8e17-ebde91b21e22",
+  "turn_id": "01a17eb9-fb64-7733-83a0-f9d3bd838a8c",
+  "transcript_path": "/tmp/codex-meting/ch/sessions/2026/10/27/rollout-2026-10-27T19-58-00-01a17eb9-fb4c-7fc1-8e17-ebde91b21e22.jsonl",
+  "cwd": "/tmp/codex-meting/wd",
+  "hook_event_name": "PermissionRequest",
+  "model": "gpt-6-luna",
+  "permission_mode": "bypassPermissions",
+  "tool_name": "mcp__peers__ping",
+  "tool_input": {}
+}

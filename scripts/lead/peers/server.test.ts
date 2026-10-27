@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { type Rec, nieuwRecord, schrijfIdentiteit, schrijfRecord } from "../hooks/register";
+import { type Rec, identiteitPad, nieuwRecord, schrijfIdentiteit, schrijfRecord } from "../hooks/register";
 import { maakBus } from "./bus";
 import { metIdentiteit, verwerk } from "./server";
 import { toon } from "./types";
@@ -22,7 +22,7 @@ function sessie(naam: string, lead = ""): void {
 /** Start een echt proces, stuurt de regels en wacht tot stdin dicht is; geeft de antwoorden als objecten. */
 async function draaiProces(naam: string | undefined, regels: unknown[], cwd?: string): Promise<any[]> {
   const env: Record<string, string> = {};
-  for (const [k, v] of Object.entries(process.env)) if (v !== undefined && !k.startsWith("GIT_") && k !== "LAB_AGENT_NAAM") env[k] = v;
+  for (const [k, v] of Object.entries(process.env)) if (v !== undefined && !k.startsWith("GIT_") && k !== "LAB_AGENT_NAAM" && k !== "LAB_AGENT_ROL") env[k] = v;
   env.LAB_LEAD_STAAT = staat;
   if (naam) env.LAB_AGENT_NAAM = naam;
   const p = Bun.spawn(["bun", SERVER], { env, stdin: "pipe", stdout: "pipe", stderr: "pipe", ...(cwd ? { cwd } : {}) });
@@ -234,5 +234,65 @@ describe("identiteit zonder LAB_AGENT_NAAM (Codex-thread in T3)", () => {
     expect(tekstVan(goed)).not.toContain("LAB_AGENT_NAAM ontbreekt");
     const [, fout] = await draaiProces(undefined, [{ jsonrpc: "2.0", id: 0, method: "initialize", params: {} }, roep(1, "list")], dir);
     expect(tekstVan(fout)).toContain("LAB_AGENT_NAAM ontbreekt");
+  });
+});
+
+describe("afgeleide naam voor een Codex-sessie zonder identiteit (CONTRACT.md, Wijziging 27 okt)", () => {
+  const tid = "01a17ebd-76bc-7472-a451-ac8ef9f536d4";
+  const naam = "codex-ac8ef9f536d4";
+  const metaRoep = (id: number, name: string, meta: unknown, args: unknown = {}) => ({ jsonrpc: "2.0", id, method: "tools/call", params: { name, arguments: args, ...(meta === undefined ? {} : { _meta: meta }) } });
+  const bus1 = () => maakBus({ staat, nu: () => T0, machine: "testmachine" });
+  // de eigen sessie staat onder het thread-id in het register (zoals een toekomstige eigen rol dat doet)
+  beforeEach(() => schrijfRecord(staat, { ...nieuwRecord(tid, { LAB_AGENT_NAAM: naam }, "/w/eigen", T0), inbound: { standaard: "accept" } } as Rec));
+
+  test("zonder naam, rol en identiteitsbestand komt de afzender uit _meta.threadId", async () => {
+    const r = await verwerk(metaRoep(1, "send", { threadId: tid }, { naar: "a", tekst: "hoi" }) as any, bus1(), { LAB_LEAD_STAAT: staat }, true);
+    expect(tekstVan(r.antwoord)).toMatch(/^afgeleverd /);
+    expect(bus1().inbox("a")[0]?.van).toBe(naam);
+  });
+  test("_meta.sessionId volstaat als threadId ontbreekt", async () => {
+    await verwerk(metaRoep(1, "send", { sessionId: tid }, { naar: "a", tekst: "hoi" }) as any, bus1(), { LAB_LEAD_STAAT: staat }, true);
+    expect(bus1().inbox("a")[0]?.van).toBe(naam);
+  });
+  test("arguments.threadId (of een _meta in arguments) wordt genegeerd: alleen _meta van de aanroep telt", async () => {
+    const r = await verwerk(metaRoep(1, "send", undefined, { naar: "a", tekst: "hoi", threadId: tid, _meta: { threadId: tid } }) as any, bus1(), { LAB_LEAD_STAAT: staat }, true);
+    expect(r.antwoord?.result as any).toMatchObject({ isError: true });
+    expect(bus1().inbox("a")).toHaveLength(0);
+  });
+  test("zonder (geldig) id weigert de server", async () => {
+    for (const meta of [undefined, {}, { threadId: "geen-id" }, { threadId: 5 }]) {
+      const r = await verwerk(metaRoep(1, "list", meta) as any, bus1(), { LAB_LEAD_STAAT: staat }, true);
+      expect(tekstVan(r.antwoord)).toContain("LAB_AGENT_NAAM ontbreekt");
+    }
+  });
+  test("een werker die zijn identiteit kwijt is (afleiden = false) krijgt nooit een afgeleide naam", async () => {
+    const r = await verwerk(metaRoep(1, "send", { threadId: tid }, { naar: "a", tekst: "hoi" }) as any, bus1(), { LAB_LEAD_STAAT: staat }, false);
+    expect(tekstVan(r.antwoord)).toContain("LAB_AGENT_NAAM ontbreekt");
+    expect(bus1().inbox("a")).toHaveLength(0);
+  });
+  test("echt proces: afleiden alleen zonder LAB_AGENT_NAAM, rol en identiteitsbestand voor de map", async () => {
+    const init = { jsonrpc: "2.0", id: 0, method: "initialize", params: {} };
+    const [, goed] = await draaiProces(undefined, [init, metaRoep(1, "list", { threadId: tid })], dir);
+    expect(tekstVan(goed)).not.toContain("LAB_AGENT_NAAM ontbreekt");
+    const wt = join(dir, "werker-wt");
+    mkdirSync(wt);
+    mkdirSync(join(staat, "identiteit"), { recursive: true, mode: 0o700 });
+    await Bun.write(identiteitPad(staat, realpathSync(wt)), "{kapot");
+    const [, fout] = await draaiProces(undefined, [init, metaRoep(1, "list", { threadId: tid })], wt);
+    expect(tekstVan(fout)).toContain("LAB_AGENT_NAAM ontbreekt");
+  });
+  test("een levende andere sessie met die naam (een werker die zo heet): geen afgeleide naam, de inbox van die werker blijft dicht", async () => {
+    sessie(naam); // zet een registerrecord met die naam (id `id-<naam>`, niet de thread-id)
+    await verwerk(metaRoep(1, "send", { threadId: tid }, { naar: "a", tekst: "hoi" }) as any, bus1(), { LAB_LEAD_STAAT: staat }, true);
+    const r = await verwerk(metaRoep(2, "inbox", { threadId: tid }) as any, bus1(), { LAB_LEAD_STAAT: staat }, true);
+    expect(tekstVan(r.antwoord)).toContain("LAB_AGENT_NAAM ontbreekt");
+    expect(bus1().inbox("a")).toHaveLength(0);
+  });
+  test("threadId en sessionId allebei aanwezig: gelijk is goed, verschillend weigert", async () => {
+    const ander = "01a17ebd-76bc-7472-a451-000000000001";
+    const goed = await verwerk(metaRoep(1, "list", { threadId: tid, sessionId: tid }) as any, bus1(), { LAB_LEAD_STAAT: staat }, true);
+    expect(tekstVan(goed.antwoord)).not.toContain("LAB_AGENT_NAAM ontbreekt");
+    const fout = await verwerk(metaRoep(2, "list", { threadId: tid, sessionId: ander }) as any, bus1(), { LAB_LEAD_STAAT: staat }, true);
+    expect(tekstVan(fout.antwoord)).toContain("LAB_AGENT_NAAM ontbreekt");
   });
 });

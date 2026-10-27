@@ -50,6 +50,13 @@ export function ruimSocketOp(pad: string, eigen: boolean): boolean {
   }
 }
 
+/** Het toolresultaat (output) van `callId` uit het laatste verzoek dat het bevat; voor de foutmelding als peers.send niets afleverde. */
+export function uitvoerVan(verzoeken: { pad: string; body: string }[], callId: string): string {
+  const b = verzoeken.filter((v) => v.pad.endsWith("/responses") && v.body.includes(callId)).at(-1)?.body ?? "";
+  const i = b.lastIndexOf(`"call_id":"${callId}"`);
+  return i < 0 ? "(geen toolresultaat in de verzoeken)" : b.slice(i, i + 500);
+}
+
 /** Zet `s` veilig tussen enkele aanhalingstekens voor een shell-opdrachtregel. */
 export const shellQuote = (s: string): string => `'${s.replace(/'/g, `'\\''`)}'`;
 
@@ -212,7 +219,7 @@ export async function draaiCodexDemo(): Promise<Demo> {
     controle("het nep-model kreeg drie verzoeken (Bash, peers.send, eindbericht)", await totdat(() => nep!.verzoeken.filter((v) => v.pad.endsWith("/responses")).length >= 3, 60), `${nep.verzoeken.filter((v) => v.pad.endsWith("/responses")).length} verzoeken`);
     // Elk verzoek bevat de hele geschiedenis; het laatste verzoek met het toolresultaat is het volledigste.
     const sendUitslag = nep.verzoeken.filter((v) => v.pad.endsWith("/responses")).map((v) => /afgeleverd[^"\\]*/.exec(v.body)?.[0]).filter(Boolean).at(-1) ?? "";
-    controle("peers.send van de werker meldt: afgeleverd, wek: ja (socket)", /^afgeleverd .*wek: ja \(socket\)/.test(sendUitslag), sendUitslag);
+    controle("peers.send van de werker meldt: afgeleverd, wek: ja (socket)", /^afgeleverd .*wek: ja \(socket\)/.test(sendUitslag), sendUitslag || uitvoerVan(nep.verzoeken, "call_2"));
     // Pas tellen als het eindbericht er is (derde verzoek) en de eerste regel binnen is; dan een korte rust voor een eventueel tweede seintje.
     const eerste = await totdat(() => regels(sockLog).length >= 1, 20);
     // echte-klok: rust na het eindbericht, een tweede seintje zou van een ander proces komen
