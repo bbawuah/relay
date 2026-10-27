@@ -45,7 +45,7 @@ export type Opties = {
   budget?: (ms: number) => Promise<void>;
 };
 
-/** idleGemeld wacht op de wekker van de bus (≤ 5 s); de hook heeft 5 s (Stop) of 1 s (SessionEnd). Een afgebroken wek neemt een volgende `list()` over. */
+/** idleGemeld wacht op de wekker van de bus (≤ 5 s); de hook heeft 5 s (Stop) of 1 s (SessionEnd). Een afgebroken wek (ook een "nu"-wek: die legt `open` met de pid van de hook vast) neemt een volgende `list()` over zodra die pid dood is. */
 export const IDLE_BUDGET_STOP_MS = 1000;
 export const IDLE_BUDGET_EINDE_MS = 500;
 

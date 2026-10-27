@@ -91,7 +91,7 @@ function pidLeeft(pid: number): boolean {
   }
 }
 
-type WekAanvraag = { actie: "nu"; aantal: number } | { actie: "wacht"; ms: number; tot: number };
+type WekAanvraag = { actie: "nu"; aantal: number; tot: number } | { actie: "wacht"; ms: number; tot: number };
 
 /** De bus plus `klaar()`: wacht op wekken die op de achtergrond lopen (notifyWhenIdle, overname in list). Een CLI roept dit aan vóór hij stopt. */
 export type BusMetKlaar = Bus & { klaar(): Promise<void> };
@@ -338,7 +338,7 @@ export function maakBus(opties: BusOpties): BusMetKlaar {
     };
   }
 
-  type WekStaat = { ts?: number; open?: { tot: number; pid?: number } };
+  type WekStaat = { ts?: number; open?: { tot: number; pid?: number; nu?: boolean } };
 
   /** Een wachter is levend zolang zijn proces leeft en het venster niet ruim voorbij is. */
   const wachterLeeft = (open: NonNullable<WekStaat["open"]>, n: number) => n < open.tot + WEK_VENSTER_MS && open.tot <= n + WEK_VENSTER_MS && (open.pid === undefined || pidLeeft(open.pid));
@@ -356,10 +356,13 @@ export function maakBus(opties: BusOpties): BusMetKlaar {
     const n = nu();
     // `ts` in de toekomst (klok teruggezet, corrupt bestand) telt als verouderd: wek nu in plaats van tot een uur te wachten.
     if (n - ts >= WEK_VENSTER_MS || ts > n) {
-      schrijfAtomair(p, JSON.stringify({ ts: n }));
-      return { actie: "nu", aantal: ongelezen(naam).length };
+      // `open.nu`: deze wek loopt nu. Sterft het proces ervoor (de hook wordt na zijn budget afgebroken), dan ziet `list()` een open
+      // wek met een dode pid en neemt hem over. Een andere zender in dit venster wacht er niet op (zie hieronder): deze wek telt
+      // alleen wat nu al ongelezen is.
+      schrijfAtomair(p, JSON.stringify({ ts: n, open: { tot: n, pid: process.pid, nu: true } }));
+      return { actie: "nu", aantal: ongelezen(naam).length, tot: n };
     }
-    if (st.open && wachterLeeft(st.open, n)) return null;
+    if (st.open && !st.open.nu && wachterLeeft(st.open, n)) return null;
     const tot = ts + WEK_VENSTER_MS;
     schrijfAtomair(p, JSON.stringify({ ts, open: { tot, pid: process.pid } }));
     return { actie: "wacht", ms: Math.min(Math.max(tot - n, 0), WEK_VENSTER_MS), tot };
@@ -385,8 +388,10 @@ export function maakBus(opties: BusOpties): BusMetKlaar {
   async function voerWek(ontv: Sessie, a: WekAanvraag | null): Promise<WekKort | null> {
     if (!a) return null;
     let aantal = 0;
-    if (a.actie === "nu") aantal = a.aantal;
-    else {
+    if (a.actie === "nu") {
+      aantal = a.aantal;
+      if (aantal <= 0) nuKlaar(ontv.naam, a.tot);
+    } else {
       await wacht(a.ms);
       aantal = metSlot("post", ontv.naam, () => {
         const p = pad("wek", ontv.naam, ".json");
@@ -397,7 +402,18 @@ export function maakBus(opties: BusOpties): BusMetKlaar {
       });
     }
     if (aantal <= 0) return null;
-    return kort(await wek(wekDoel(ontv), aantal));
+    const uitslag = kort(await wek(wekDoel(ontv), aantal));
+    if (a.actie === "nu") nuKlaar(ontv.naam, a.tot);
+    return uitslag;
+  }
+
+  /** Een "nu"-wek is uitgevoerd (of er was niets te wekken): haal zijn `open` weg, zodat `list()` hem niet als verlaten overneemt. */
+  function nuKlaar(naam: string, tot: number): void {
+    metSlot("post", naam, () => {
+      const p = pad("wek", naam, ".json");
+      const st = leesJson<WekStaat>(p, {});
+      if (st.open?.nu && st.open.tot === tot && st.open.pid === process.pid) schrijfAtomair(p, JSON.stringify({ ts: st.ts }));
+    });
   }
 
   function leg(naam: string, e: Envelop): void {
@@ -573,7 +589,7 @@ export function maakBus(opties: BusOpties): BusMetKlaar {
     },
 
     ongelezen(naam) {
-      if (!geldigeNaam(naam)) return 0;
+      if (!geldigeNaam(naam) || heeftTweeling(naam, levende())) return 0;
       return metSlot("post", naam, () => ongelezen(naam).length);
     },
 

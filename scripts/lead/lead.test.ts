@@ -1199,7 +1199,11 @@ exit 1
       return;
     }
     writeFileSync(join(dir, "pane.txt"), "Ask Codex\n• Ran ls\n");
-    const r = codex(["--map", wt, "--droog"], { TMPDIR: join(dir, "sbtmp") });
+    // Een eigen HOME in de tijdelijke map (nooit het echte HOME aanraken): de sandbox mag er niets in schrijven, ook niet in een bestaand dotfile.
+    const thuis = join(dir, "thuis");
+    mkdirSync(thuis);
+    writeFileSync(join(thuis, ".zshrc"), "# kopie\n");
+    const r = codex(["--map", wt, "--droog"], { TMPDIR: join(dir, "sbtmp"), HOME: thuis });
     const cArgs = [...r.uit.matchAll(/-c '((?:default_permissions|permissions\.)[^']*)'/g)].map((m) => m[1]);
     expect(cArgs.length).toBe(3);
     const gem = realpathSync(join(repo, ".git"));
@@ -1214,6 +1218,11 @@ exit 1
       `echo x > ${eigen}/gitdir && echo GITDIR-OK`,
       `echo x > ${eigen}/config.worktree && echo CFGWT-OK`,
       `echo x > ${join(dir, "buiten.txt")} && echo BUITEN-OK`,
+      `echo x >> ${thuis}/.zshrc && echo ZSHRC-OK`,
+      `touch ${thuis}/nieuw && echo THUISNIEUW-OK`,
+      `echo x > ${gem}/packed-refs && echo PACKED-OK`,
+      `touch ${gem}/info/x && echo INFO-OK`,
+      `echo x > ${gem}/HEAD && echo HEAD-OK`,
     ].join("; ");
     let verzoeken = 0;
     let uitvoer = "";
@@ -1243,7 +1252,7 @@ exit 1
       const ch = join(dir, "codex-sandbox-home");
       mkdirSync(ch, { recursive: true });
       writeFileSync(join(ch, "config.toml"), `model = "nep"\nmodel_provider = "nep"\n[model_providers.nep]\nname = "nep"\nbase_url = "http://127.0.0.1:${server.port}/v1"\nwire_api = "responses"\nrequires_openai_auth = false\n`);
-      const p = Bun.spawn([codexBin, "exec", "--skip-git-repo-check", ...cArgs.flatMap((c) => ["-c", c]), "doe"], { cwd: wt, env: { PATH: process.env.PATH ?? "", HOME: process.env.HOME ?? "", CODEX_HOME: ch }, stdin: "ignore", stdout: "pipe", stderr: "pipe" });
+      const p = Bun.spawn([codexBin, "exec", "--skip-git-repo-check", ...cArgs.flatMap((c) => ["-c", c]), "doe"], { cwd: wt, env: { PATH: process.env.PATH ?? "", HOME: thuis, CODEX_HOME: ch }, stdin: "ignore", stdout: "pipe", stderr: "pipe" });
       const timer = setTimeout(() => p.kill(), 90_000); // echte-klok: een echte codex-run, geen testklok
       await p.exited;
       clearTimeout(timer);
@@ -1251,8 +1260,10 @@ exit 1
       server.stop(true);
     }
     expect(uitvoer).toContain("COMMIT-OK");
-    for (const x of ["HOOK-OK", "CONFIG-OK", "COMMONDIR-OK", "GITDIR-OK", "CFGWT-OK", "BUITEN-OK"]) expect(uitvoer).not.toContain(x);
-    expect((uitvoer.match(/[Oo]peration not permitted/g) ?? []).length).toBeGreaterThanOrEqual(6);
+    for (const x of ["HOOK-OK", "CONFIG-OK", "COMMONDIR-OK", "GITDIR-OK", "CFGWT-OK", "BUITEN-OK", "ZSHRC-OK", "THUISNIEUW-OK", "PACKED-OK", "INFO-OK", "HEAD-OK"]) expect(uitvoer).not.toContain(x);
+    expect((uitvoer.match(/[Oo]peration not permitted/g) ?? []).length).toBeGreaterThanOrEqual(11);
+    expect(readFileSync(join(thuis, ".zshrc"), "utf8")).toBe("# kopie\n");
+    expect(existsSync(join(thuis, "nieuw"))).toBe(false);
     expect(git(wt, "log", "--format=%s", "-1").stdout.toString().trim()).toBe("sandbox-test");
     expect(existsSync(join(gem, "hooks", "x"))).toBe(false);
   }, 120_000);
