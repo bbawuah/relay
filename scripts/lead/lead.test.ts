@@ -1904,7 +1904,7 @@ exit 1
     schrijfConfig();
     expect(codex(["--map", wt]).code).toBe(0);
     expect(idBestanden().length).toBe(1);
-  });
+  }, 60_000); // spawn.sh draait hier meerdere keren; 5 s is te krap onder belasting (poort 27 okt)
 
   test("Z6: een mislukte start laat geen identiteitsbestand achter (tmux zonder pane-id, T3 zonder thread)", () => {
     schrijfBin("kapot-spawn.sh", "#!/usr/bin/env bash\nexit 1\n");
