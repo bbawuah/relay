@@ -17,6 +17,7 @@ import { closeSync, existsSync, lstatSync, mkdirSync, mkdtempSync, openSync, rea
 import { homedir, tmpdir } from "node:os";
 import path from "node:path";
 import { schoneEnv } from "../test-integriteit";
+import { gitArgs } from "./git-hard";
 import { valideerSleutels, type Sleutels } from "./commando/runner";
 
 export const DOEL = "/usr/local/lib/lab-lead";
@@ -38,7 +39,7 @@ const sha = (inhoud: Buffer | string) => createHash("sha256").update(inhoud).dig
 const q = (s: string) => `'${s.replaceAll("'", `'\\''`)}'`;
 
 function git(repo: string, args: string[]): Buffer {
-  const p = spawnSync("git", ["-C", repo, ...args], { env: schoneEnv(), maxBuffer: 16 * 1024 * 1024 });
+  const p = spawnSync("git", ["-C", repo, ...gitArgs(args)], { env: schoneEnv(), maxBuffer: 16 * 1024 * 1024 });
   // p.error: bv. ENOBUFS als de uitvoer groter is dan maxBuffer (dan is status null en stderr leeg)
   if (p.status !== 0) throw new Error(`git ${args.join(" ")}: ${p.stderr.toString().trim() || p.error?.message || `status ${p.status}`}`);
   return p.stdout;
@@ -70,7 +71,7 @@ export function bouwRunner(repo: string): { pad: string; sha: string; bun: strin
 
 /** Staat de runner in origin/main? Pas dan hoort hij bij de installatie. */
 export function heeftRunner(repo: string): boolean {
-  return spawnSync("git", ["-C", repo, "cat-file", "-e", `${ORIGIN_MAIN}:${RUNNER_BRON}`], { env: schoneEnv() }).status === 0;
+  return spawnSync("git", ["-C", repo, ...gitArgs(["cat-file", "-e", `${ORIGIN_MAIN}:${RUNNER_BRON}`])], { env: schoneEnv() }).status === 0;
 }
 
 /** De LaunchAgent zoals hij uit het sjabloon in origin/main komt, voor deze HOME. */
