@@ -21,7 +21,6 @@
 // last_assistant_message, transcripts. Geen netwerk, geen git, geen gh.
 
 import type { Bus } from "../peers/types";
-import { seintje } from "../peers/types";
 import { type Bron, PEERS_SEND, herkomstNa, leesBron, peerVelden } from "./codex-adapter";
 import { type Omgeving, type Rec, type Toestand, dubbeleLeads, eigenLeadNaam, inboxGrootte, inboxMelding, leesOfMaak, leesRecord, lopendeSubagents, isKindProces, meldAdres, nieuwRecord, pakOngelezen, regelsTekst, schrijfRecord, staatMap, tmuxPanes, voorgangerInPane, wisExternMarkering, wisIdentiteit, zetToestand } from "./register";
 
@@ -92,16 +91,20 @@ export function gateReden(lead: string): string {
   );
 }
 
+type Peers = { bus: Bus; seintje: (aantal: number) => string };
+
 /**
- * De peerbus voor deze staatmap. In de repo ligt hij op ../peers, in de geïnstalleerde map op ./peers (installeer-hooks.ts kopieert
- * hem erheen). Ontbreekt hij of faalt het laden, dan is er geen bus en doen de hooks alleen het oude werk (faalt open).
+ * De peerbus voor deze staatmap, met het seintje uit het contract (types.ts). In de repo ligt hij op ../peers, in de
+ * geïnstalleerde map op ./peers (installeer-hooks.ts kopieert hem erheen). Dynamisch geladen: ontbreekt hij of faalt het laden,
+ * dan is er geen bus en doen de hooks alleen het oude werk (faalt open).
  */
-async function laadBus(env: Omgeving, opties: Opties): Promise<Bus | null> {
-  if (opties.bus !== undefined) return opties.bus;
-  for (const pad of ["../peers/standaard", "./peers/standaard"]) {
+async function laadPeers(env: Omgeving, opties: Opties): Promise<Peers | null> {
+  for (const map of ["../peers", "./peers"]) {
     try {
-      const m = (await import(pad as string)) as { standaardBus?: (e: Omgeving) => Bus };
-      if (m.standaardBus) return m.standaardBus(env);
+      const t = (await import(`${map}/types`)) as { seintje: (n: number) => string };
+      if (opties.bus !== undefined) return opties.bus ? { bus: opties.bus, seintje: t.seintje } : null;
+      const m = (await import(`${map}/standaard`)) as { standaardBus: (e: Omgeving) => Bus };
+      return { bus: m.standaardBus(env), seintje: t.seintje };
     } catch {
       // volgende pad
     }
@@ -147,7 +150,8 @@ export async function verwerk(event: string, invoer: Invoer, env: Omgeving, opti
   const t = nu();
 
   const bron = opties.bron ?? "claude";
-  const bus = event === "UserPromptSubmit" || event === "Stop" || event === "SessionEnd" ? await laadBus(env, opties) : null;
+  const peers = event === "UserPromptSubmit" || event === "Stop" || event === "SessionEnd" ? await laadPeers(env, opties) : null;
+  const bus = peers?.bus ?? null;
   const laad = (): Rec => {
     const r = leesOfMaak(staat, sessieId, env, cwd, t);
     const m = r.vendor ? r : { ...r, ...peerVelden(bron, env, sessieId) };
@@ -212,7 +216,7 @@ export async function verwerk(event: string, invoer: Invoer, env: Omgeving, opti
       }
       // Peerbus: alleen het aantal (seintje), nooit de inhoud; die haalt het model zelf op met de tool inbox.
       const n = ongelezen(bus, naamVan(r));
-      if (n > 0) delen.push(seintje(n));
+      if (n > 0 && peers) delen.push(peers.seintje(n));
       if (delen.length === 0) return LEEG;
       return { code: 0, stdout: JSON.stringify({ hookSpecificOutput: { hookEventName: "UserPromptSubmit", additionalContext: delen.join("\n") } }), stderr: "" };
     }
@@ -276,7 +280,7 @@ export async function verwerk(event: string, invoer: Invoer, env: Omgeving, opti
       return LEEG;
     }
     case "Stop":
-      return stop(staat, laad(), invoer, isLead, lead, naamVan, t, bus);
+      return stop(staat, laad(), invoer, isLead, lead, naamVan, t, peers);
     case "StopFailure": {
       // H8
       const r = laad();
@@ -325,11 +329,12 @@ function leesSub(staat: string, agentId: string, ouder: string, env: Omgeving, i
   return { ...oud, soort: "subagent", rol: "subagent", ouder, agent_type: tekst(invoer.agent_type) || oud.agent_type, naam: env.LAB_AGENT_NAAM || oud.naam, lead: ouderRec?.lead || oud.lead };
 }
 
-async function stop(staat: string, r: Rec, invoer: Invoer, isLead: boolean, lead: string, naamVan: (r: Rec) => string, t: number, bus: Bus | null): Promise<Uitslag> {
+async function stop(staat: string, r: Rec, invoer: Invoer, isLead: boolean, lead: string, naamVan: (r: Rec) => string, t: number, peers: Peers | null): Promise<Uitslag> {
+  const bus = peers?.bus ?? null;
   const actief = invoer.stop_hook_active === true;
   // Peerbus: één keer blokkeren met het seintje (nooit de inhoud); de tweede stop (stop_hook_active) gaat door.
   const n = actief ? 0 : ongelezen(bus, naamVan(r));
-  const seintjeTekst = n > 0 ? ` ${seintje(n)}` : "";
+  const seintjeTekst = n > 0 && peers ? ` ${peers.seintje(n)}` : "";
 
   if (isLead) {
     // H7: alleen regels die nieuw zijn sinds de laatste keer dat de lead ze zag (H2, H7 of H11).

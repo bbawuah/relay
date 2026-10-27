@@ -76,10 +76,28 @@ describe("installeer-hooks", () => {
     expect(nu.hooks.PreCompact).toEqual(oud.hooks.PreCompact);
   });
 
-  test("kopieert hook.sh (uitvoerbaar), hook.ts, register.ts en codex-adapter.ts", () => {
+  test("kopieert hook.sh (uitvoerbaar), hook.ts, register.ts, codex-adapter.ts en de peerbus (peers/ en hooks/register.ts)", () => {
     installeer(opties());
-    expect(readdirSync(doel).sort()).toEqual(["codex-adapter.ts", "hook.sh", "hook.ts", "register.ts"]);
+    expect(readdirSync(doel).sort()).toEqual(["codex-adapter.ts", "hook.sh", "hook.ts", "hooks", "peers", "register.ts"]);
+    expect(readdirSync(join(doel, "peers")).sort()).toEqual(["bus.ts", "standaard.ts", "types.ts", "uuid.ts"]);
+    expect(readdirSync(join(doel, "hooks"))).toEqual(["register.ts"]);
     expect(statSync(join(doel, "hook.sh")).mode & 0o111).toBeGreaterThan(0);
+  });
+
+  test("de geïnstalleerde hook laadt de peerbus: een bericht geeft het seintje (niet de inhoud)", async () => {
+    installeer(opties({ bun: process.execPath }));
+    const staat = join(dir, "staat");
+    const env = (naam: string, rol: string, lead: string) => ({ PATH: process.env.PATH ?? "", HOME: dir, LAB_LEAD_BUN: process.execPath, LAB_LEAD_STAAT: staat, LAB_AGENT_NAAM: naam, LAB_AGENT_ROL: rol, LAB_LEAD_NAAM: lead });
+    const hook = (e: Record<string, string>, invoer: object) => Bun.spawnSync(["/bin/sh", join(doel, "hook.sh")], { env: e, stdin: new TextEncoder().encode(JSON.stringify(invoer)), stdout: "pipe", stderr: "pipe" });
+    hook(env("w1", "agent", "lead-x"), { hook_event_name: "SessionStart", session_id: "s-w1", cwd: "/w/w1", source: "startup" });
+    hook(env("lead-x", "lead", ""), { hook_event_name: "SessionStart", session_id: "s-lead", cwd: "/w/lead", source: "startup" });
+    // de bus uit de repo stuurt; de geïnstalleerde hook leest
+    const { maakBus, geenWekker } = await import("./peers/bus");
+    const u = await maakBus({ staat, wekker: geenWekker }).send("lead-x", "w1", "geheime inhoud");
+    expect(u).toMatchObject({ ok: true });
+    const p = hook(env("w1", "agent", "lead-x"), { hook_event_name: "UserPromptSubmit", session_id: "s-w1", cwd: "/w/w1" });
+    expect(p.stdout.toString()).toContain("1 peer-bericht in je brievenbus");
+    expect(p.stdout.toString()).not.toContain("geheime inhoud");
   });
 
   test("twee keer installeren geeft hetzelfde resultaat en schrijft de tweede keer niets", () => {

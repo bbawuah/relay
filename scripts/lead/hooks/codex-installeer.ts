@@ -22,6 +22,7 @@ import { chmodSync, copyFileSync, existsSync, mkdirSync, readFileSync, realpathS
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { type AppServer, type HookInfo, startAppServer } from "./codex-appserver";
+import { peersKopieen } from "./peers-kopie";
 
 export const START = "# >>> lab-peerbus hooks (beheerd door codex-installeer.ts; niet met de hand wijzigen) >>>";
 export const EINDE = "# <<< lab-peerbus hooks <<<";
@@ -111,6 +112,7 @@ export async function installeer(o: Opties, deps: Deps = {}): Promise<Uitslag> {
   const fout = (m: string): Uitslag => ({ code: 1, stdout: uit.join("\n"), stderr: `codex-installeer: ${m}\n` });
   if (!existsSync(o.codexHome)) return fout(`CODEX_HOME bestaat niet: ${o.codexHome} (draai eerst codex, of geef --codex-home)`);
   if (!o.verwijder) for (const b of BESTANDEN) if (!existsSync(join(o.bron, b))) return fout(`bronbestand ontbreekt: ${join(o.bron, b)}`);
+  if (!o.verwijder) for (const [van] of peersKopieen(o.bron, o.doel)) if (!existsSync(van)) return fout(`bronbestand ontbreekt: ${van}`);
 
   const bestondVoor = existsSync(cfg);
   const oud = bestondVoor ? readFileSync(cfg, "utf8") : "";
@@ -122,7 +124,7 @@ export async function installeer(o: Opties, deps: Deps = {}): Promise<Uitslag> {
   uit.push(`${dr}config: ${cfg}${existsSync(cfg) ? "" : " (bestaat nog niet)"}`);
   uit.push(`${dr}blok: ${verandert ? (o.verwijder ? "wordt weggehaald" : blokIn(oud) !== null ? "wordt vervangen" : "wordt toegevoegd") : "ongewijzigd"}`);
   if (!o.verwijder) {
-    uit.push(`${dr}te kopiëren naar ${o.doel}:`, ...BESTANDEN.map((b) => `  ${join(o.bron, b)} -> ${join(o.doel, b)}`));
+    uit.push(`${dr}te kopiëren naar ${o.doel}:`, ...BESTANDEN.map((b) => `  ${join(o.bron, b)} -> ${join(o.doel, b)}`), ...peersKopieen(o.bron, o.doel).map(([van, naar]) => `  ${van} -> ${naar}`));
     uit.push(`${dr}hookcommando: ${commando(o.doel, o.bun)}`);
     uit.push(`${dr}events: ${EVENTS.map((e) => e.event).join(", ")}`);
   }
@@ -137,6 +139,10 @@ export async function installeer(o: Opties, deps: Deps = {}): Promise<Uitslag> {
     for (const b of BESTANDEN) {
       copyFileSync(join(o.bron, b), join(o.doel, b));
       if (b.endsWith(".sh")) chmodSync(join(o.doel, b), 0o755);
+    }
+    for (const [van, naar] of peersKopieen(o.bron, o.doel)) {
+      mkdirSync(dirname(naar), { recursive: true, mode: 0o700 });
+      copyFileSync(van, naar);
     }
   }
   const maakBackup = () => {

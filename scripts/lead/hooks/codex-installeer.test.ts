@@ -127,6 +127,9 @@ describe("installeer", () => {
     expect(statSync(`${cfg}.voor-peerbus`).mode & 0o077).toBe(0);
     for (const b of ["hook.sh", "hook.ts", "register.ts", "codex-adapter.ts", "codex-wrap.sh", "codex-wrap.ts"]) expect(existsSync(join(home, "hooks/lab-lead-hooks", b))).toBe(true);
     expect(statSync(join(home, "hooks/lab-lead-hooks/codex-wrap.sh")).mode & 0o100).toBeTruthy();
+    // de peerbus voor hook.ts (laadPeers): peers/ en een tweede register.ts onder hooks/
+    for (const b of ["bus.ts", "standaard.ts", "types.ts", "uuid.ts"]) expect(existsSync(join(home, "hooks/lab-lead-hooks/peers", b))).toBe(true);
+    expect(existsSync(join(home, "hooks/lab-lead-hooks/hooks/register.ts"))).toBe(true);
     expect(u.stdout).toContain(`klaar: ${EVENTS.length} hooks vertrouwd`);
   });
 

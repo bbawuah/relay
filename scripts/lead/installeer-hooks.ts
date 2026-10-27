@@ -19,6 +19,7 @@
 
 import { chmodSync, copyFileSync, existsSync, mkdirSync, readFileSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
+import { peersKopieen } from "./hooks/peers-kopie";
 import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 
 export const MERK = "lab-lead-hooks/hook.sh";
@@ -172,7 +173,7 @@ export function installeer(o: Opties): Uitslag {
   const regels = [
     `${o.droog ? "droog: " : ""}settings: ${o.settings}${bestaat ? "" : " (bestaat nog niet)"}`,
     `bun: ${o.bun}`,
-    ...(kopieer ? [`te kopiëren naar ${o.doel}:`, ...BESTANDEN.map((b) => `  ${join(o.bron, b)} -> ${join(o.doel, b)}`)] : ["--verwijder: de bestanden in het doel blijven staan"]),
+    ...(kopieer ? [`te kopiëren naar ${o.doel}:`, ...BESTANDEN.map((b) => `  ${join(o.bron, b)} -> ${join(o.doel, b)}`), ...peersKopieen(o.bron, o.doel).map(([van, naar]) => `  ${van} -> ${naar}`)] : ["--verwijder: de bestanden in het doel blijven staan"]),
     ".hooks (diff):",
     ...diff,
   ];
@@ -180,8 +181,13 @@ export function installeer(o: Opties): Uitslag {
 
   if (kopieer) {
     for (const b of BESTANDEN) if (!existsSync(join(o.bron, b))) return fout(`bronbestand ontbreekt: ${join(o.bron, b)}`);
+    for (const [van] of peersKopieen(o.bron, o.doel)) if (!existsSync(van)) return fout(`bronbestand ontbreekt: ${van}`);
     mkdirSync(o.doel, { recursive: true });
     for (const b of BESTANDEN) copyFileSync(join(o.bron, b), join(o.doel, b));
+    for (const [van, naar] of peersKopieen(o.bron, o.doel)) {
+      mkdirSync(dirname(naar), { recursive: true });
+      copyFileSync(van, naar);
+    }
     chmodSync(join(o.doel, "hook.sh"), 0o755);
   }
   if (!gelijk) {
