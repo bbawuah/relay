@@ -77,3 +77,33 @@ node_modules/.bin/tsc -p scripts/tsconfig.json
 ```
 
 Tests gebruiken een tijdelijke staatmap, een nep-wekker en een injecteerbare klok (`nu`); de parallelle tests starten echte `bun`-processen.
+
+## MCP
+
+`server.ts` is een stdio-MCP-server (eigen JSON-RPC, JSON-regels, geen dependency) op `standaardBus(env)`. Server-naam `peers`, dus de tools heten `mcp__peers__send` enz. Afzender = `LAB_AGENT_NAAM`; zonder die variabele geven `send`, `inbox` en `notify_when_idle` een tool-fout (`list` werkt). Staatmap = `LAB_LEAD_STAAT`.
+
+| Tool | Argumenten | Doet |
+|---|---|---|
+| `send` | `naar`, `tekst`, `draad?`, `antwoord_op?` | `bus.send`; een geweigerde send is een tool-fout (`isError`) met reden |
+| `inbox` | — | ongelezen berichten via `toon()`; ackt pas nadat het antwoord naar stdout geschreven is |
+| `list` | — | levende sessies als JSON, met tellers |
+| `notify_when_idle` | `naam` | `bus.notifyWhenIdle`; eenmalig |
+
+`vasthouden` en `vrijgeven` bestaan hier bewust niet (alleen CLI, voor Brian of de lead).
+
+Config-voorbeelden (niets zelf installeren; pas het pad aan):
+
+```sh
+# Claude
+claude mcp add peers --scope local -- bun /pad/naar/repo/scripts/lead/peers/server.ts
+# of per sessie: claude --mcp-config peers.json  met
+#   {"mcpServers":{"peers":{"command":"bun","args":["/pad/naar/repo/scripts/lead/peers/server.ts"]}}}
+# Claude geeft zijn omgeving door; LAB_AGENT_NAAM en LAB_LEAD_STAAT moeten in de sessie gezet zijn.
+
+# Codex (per run, niets in ~/.codex)
+codex \
+  -c 'mcp_servers.peers.command="bun"' \
+  -c 'mcp_servers.peers.args=["/pad/naar/repo/scripts/lead/peers/server.ts"]' \
+  -c 'mcp_servers.peers.env_vars=["LAB_AGENT_NAAM","LAB_LEAD_NAAM","LAB_LEAD_STAAT"]' \
+  -c 'mcp_servers.peers.default_tools_approval_mode="approve"'
+```
