@@ -1,0 +1,9 @@
+{
+  "session_id": "01a17ebc-33fc-7f13-82d2-9884c26d8f1d",
+  "turn_id": "01a17ebc-3415-7730-b1d9-a405fa6dcd44",
+  "transcript_path": "/tmp/codex-meting/ch/sessions/2026/10/27/rollout-2026-10-27T20-00-25-01a17ebc-33fc-7f13-82d2-9884c26d8f1d.jsonl",
+  "cwd": "/tmp/codex-meting/wd",
+  "hook_event_name": "PreCompact",
+  "model": "gpt-6-luna",
+  "trigger": "auto"
+}
