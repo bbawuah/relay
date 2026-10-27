@@ -9,9 +9,8 @@
 // Afzender = env LAB_AGENT_NAAM. Staatmap = env LAB_LEAD_STAAT (zoals de hooks).
 
 import type { Omgeving } from "../hooks/register";
-import type { BusBeheer } from "./bus";
 import { standaardBus } from "./standaard";
-import { kop } from "./types";
+import { type Bus, toon } from "./types";
 
 export type CliUitslag = { code: number; uit: string; fout: string };
 
@@ -26,7 +25,7 @@ function neemWaarde(args: string[], vlag: string): { waarde?: string; rest: stri
   return { waarde, rest: [...args.slice(0, i), ...args.slice(i + 2)] };
 }
 
-export async function draai(args: string[], env: Omgeving, bus: BusBeheer, leesStdin: () => Promise<string> = () => Bun.stdin.text()): Promise<CliUitslag> {
+export async function draai(args: string[], env: Omgeving, bus: Bus, leesStdin: () => Promise<string> = () => Bun.stdin.text()): Promise<CliUitslag> {
   const ok = (uit: string): CliUitslag => ({ code: 0, uit: uit ? `${uit}\n` : "", fout: "" });
   const mis = (fout: string): CliUitslag => ({ code: 1, uit: "", fout: `${fout}\n` });
   const [cmd, ...rest] = args;
@@ -54,7 +53,7 @@ export async function draai(args: string[], env: Omgeving, bus: BusBeheer, leesS
       if (geen) return geen;
       const berichten = bus.inbox(ikzelf);
       if (berichten.length === 0) return ok("Geen berichten.");
-      const uit = berichten.map((e) => `${kop(e.van, e.herkomst)}\n[id ${e.id}, draad ${e.draad}, hop ${e.hop}]\n${e.tekst}`).join("\n\n");
+      const uit = berichten.map(toon).join("\n\n");
       if (!rest.includes("--niet-acken")) bus.ack(ikzelf, berichten.map((e) => e.id));
       return ok(uit);
     }
@@ -62,20 +61,21 @@ export async function draai(args: string[], env: Omgeving, bus: BusBeheer, leesS
       const peers = bus.list();
       if (rest.includes("--json")) return ok(JSON.stringify(peers, null, 2));
       if (peers.length === 0) return ok("Niemand aanwezig.");
-      return ok(peers.map((p) => `${p.naam}\t${p.vendor}/${p.host}\t${p.toestand}\tlead ${p.lead || "-"}\t${p.machine}`).join("\n"));
+      return ok(peers.map((p) => `${p.naam}\t${p.vendor}/${p.host}\t${p.toestand}\tlead ${p.lead || "-"}\t${p.machine}\tongelezen ${p.ongelezen}\tvastgehouden ${p.vastgehouden}`).join("\n"));
     }
     case "notify-when-idle": {
       const geen = eisIk();
       if (geen) return geen;
       if (rest.length !== 1) return mis(GEBRUIK);
-      bus.notifyWhenIdle(ikzelf, rest[0]!);
-      return ok(`Je krijgt één melding zodra ${rest[0]} idle, klaar, vrij of weg is.`);
+      const u = bus.notifyWhenIdle(ikzelf, rest[0]!);
+      if (!u.ok) return mis(`niet geabonneerd (${u.reden}): ${u.melding}`);
+      return ok(u.al_idle ? `${rest[0]} is al idle, klaar, vrij of weg: de melding staat al in je inbox.` : `Je krijgt één melding zodra ${rest[0]} idle, klaar, vrij of weg is.`);
     }
     case "vasthouden": {
       if (rest.length !== 1) return mis(GEBRUIK);
       const vast = bus.vastgehouden(rest[0]!);
       if (vast.length === 0) return ok("Niets vastgehouden.");
-      return ok(vast.map((e) => `${e.id}\t${e.ts}\t${e.van}\t${e.tekst.slice(0, 80).replace(/\s+/g, " ")}`).join("\n"));
+      return ok(vast.map(toon).join("\n\n"));
     }
     case "vrijgeven": {
       const [naam, ...ids] = rest;

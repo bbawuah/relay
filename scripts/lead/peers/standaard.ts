@@ -2,9 +2,10 @@
 // Spoor C vervangt alleen de regel `const wekker` door de echte wekker.
 
 import { type Omgeving, staatMap } from "../hooks/register";
-import { type BusBeheer, geenWekker, maakBus } from "./bus";
+import { geenWekker, maakBus } from "./bus";
+import type { Bus } from "./types";
 
-export function standaardBus(env: Omgeving): BusBeheer {
+export function standaardBus(env: Omgeving): Bus {
   const wekker = geenWekker;
   return maakBus({ staat: staatMap(env), wekker });
 }

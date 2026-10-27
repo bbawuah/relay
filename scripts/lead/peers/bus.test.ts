@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { type Rec, nieuwRecord, schrijfRecord } from "../hooks/register";
+import { type Rec, alleRecords, nieuwRecord, schrijfRecord } from "../hooks/register";
 import { RETENTIE_MS, maakBus } from "./bus";
 import { DUBBEL_VENSTER_MS, MAX_HOP, MAX_PER_MINUUT, MAX_TEKST, MAX_WACHTRIJ, type PeerVelden, WEK_VENSTER_MS, type WekDoel, type WekUitslag, type Wekker } from "./types";
 
@@ -250,9 +250,9 @@ describe("envelop", () => {
   test("velden: id, van, naar, ts als ISO uit de injecteerbare klok, soort en herkomst", async () => {
     open("a", "b");
     const bus = maak();
-    await bus.send("a", "b", "hoi", { soort: "melding" });
+    await bus.send("a", "b", "hoi");
     const e = bus.inbox("b")[0]!;
-    expect(e).toMatchObject({ van: "a", naar: "b", hop: 1, herkomst: "schoon", soort: "melding", tekst: "hoi", ts: new Date(T0).toISOString() });
+    expect(e).toMatchObject({ van: "a", naar: "b", hop: 1, herkomst: "schoon", soort: "bericht", tekst: "hoi", ts: new Date(T0).toISOString() });
     expect(e.id).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-7/);
   });
 
@@ -283,6 +283,120 @@ describe("envelop", () => {
     expect(await bus.send("a", "b", "x")).toMatchObject({ reden: "geweigerd" });
     sessie("b", "", { sinds: 300, laatste_tool_om: 400, inbound: { standaard: "accept" } });
     expect(await bus.send("a", "b", "y")).toMatchObject({ ok: true });
+  });
+});
+
+describe("contract na review: hop, herkomst, dubbel, wachtrij", () => {
+  test("hop = hoogste hop in de draad + 1, ook zonder antwoord_op", async () => {
+    open("a", "b");
+    const bus = maak();
+    for (let i = 1; i <= MAX_HOP; i++) {
+      klok += 10;
+      const [van, naar] = i % 2 ? ["a", "b"] : ["b", "a"];
+      expect(await bus.send(van!, naar!, `m${i}`, { draad: "lus" })).toMatchObject({ ok: true });
+      expect(bus.inbox(naar!).find((e) => e.tekst === `m${i}`)!.hop).toBe(i);
+    }
+    expect(await bus.send("a", "b", "omweg", { draad: "lus" })).toMatchObject({ ok: false, reden: "hop" });
+    expect(await bus.send("a", "b", "andere draad", { draad: "nieuw" })).toMatchObject({ ok: true });
+  });
+
+  test("extern blijft extern in een draad, ook als de volgende afzender schoon is", async () => {
+    sessie("x", "", { herkomst: "extern", inbound: { standaard: "accept" } });
+    open("a", "b");
+    const bus = maak();
+    await bus.send("x", "a", "van buiten", { draad: "d" });
+    klok += 10;
+    await bus.send("a", "b", "doorgestuurd", { draad: "d" });
+    expect(bus.inbox("b")[0]).toMatchObject({ herkomst: "extern", hop: 2 });
+    klok += 10;
+    await bus.send("a", "b", "andere draad", { draad: "e" });
+    expect(bus.inbox("b").find((e) => e.tekst === "andere draad")!.herkomst).toBe("schoon");
+  });
+
+  test("een ack van een extern bericht maakt de ontvanger extern in het register; een schoon bericht niet", async () => {
+    sessie("x", "", { herkomst: "extern", inbound: { standaard: "accept" } });
+    open("a", "b");
+    const bus = maak();
+    await bus.send("b", "a", "schoon");
+    bus.ack("a", bus.inbox("a").map((e) => e.id));
+    expect(bus.list().find((p) => p.naam === "a")).toBeDefined();
+    expect((alleRecords(staat).find((r) => r.naam === "a") as Rec & PeerVelden).herkomst).toBeUndefined();
+    await bus.send("x", "a", "van buiten");
+    klok += 10;
+    bus.ack("a", bus.inbox("a").map((e) => e.id));
+    expect((alleRecords(staat).find((r) => r.naam === "a") as Rec & PeerVelden).herkomst).toBe("extern");
+    klok += 10;
+    await bus.send("a", "b", "nu extern");
+    expect(bus.inbox("b")[0]!.herkomst).toBe("extern");
+  });
+
+  test("dubbel telt ongeacht de uitkomst van de eerste: een geweigerde poging, daarna dezelfde tekst, is dubbel", async () => {
+    open("a");
+    sessie("b", "", { inbound: { standaard: "refuse" } });
+    const bus = maak();
+    expect(await bus.send("a", "b", "nee")).toMatchObject({ reden: "geweigerd" });
+    sessie("b", "", { inbound: { standaard: "accept" }, sinds: klok + 1 });
+    expect(await bus.send("a", "b", "nee")).toMatchObject({ ok: true, status: "dubbel" });
+    expect(bus.inbox("b")).toEqual([]);
+    klok += DUBBEL_VENSTER_MS;
+    expect(await bus.send("a", "b", "nee")).toMatchObject({ status: "afgeleverd" });
+  });
+
+  test("wachtrij = ongelezen + vastgehouden samen", async () => {
+    const afz = Array.from({ length: 5 }, (_, i) => `s${i}`);
+    open(...afz);
+    sessie("b", "", { inbound: { standaard: "accept", per_afzender: { s4: "hold" } } });
+    const bus = maak();
+    for (let i = 0; i < 30; i++) {
+      klok += 10;
+      await bus.send(`s${i % 4}`, "b", `u${i}`);
+    }
+    for (let i = 0; i < 20; i++) {
+      klok += 10;
+      expect(await bus.send("s4", "b", `v${i}`)).toMatchObject({ status: "vastgehouden" });
+    }
+    expect(await bus.send("s0", "b", "te veel")).toMatchObject({ reden: "vol" });
+    klok += 60_000; // tempo weer vrij
+    expect(await bus.send("s4", "b", "ook te veel")).toMatchObject({ reden: "vol" });
+    expect(bus.list().find((p) => p.naam === "b")).toMatchObject({ ongelezen: 30, vastgehouden: 20 });
+    expect(await bus.vrijgeven("b")).toBe(20); // verplaatsen kost geen ruimte
+    expect(bus.inbox("b")).toHaveLength(50);
+  });
+
+  test("list toont de tellers ongelezen en vastgehouden", async () => {
+    open("a");
+    sessie("b", "", { inbound: { standaard: "hold" } });
+    const bus = maak();
+    await bus.send("a", "b", "vast");
+    expect(bus.list().find((p) => p.naam === "b")).toMatchObject({ ongelezen: 0, vastgehouden: 1 });
+  });
+});
+
+describe("notifyWhenIdle: uitslag", () => {
+  test("onbekend doel of onbekende abonnee geeft een fout, geen abonnement", () => {
+    open("a");
+    const bus = maak();
+    expect(bus.notifyWhenIdle("a", "niemand")).toMatchObject({ ok: false, reden: "onbekend" });
+    expect(bus.notifyWhenIdle("niemand", "a")).toMatchObject({ ok: false, reden: "geen_afzender" });
+  });
+
+  test("doel al idle (of klaar, vrij, weg): de melding komt meteen, al_idle true", async () => {
+    open("a");
+    for (const t of ["idle", "klaar", "vrij", "weg"] as const) {
+      sessie(`w-${t}`, "", { toestand: t });
+      const bus = maak();
+      expect(bus.notifyWhenIdle("a", `w-${t}`)).toEqual({ ok: true, al_idle: true });
+      const [e] = bus.inbox("a");
+      expect(e).toMatchObject({ van: `w-${t}`, naar: "a", soort: "idle", tekst: `w-${t} is ${t}`, hop: 1 });
+      bus.ack("a", [e!.id]);
+    }
+  });
+
+  test("doel bezig: al_idle false en een abonnement", () => {
+    open("a", "w");
+    const bus = maak();
+    expect(bus.notifyWhenIdle("a", "w")).toEqual({ ok: true, al_idle: false });
+    expect(bus.inbox("a")).toEqual([]);
   });
 });
 
@@ -406,14 +520,16 @@ describe("wekken", () => {
       throw new Error("socket weg");
     };
     const u = await maak().send("a", "b", "hoi");
-    expect(u).toMatchObject({ ok: true, status: "afgeleverd", gewekt: { gewekt: false, route: "fout", melding: "socket weg" } });
+    expect(u).toMatchObject({ ok: true, status: "afgeleverd", gewekt: { gewekt: false, route: "fout" } });
     expect(maak().inbox("b")).toHaveLength(1);
   });
 
   test("een wekker die niet wekt (route + melding) wordt doorgegeven", async () => {
     open("a", "b");
     wekAntwoord = async () => ({ gewekt: false, route: "acp", melding: "niet in fase 1" });
-    expect(await maak().send("a", "b", "hoi")).toMatchObject({ gewekt: { gewekt: false, route: "acp", melding: "niet in fase 1" } });
+    const u = await maak().send("a", "b", "hoi");
+    expect(u).toMatchObject({ gewekt: { gewekt: false, route: "acp" } });
+    expect(JSON.stringify(u)).not.toContain("niet in fase 1"); // de afzender ziet geen melding van de ontvanger-kant
   });
 
   test("zonder wekker: route geen, niet gewekt", async () => {
@@ -440,7 +556,7 @@ describe("idle-abonnement", () => {
 
   test("klaar, vrij en weg leveren af; bezig en goedkeuring niet (en wissen het abonnement niet)", async () => {
     open("lead");
-    for (const t of ["klaar", "vrij", "weg"]) {
+    for (const t of ["klaar", "vrij", "weg"] as const) {
       const bus = maak();
       sessie("w", "", { inbound: { standaard: "accept" } });
       bus.notifyWhenIdle("lead", "w");

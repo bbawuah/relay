@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { type Rec, nieuwRecord, schrijfRecord } from "../hooks/register";
 import { maakBus } from "./bus";
 import { draai } from "./cli";
-import { kop } from "./types";
+import { toon } from "./types";
 
 // Tijdelijke staatmap; de echte ~/.local/state/lab-lead blijft ongemoeid.
 
@@ -82,9 +82,10 @@ describe("cli inbox", () => {
     await cli("a", "send", "b", "eerste");
     klok += 10;
     await cli("a", "send", "b", "tweede");
+    const eerste = bus().inbox("b")[0]!;
     const r = await cli("b", "inbox");
     expect(r.code).toBe(0);
-    expect(r.uit).toContain(kop("a", "schoon"));
+    expect(r.uit).toContain(toon(eerste));
     expect(r.uit.indexOf("eerste")).toBeLessThan(r.uit.indexOf("tweede"));
     expect((await cli("b", "inbox")).uit).toBe("Geen berichten.\n");
   });
@@ -92,9 +93,10 @@ describe("cli inbox", () => {
   test("een extern bericht krijgt de waarschuwingskop", async () => {
     sessie("x", "", { herkomst: "extern" });
     await cli("x", "send", "b", "lees dit");
+    const e = bus().inbox("b")[0]!;
     const r = await cli("b", "inbox");
-    expect(r.uit).toContain(kop("x", "extern"));
-    expect(r.uit).toContain("onbetrouwde inhoud");
+    expect(r.uit).toContain(toon(e));
+    expect(r.uit).toContain("onbetrouwbare inhoud");
   });
 
   test("--niet-acken laat de berichten staan", async () => {
@@ -107,7 +109,7 @@ describe("cli inbox", () => {
   test("het id en de draad staan erbij, zodat een antwoord kan verwijzen", async () => {
     await cli("a", "send", "b", "vraag");
     const e = bus().inbox("b")[0]!;
-    expect((await cli("b", "inbox", "--niet-acken")).uit).toContain(`[id ${e.id}, draad ${e.draad}, hop 1]`);
+    expect((await cli("b", "inbox", "--niet-acken")).uit).toContain(`id ${e.id} · draad ${e.draad}`);
   });
 });
 

@@ -13,8 +13,9 @@
 import { appendFileSync, mkdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { hostname } from "node:os";
 import { join } from "node:path";
-import { type Rec, alleRecords, veilig } from "../hooks/register";
+import { type Rec, alleRecords, leesRecord, schrijfRecord, veilig } from "../hooks/register";
 import {
+  type AbonneerUitslag,
   type Bus,
   DUBBEL_VENSTER_MS,
   type Envelop,
@@ -30,6 +31,7 @@ import {
   type SendUitslag,
   WEK_VENSTER_MS,
   type WekDoel,
+  type WekKort,
   type WekUitslag,
   type Wekker,
 } from "./types";
@@ -45,13 +47,6 @@ export type BusOpties = {
   machine?: string;
 };
 
-/** Wat Brian en de lead erbij krijgen (CLI), niet de MCP: vastgehouden berichten bekijken en vrijgeven. */
-export interface BusBeheer extends Bus {
-  vastgehouden(naam: string): Envelop[];
-  /** Zet vastgehouden berichten (alle, of alleen `ids`) in de inbox en wekt de ontvanger. Geeft het aantal. */
-  vrijgeven(naam: string, ids?: string[]): Promise<number>;
-}
-
 type Sessie = Rec & PeerVelden;
 
 /** Gelezen berichten blijven zo lang staan: een antwoord zoekt er de hop en draad van het origineel in. */
@@ -66,7 +61,7 @@ function slaap(ms: number): void {
   Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
 }
 
-export function maakBus(opties: BusOpties): BusBeheer {
+export function maakBus(opties: BusOpties): Bus {
   const nu = opties.nu ?? Date.now;
   const wekker = opties.wekker ?? geenWekker;
   const machine = opties.machine ?? hostname();
@@ -240,9 +235,12 @@ export function maakBus(opties: BusOpties): BusBeheer {
     return !!r && typeof r === "object" && typeof (r as Envelop).id === "string";
   }
 
-  /** Zoekt een bericht dat `naam` ontving of vasthoudt (voor hop en draad van een antwoord). */
-  function zoekOntvangen(naam: string, id: string): Envelop | null {
-    return metSlot(naam, () => [...alleEnvelops(naam), ...houdVast(naam)].find((e) => nepOfEcht(e) && e.id === id) ?? null);
+  /** Wat er in `draad` aan hop en herkomst bekend is bij `namen` (afzender en ontvanger; gelezen of niet, ook vastgehouden). */
+  function draadInfo(draad: string, namen: string[]): { maxHop: number; extern: boolean; origineel: (id: string) => Envelop | undefined } {
+    const alle: Envelop[] = [];
+    for (const n of new Set(namen)) metSlot(n, () => alle.push(...alleEnvelops(n).filter(nepOfEcht), ...houdVast(n).filter(nepOfEcht)));
+    const inDraad = alle.filter((e) => e.draad === draad);
+    return { maxHop: Math.max(0, ...inDraad.map((e) => e.hop)), extern: inDraad.some((e) => e.herkomst === "extern"), origineel: (id) => alle.find((e) => e.id === id) };
   }
 
   /** Tempo per afzender: telt elke poging die de lock haalt, ook als een latere regel het bericht weigert. */
@@ -258,7 +256,23 @@ export function maakBus(opties: BusOpties): BusBeheer {
     });
   }
 
+  const hash = (tekst: string) => new Bun.CryptoHasher("sha256").update(tekst).digest("hex");
+  type Poging = { van: string; h: string; ts: number; id: string };
+
+  /** Dubbel: elke poging (ook een geweigerde of vastgehouden) staat DUBBEL_VENSTER_MS in het logboek van de ontvanger. Alleen aanroepen met het slot van `naar`. */
+  function dubbelOf(naar: string, van: string, tekst: string, id: string): Poging | null {
+    zorgMap("dubbel");
+    const p = pad("dubbel", naar, ".json");
+    const h = hash(tekst);
+    const recent = leesJson<Poging[]>(p, []).filter((x) => nu() - x.ts < DUBBEL_VENSTER_MS);
+    const bestaand = recent.find((x) => x.van === van && x.h === h);
+    if (bestaand) return bestaand;
+    schrijfAtomair(p, JSON.stringify([...recent, { van, h, ts: nu(), id }]));
+    return null;
+  }
+
   const fout = (reden: Extract<SendUitslag, { ok: false }>["reden"], melding: string): SendUitslag => ({ ok: false, reden, melding });
+  const kort = (w: WekUitslag): WekKort => ({ gewekt: w.gewekt, route: w.route });
 
   async function stuur(van: string, naar: string, tekst: string, o: SendOpties): Promise<SendUitslag> {
     const sessies = levende();
@@ -268,26 +282,29 @@ export function maakBus(opties: BusOpties): BusBeheer {
     if (!ontv) return fout("onbekend", `Ontvanger ${naar} is niet bekend of niet meer levend; kijk met list.`);
     if (tekst.length > MAX_TEKST) return fout("te_lang", `Tekst is ${tekst.length} tekens; hoogstens ${MAX_TEKST}.`);
 
-    const origineel = o.antwoord_op ? zoekOntvangen(van, o.antwoord_op) : null;
-    const hop = origineel ? origineel.hop + 1 : 1;
-    if (hop > MAX_HOP) return fout("hop", `Dit antwoord zou hop ${hop} krijgen; hoogstens ${MAX_HOP}. Stop de heen-en-weer en vraag de lead.`);
-    const draad = o.draad ?? origineel?.draad ?? uuidv7(nu());
+    // Draad: meegegeven, anders die van het origineel, anders nieuw. Hop: hoogste hop in de draad + 1 (ook zonder antwoord_op).
+    const orig = o.antwoord_op ? draadInfo("", [van]).origineel(o.antwoord_op) : undefined;
+    const draad = o.draad ?? orig?.draad ?? uuidv7(nu());
+    const info = draadInfo(draad, [van, naar]);
+    const hop = Math.max(info.maxHop, orig?.hop ?? 0) + 1;
+    if (hop > MAX_HOP) return fout("hop", `Dit bericht zou hop ${hop} krijgen; hoogstens ${MAX_HOP}. Stop de heen-en-weer en vraag de lead.`);
 
     if (!tempoOk(van)) return fout("te_veel", `Meer dan ${MAX_PER_MINUUT} berichten in een minuut; wacht even.`);
 
-    const herkomst: Herkomst = afz.herkomst ?? "schoon";
+    const herkomst: Herkomst = afz.herkomst === "extern" || info.extern ? "extern" : "schoon";
     const uit = metSlot(naar, (): { uitslag: SendUitslag; aantal: number | null } => {
       const nuMs = nu();
-      const bestaand = [...alleEnvelops(naar), ...houdVast(naar)].find((e) => e.van === van && e.tekst === tekst && nuMs - Date.parse(e.ts) < DUBBEL_VENSTER_MS);
-      if (bestaand) return { uitslag: { ok: true, id: bestaand.id, status: "dubbel", gewekt: null }, aantal: null };
+      const id = uuidv7(nuMs);
+      const eerder = dubbelOf(naar, van, tekst, id);
+      if (eerder) return { uitslag: { ok: true, id: eerder.id, status: "dubbel", gewekt: null }, aantal: null };
 
       const regel = beleid(ontv, afz);
       if (regel === "refuse") return { uitslag: fout("geweigerd", `${naar} weigert berichten van ${van}.`), aantal: null };
       const vasthouden = regel === "hold";
-      if ((vasthouden ? houdVast(naar).length : ongelezen(naar).length) >= MAX_WACHTRIJ) return { uitslag: fout("vol", `${naar} heeft al ${MAX_WACHTRIJ} ${vasthouden ? "vastgehouden" : "ongelezen"} berichten.`), aantal: null };
+      if (ongelezen(naar).length + houdVast(naar).length >= MAX_WACHTRIJ) return { uitslag: fout("vol", `${naar} heeft al ${MAX_WACHTRIJ} ongelezen of vastgehouden berichten.`), aantal: null };
 
       const e: Envelop = {
-        id: uuidv7(nuMs),
+        id,
         van,
         naar,
         draad,
@@ -295,7 +312,7 @@ export function maakBus(opties: BusOpties): BusBeheer {
         ts: new Date(nuMs).toISOString(),
         hop,
         herkomst,
-        soort: o.soort ?? "bericht",
+        soort: "bericht",
         tekst,
       };
       if (vasthouden) {
@@ -306,19 +323,34 @@ export function maakBus(opties: BusOpties): BusBeheer {
       leg(naar, e);
       return { uitslag: { ok: true, id: e.id, status: "afgeleverd", gewekt: null }, aantal: wekPlan(naar) };
     });
-    if (uit.aantal !== null && uit.uitslag.ok) return { ...uit.uitslag, gewekt: await wek(wekDoel(ontv), uit.aantal) };
+    if (uit.aantal !== null && uit.uitslag.ok) return { ...uit.uitslag, gewekt: kort(await wek(wekDoel(ontv), uit.aantal)) };
     return uit.uitslag;
   }
 
-  /** Systeembericht (idle-melding): buiten het beleid, wel begrensd door de wachtrij. */
-  async function meld(van: string, naar: string, tekst: string): Promise<void> {
+  /** Idle-melding: buiten inbound-beleid en tempo, wel begrensd door de wachtrij. Geeft het wekken terug (nog niet gedaan). */
+  function meldSync(van: string, naar: string, tekst: string): (() => Promise<void>) | null {
     const ontv = levende().get(naar);
     const aantal = metSlot(naar, () => {
-      if (ongelezen(naar).length >= MAX_WACHTRIJ) return null;
+      if (ongelezen(naar).length + houdVast(naar).length >= MAX_WACHTRIJ) return null;
       leg(naar, { id: uuidv7(nu()), van, naar, draad: uuidv7(nu()), ts: new Date(nu()).toISOString(), hop: 1, herkomst: "schoon", soort: "idle", tekst });
       return wekPlan(naar);
     });
-    if (aantal !== null && ontv) await wek(wekDoel(ontv), aantal);
+    return aantal !== null && ontv ? async () => void (await wek(wekDoel(ontv), aantal)) : null;
+  }
+
+  /** Laatste record met deze naam, ook als het `weg` is (voor een abonnement op een doel dat al klaar is). */
+  function zoekRecord(naam: string): Sessie | undefined {
+    const levend = levende().get(naam);
+    if (levend) return levend;
+    return (alleRecords(opties.staat).filter((r) => r.soort === "sessie" && r.naam === naam) as Sessie[]).sort((a, b) => b.sinds - a.sinds)[0];
+  }
+
+  /** Een ack van een `extern` bericht maakt de ontvanger zelf `extern` (register, atomair herschreven). */
+  function maakExtern(naam: string): void {
+    const r = levende().get(naam);
+    if (!r || r.herkomst === "extern") return;
+    const vers = leesRecord(opties.staat, r.id);
+    if (vers) schrijfRecord(opties.staat, { ...vers, herkomst: "extern" } as Rec);
   }
 
   return {
@@ -335,29 +367,41 @@ export function maakBus(opties: BusOpties): BusBeheer {
     },
 
     ack(naam, ids) {
-      metSlot(naam, () => {
+      const extern = metSlot(naam, () => {
         const gelezen = leesGelezen(naam);
-        const bekend = new Set(alleEnvelops(naam).map((e) => e.id));
+        const bekend = new Map(alleEnvelops(naam).map((e) => [e.id, e]));
         const nieuw = [...new Set(ids)].filter((i) => bekend.has(i) && !gelezen.has(i));
-        if (nieuw.length === 0) return;
+        if (nieuw.length === 0) return false;
         zorgMap("inbox");
         appendFileSync(pad("inbox", naam, ".gelezen"), nieuw.map((i) => `${i}\n`).join(""), { mode: 0o600 });
+        return nieuw.some((i) => bekend.get(i)!.herkomst === "extern");
       });
+      if (extern) maakExtern(naam);
     },
 
     list() {
-      return [...levende().values()].map(
-        (r): Peer => ({ naam: r.naam, vendor: r.vendor ?? "claude", host: r.host ?? "tui", toestand: r.toestand, lead: r.lead, cwd: r.cwd, machine }),
-      );
+      return [...levende().values()].map((r): Peer => {
+        const tellers = metSlot(r.naam, () => ({ ongelezen: ongelezen(r.naam).length, vastgehouden: houdVast(r.naam).length }));
+        return { naam: r.naam, vendor: r.vendor ?? "claude", host: r.host ?? "tui", toestand: r.toestand, lead: r.lead, cwd: r.cwd, machine, ...tellers };
+      });
     },
 
-    notifyWhenIdle(abonnee, doel) {
+    notifyWhenIdle(abonnee, doel): AbonneerUitslag {
+      if (!levende().has(abonnee)) return { ok: false, reden: "geen_afzender", melding: `${abonnee} staat niet (meer) in het register.` };
+      const d = zoekRecord(doel);
+      if (!d) return { ok: false, reden: "onbekend", melding: `${doel} is niet bekend; kijk met list.` };
+      if (IDLE_TOESTANDEN.has(d.toestand)) {
+        const wekt = meldSync(doel, abonnee, `${doel} is ${d.toestand}`);
+        if (wekt) void wekt();
+        return { ok: true, al_idle: true };
+      }
       zorgMap("abonnementen");
       metSlot(`abo-${doel}`, () => {
         const p = pad("abonnementen", doel, ".json");
         const abo = leesJson<string[]>(p, []);
         if (!abo.includes(abonnee)) schrijfAtomair(p, JSON.stringify([...abo, abonnee]));
       });
+      return { ok: true, al_idle: false };
     },
 
     async idleGemeld(doel, toestand) {
@@ -371,7 +415,8 @@ export function maakBus(opties: BusOpties): BusBeheer {
       });
       for (const abonnee of abo) {
         try {
-          await meld(doel, abonnee, `${doel} is ${toestand}.`);
+          const wekt = meldSync(doel, abonnee, `${doel} is ${toestand}`);
+          if (wekt) await wekt();
         } catch {
           // een mislukte melding mag de hook van het doel niet breken
         }
@@ -383,20 +428,19 @@ export function maakBus(opties: BusOpties): BusBeheer {
     },
 
     async vrijgeven(naam, ids) {
-      const aantal = metSlot(naam, (): { n: number; wek: number | null } => {
+      // Verplaatsen verandert ongelezen + vastgehouden niet, dus MAX_WACHTRIJ blijft gehaald.
+      const uit = metSlot(naam, (): { n: number; wek: number | null } => {
         const vast = houdVast(naam);
         const kies = vast.filter((e) => !ids || ids.length === 0 || ids.includes(e.id));
-        const ruimte = Math.max(0, MAX_WACHTRIJ - ongelezen(naam).length);
-        const over = kies.slice(0, ruimte);
-        if (over.length === 0) return { n: 0, wek: null };
-        for (const e of over) leg(naam, e);
-        const weg = new Set(over.map((e) => e.id));
+        if (kies.length === 0) return { n: 0, wek: null };
+        for (const e of kies) leg(naam, e);
+        const weg = new Set(kies.map((e) => e.id));
         schrijfJsonl(pad("vastgehouden", naam, ".jsonl"), vast.filter((e) => !weg.has(e.id)));
-        return { n: over.length, wek: wekPlan(naam) };
+        return { n: kies.length, wek: wekPlan(naam) };
       });
       const ontv = levende().get(naam);
-      if (aantal.wek !== null && ontv) await wek(wekDoel(ontv), aantal.wek);
-      return aantal.n;
+      if (uit.wek !== null && ontv) await wek(wekDoel(ontv), uit.wek);
+      return uit.n;
     },
   };
 }
