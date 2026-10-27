@@ -1058,8 +1058,8 @@ describe("spawn.sh --vendor codex", () => {
   };
   let codexHome: string;
   /** Een Codex-config zoals codex-installeer.ts hem achterlaat: hooks-blok + trust-tabel(len) in hooks.state. */
-  const schrijfConfig = (o: { grenzen?: boolean; vertrouwd?: boolean; matcher?: string; kopieAf?: boolean } = {}) => {
-    const { grenzen = true, vertrouwd = true, matcher = "Bash|apply_patch", kopieAf = false } = o;
+  const schrijfConfig = (o: { grenzen?: boolean; vertrouwd?: boolean; matcher?: string; kopieAf?: boolean; bovenaan?: string } = {}) => {
+    const { grenzen = true, vertrouwd = true, matcher = "Bash|apply_patch", kopieAf = false, bovenaan = "" } = o;
     mkdirSync(codexHome, { recursive: true });
     const cfg = join(codexHome, "config.toml");
     // de geïnstalleerde bestanden zoals codex-installeer.ts ze neerzet (gelijk aan de repo, uitvoerbaar)
@@ -1070,7 +1070,8 @@ describe("spawn.sh --vendor codex", () => {
     }
     if (kopieAf) appendFileSync(join(doel, "grenzen.sh"), "\n# oud\n");
     const groep = (m: string, cmd: string) => `[[hooks.PreToolUse]]\nmatcher = ${JSON.stringify(m)}\n[[hooks.PreToolUse.hooks]]\ntype = "command"\ncommand = ${JSON.stringify(cmd)}\ntimeout = 5\n`;
-    let t = groep(".*", commando(doel, process.execPath));
+    let t = bovenaan ? `${bovenaan}\n` : "";
+    t += groep(".*", commando(doel, process.execPath));
     if (grenzen) t += `\n${groep(matcher, commando(doel, process.execPath, "grenzen.sh"))}`;
     writeFileSync(cfg, t);
     if (vertrouwd) appendFileSync(cfg, `\n[hooks.state."${realpathSync(cfg)}:pre_tool_use:1:0"]\ntrusted_hash = "sha256:${"ab".repeat(32)}"\n`);
@@ -1089,7 +1090,9 @@ describe("spawn.sh --vendor codex", () => {
     LAB_LEAD_STAAT: staat,
     ...extra,
   });
-  const codex = (args: string[], extra: Record<string, string> = {}, naam = "cx1") => draai(SPAWN, ["--naam", naam, "--opdracht", opdracht(), "--lead", "lead-x", "--vendor", "codex", ...args], basis(extra));
+  // Een T3-codex-thread weigert zonder --zonder-sandbox; de meeste tests gaan daar niet over, dus zet de helper hem erbij (`geenSandboxVlag`: niet).
+  const codex = (args: string[], extra: Record<string, string> = {}, naam = "cx1", geenSandboxVlag = false) =>
+    draai(SPAWN, ["--naam", naam, "--opdracht", opdracht(), "--lead", "lead-x", "--vendor", "codex", ...(args.includes("--t3") && !geenSandboxVlag ? ["--zonder-sandbox"] : []), ...args], basis(extra));
   const idDir = () => join(staat, "identiteit");
   const idBestanden = () => (existsSync(idDir()) ? readdirSync(idDir()) : []);
 
@@ -1143,6 +1146,198 @@ exit 1
     const zonder = codex(["--map", wt, "--droog"], { LAB_PEERS_SERVER: join(dir, "bestaat-niet.ts") });
     expect(zonder.fout).toMatch(/peers-MCP .* ontbreekt/);
     expect(zonder.uit).not.toContain("mcp_servers.peers");
+  });
+
+  test("sandbox: tmux start de werker met een permissieprofiel (netwerk aan, -a never); de gedeelde .git is niet als geheel schrijfbaar", () => {
+    writeFileSync(join(dir, "pane.txt"), "Ask Codex\n• Ran ls\n");
+    const r = codex(["--map", wt, "--droog"], { TMPDIR: join(dir, "sbtmp") });
+    const gem = realpathSync(join(repo, ".git"));
+    const eigen = realpathSync(join(gem, "worktrees", "eigen-worktree"));
+    expect(r.uit).toContain(" -a never ");
+    expect(r.uit).toContain(`-c 'default_permissions="lab-werker"'`);
+    expect(r.uit).toContain(`-c 'permissions.lab-werker.network={enabled=true}'`);
+    const fs = /-c 'permissions\.lab-werker\.filesystem=\{([^']*)\}'/.exec(r.uit)?.[1] ?? "";
+    const regels = fs.split(",").map((x) => x.replace(/"/g, ""));
+    const heeft = (pad: string, toegang: string) => regels.includes(`${pad}=${toegang}`);
+    for (const d of ["objects", "refs", "logs"]) expect(heeft(`${gem}/${d}`, "write")).toBe(true);
+    expect(heeft(eigen, "write")).toBe(true);
+    for (const f of ["commondir", "gitdir", "config.worktree"]) expect(heeft(`${eigen}/${f}`, "read")).toBe(true);
+    expect(heeft(realpathSync(wt), "write")).toBe(true);
+    // nooit de hele common .git, hooks of config als schrijfbaar
+    for (const pad of [gem, `${gem}/hooks`, `${gem}/config`, `${gem}/info`, `${gem}/worktrees`]) expect(regels.some((x) => x === `${pad}=write`)).toBe(false);
+    // sleutelmappen onleesbaar
+    expect(regels.some((x) => x.endsWith("/.config/klaarover=none"))).toBe(true);
+    expect(regels.some((x) => x.endsWith("/.codex/auth.json=none"))).toBe(true);
+  });
+
+  test("sandbox: een pad met een quote of backslash weigert spawn (nooit een halve sandbox)", () => {
+    const slecht = join(dir, "slecht'pad");
+    mkdirSync(slecht);
+    const r = draai(SPAWN, ["--naam", "cx1", "--opdracht", opdracht(), "--lead", "lead-x", "--vendor", "codex", "--map", wt, "--droog"], basis({ TMPDIR: slecht }));
+    expect(r.code).toBe(1);
+    expect(r.fout).toMatch(/kan niet in de sandbox-config/);
+  });
+
+  test("sandbox: --t3 met --vendor codex weigert zonder --zonder-sandbox, ook met --droog; met de vlag start hij", () => {
+    for (const extra of [["--t3"], ["--t3", "--droog"]]) {
+      const r = codex(["--map", wt, ...extra], {}, "cx1", true);
+      expect(r.code).toBe(1);
+      expect(r.fout).toMatch(/weigert.*--zonder-sandbox/);
+      expect(r.fout).toMatch(/alleen op aanwijzing van Brian/);
+    }
+    expect(idBestanden()).toEqual([]);
+    expect(log("t3.log")).toBe("");
+    expect(codex(["--map", wt, "--t3", "--droog"]).code).toBe(0); // de helper zet --zonder-sandbox erbij
+  });
+
+  // Echte afdwinging: het profiel uit spawn.sh in een echte Codex (seatbelt), met een nep-Responses-server die één shellcommando
+  // laat draaien. Alleen macOS met een codex-binary; elders draait dit niet (de pure test hierboven bewaakt dan de vorm).
+  test("sandbox (echte codex): schrijven naar .git/hooks, .git/config en commondir faalt met EPERM, een commit in de worktree slaagt", async () => {
+    const codexBin = Bun.which("codex");
+    if (process.platform !== "darwin" || !codexBin) {
+      console.log("sandbox-afdwinging niet getoetst: geen macOS of geen codex");
+      return;
+    }
+    writeFileSync(join(dir, "pane.txt"), "Ask Codex\n• Ran ls\n");
+    // Een eigen HOME in de tijdelijke map (nooit het echte HOME aanraken): de sandbox mag er niets in schrijven, ook niet in een bestaand dotfile.
+    const thuis = join(dir, "thuis");
+    mkdirSync(thuis);
+    writeFileSync(join(thuis, ".zshrc"), "# kopie\n");
+    const r = codex(["--map", wt, "--droog"], { TMPDIR: join(dir, "sbtmp"), HOME: thuis });
+    const cArgs = [...r.uit.matchAll(/-c '((?:default_permissions|permissions\.)[^']*)'/g)].map((m) => m[1]);
+    expect(cArgs.length).toBe(3);
+    const gem = realpathSync(join(repo, ".git"));
+    const eigen = realpathSync(join(gem, "worktrees", "eigen-worktree"));
+    git(repo, "config", "user.email", "t@t");
+    git(repo, "config", "user.name", "t");
+    const shell = [
+      "echo b > b.txt; git add b.txt && git commit -qm sandbox-test && echo COMMIT-OK",
+      `touch ${gem}/hooks/x && echo HOOK-OK`,
+      `echo x >> ${gem}/config && echo CONFIG-OK`,
+      `echo x > ${eigen}/commondir && echo COMMONDIR-OK`,
+      `echo x > ${eigen}/gitdir && echo GITDIR-OK`,
+      `echo x > ${eigen}/config.worktree && echo CFGWT-OK`,
+      `echo x > ${join(dir, "buiten.txt")} && echo BUITEN-OK`,
+      `echo x >> ${thuis}/.zshrc && echo ZSHRC-OK`,
+      `touch ${thuis}/nieuw && echo THUISNIEUW-OK`,
+      `echo x > ${gem}/packed-refs && echo PACKED-OK`,
+      `touch ${gem}/info/x && echo INFO-OK`,
+      `echo x > ${gem}/HEAD && echo HEAD-OK`,
+    ].join("; ");
+    let verzoeken = 0;
+    let uitvoer = "";
+    const server = Bun.serve({
+      port: 0,
+      hostname: "127.0.0.1",
+      async fetch(req) {
+        const body = await req.text();
+        if (!new URL(req.url).pathname.endsWith("/responses")) return new Response("{}", { status: 404 });
+        verzoeken++;
+        const sse = (e: string, d: object) => `event: ${e}\ndata: ${JSON.stringify({ type: e, ...d })}\n\n`;
+        let uit = sse("response.created", { response: { id: `r${verzoeken}`, status: "in_progress" } });
+        const item =
+          verzoeken === 1
+            ? { type: "function_call", id: "fc_1", call_id: "call_1", name: "exec_command", arguments: JSON.stringify({ cmd: shell }) }
+            : { type: "message", id: "m_2", role: "assistant", content: [{ type: "output_text", text: "klaar" }] };
+        if (verzoeken === 2) {
+          const o = (JSON.parse(body).input as { type?: string; output?: unknown }[]).find((i) => i.type === "function_call_output");
+          uitvoer = String(o?.output ?? "");
+        }
+        uit += sse("response.output_item.added", { output_index: 0, item: verzoeken === 1 ? item : { ...item, content: [] } }) + sse("response.output_item.done", { output_index: 0, item });
+        uit += sse("response.completed", { response: { id: `r${verzoeken}`, status: "completed", usage: { input_tokens: 1, output_tokens: 1, total_tokens: 2 } } });
+        return new Response(uit, { headers: { "content-type": "text/event-stream" } });
+      },
+    });
+    try {
+      const ch = join(dir, "codex-sandbox-home");
+      mkdirSync(ch, { recursive: true });
+      writeFileSync(join(ch, "config.toml"), `model = "nep"\nmodel_provider = "nep"\n[model_providers.nep]\nname = "nep"\nbase_url = "http://127.0.0.1:${server.port}/v1"\nwire_api = "responses"\nrequires_openai_auth = false\n`);
+      const p = Bun.spawn([codexBin, "exec", "--skip-git-repo-check", ...cArgs.flatMap((c) => ["-c", c]), "doe"], { cwd: wt, env: { PATH: process.env.PATH ?? "", HOME: thuis, CODEX_HOME: ch }, stdin: "ignore", stdout: "pipe", stderr: "pipe" });
+      const timer = setTimeout(() => p.kill(), 90_000); // echte-klok: een echte codex-run, geen testklok
+      await p.exited;
+      clearTimeout(timer);
+    } finally {
+      server.stop(true);
+    }
+    expect(uitvoer).toContain("COMMIT-OK");
+    for (const x of ["HOOK-OK", "CONFIG-OK", "COMMONDIR-OK", "GITDIR-OK", "CFGWT-OK", "BUITEN-OK", "ZSHRC-OK", "THUISNIEUW-OK", "PACKED-OK", "INFO-OK", "HEAD-OK"]) expect(uitvoer).not.toContain(x);
+    expect((uitvoer.match(/[Oo]peration not permitted/g) ?? []).length).toBeGreaterThanOrEqual(11);
+    expect(readFileSync(join(thuis, ".zshrc"), "utf8")).toBe("# kopie\n");
+    expect(existsSync(join(thuis, "nieuw"))).toBe(false);
+    expect(git(wt, "log", "--format=%s", "-1").stdout.toString().trim()).toBe("sandbox-test");
+    expect(existsSync(join(gem, "hooks", "x"))).toBe(false);
+  }, 120_000);
+
+  test("hosted web search: tmux zet hem uit met -c (ook zonder MCP, ook als de config hem aanzet); T3 weigert als de config hem aanzet", () => {
+    writeFileSync(join(dir, "pane.txt"), "Ask Codex\n• Ran ls\n");
+    const UIT = `-c 'web_search="disabled"'`;
+    // tmux: altijd mee, nooit --search; met en zonder peers-MCP
+    expect(codex(["--map", wt, "--droog"], { LAB_PEERS_SERVER: join(dir, "bestaat-niet.ts") }).uit).toContain(UIT);
+    const server = join(dir, "server.ts");
+    writeFileSync(server, "// nep\n");
+    const met = codex(["--map", wt, "--droog"], { LAB_PEERS_SERVER: server });
+    expect(met.uit).toContain(UIT);
+    expect(met.uit).not.toContain("--search");
+    // tmux met een config die hem aanzet: het -c wint, dus geen weigering
+    schrijfConfig({ bovenaan: 'web_search = "live"' });
+    expect(codex(["--map", wt, "--droog"]).uit).toContain(UIT);
+    // T3: geen -c mogelijk, dus weigeren als de config hem aanzet (ook --droog); niets geschreven of gestart
+    for (const bovenaan of ['web_search = "live"', 'web_search = "cached"', 'web_search = "onbekend"', "web_search = true", "[features]\nweb_search_cached = true", "[tools]\nweb_search = true", "[tools.web_search]\ncontext_size = \"low\"", "[features]\nweb_search_request = true"]) {
+      schrijfConfig({ bovenaan: bovenaan.startsWith("[") ? "" : bovenaan });
+      if (bovenaan.startsWith("[")) appendFileSync(join(codexHome, "config.toml"), `\n${bovenaan}\n`);
+      for (const extra of [["--t3"], ["--t3", "--droog"]]) {
+        const r = codex(["--map", wt, ...extra]);
+        expect(r.code).toBe(1);
+        expect(r.fout).toMatch(/hosted web search kan voor een T3-thread niet uit/);
+        expect(r.fout).not.toMatch(/Codex-config niet in orde|codex-installeer/);
+        expect(r.fout).toMatch(/web_search = "disabled"/);
+      }
+    }
+    expect(idBestanden()).toEqual([]);
+    expect(log("t3.log")).toBe("");
+    // T3 met de sleutel uit of zonder sleutel start wel
+    for (const bovenaan of ['web_search = "disabled"', ""]) {
+      schrijfConfig({ bovenaan });
+      expect(codex(["--map", wt, "--t3", "--droog"]).code).toBe(0);
+    }
+    // een project-config in de worktree die hem aanzet, telt ook (gemeten: -c wint daarvan in tmux, maar niet in T3)
+    mkdirSync(join(wt, ".codex"));
+    writeFileSync(join(wt, ".codex", "config.toml"), 'web_search = "live"\n');
+    const proj = codex(["--map", wt, "--t3", "--droog"]);
+    expect(proj.code).toBe(1);
+    expect(proj.fout).toMatch(/\.codex\/config\.toml zet hem aan/);
+    expect(codex(["--map", wt, "--droog"]).uit).toContain(UIT); // tmux: -c wint
+    writeFileSync(join(wt, ".codex", "config.toml"), 'web_search = "disabled"\n');
+    expect(codex(["--map", wt, "--t3", "--droog"]).code).toBe(0);
+  });
+
+  test("tmux: spawn zet de upstream van de werkertak vooraf (.git/config is read-only in de sandbox); een bestaande eigen upstream blijft", () => {
+    writeFileSync(join(dir, "pane.txt"), "Ask Codex\n");
+    const cfg = (sleutel: string) => git(repo, "config", "--get", sleutel).stdout.toString().trim();
+    const start = () => {
+      rmSync(idDir(), { recursive: true, force: true });
+      return codex(["--map", wt]);
+    };
+    // zonder remote origin: niets
+    git(repo, "remote", "remove", "origin");
+    start();
+    expect(cfg("branch.werk.merge")).toBe("");
+    git(repo, "remote", "add", "origin", origin);
+    // droog schrijft niets
+    codex(["--map", wt, "--droog"]);
+    expect(cfg("branch.werk.merge")).toBe("");
+    // geen upstream: origin + refs/heads/<tak>, ook als de tak op origin nog niet bestaat
+    start(); // de nep-pane toont geen tool-aanroep: exit 1 na de start is hier normaal
+    expect(cfg("branch.werk.remote")).toBe("origin");
+    expect(cfg("branch.werk.merge")).toBe("refs/heads/werk");
+    // een verse agenttak vanaf origin/main (upstream main) wordt omgezet
+    git(repo, "config", "branch.werk.merge", "refs/heads/main");
+    start();
+    expect(cfg("branch.werk.merge")).toBe("refs/heads/werk");
+    // een andere, bewust gekozen upstream blijft staan
+    git(repo, "config", "branch.werk.merge", "refs/heads/ander");
+    start();
+    expect(cfg("branch.werk.merge")).toBe("refs/heads/ander");
   });
 
   test("tmux in een eigen worktree schrijft de identiteit (0600 in een map 0700); een andere checkout krijgt niets", () => {

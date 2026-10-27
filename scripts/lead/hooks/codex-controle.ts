@@ -132,11 +132,48 @@ export function controleerGrenzen(configPad: string, bronMap = import.meta.dir):
   return reden;
 }
 
+/**
+ * Hosted web search staat uit voor werkers (het resultaat komt zonder hook binnen). In tmux zet spawn.sh dat met
+ * `-c web_search="disabled"`; een T3-thread krijgt geen `-c`, dus daar eist spawn dat de config het niet aanzet.
+ * Allowlist: alleen een ontbrekende sleutel of "disabled" (voor `web_search`), of een ontbrekende sleutel of false (voor
+ * `tools.web_search` en `features.web_search_request|web_search_cached`) is goed; elke andere waarde weigert.
+ * null = goed, anders de reden. `verplicht = false` slaat een ontbrekend bestand over (een project-config is optioneel).
+ * Gemeten op codex-cli 0.164.0: `web_search = "disabled"` haalt de tool uit het verzoek; `-c` wint van een
+ * `<project>/.codex/config.toml` die hem aanzet (dus in tmux geen risico, in T3 wel: controleer dat bestand ook);
+ * een `profile = …` in config.toml wordt niet meer ondersteund (fout), een profiel gaat alleen met `--profile` (spawn geeft
+ * dat nooit mee). Niet gecontroleerd: een `--search` of `-p` die Brian zelf meegeeft, en een beheerde requirements.toml.
+ */
+export function controleerWebSearch(configPad: string, verplicht = true): string | null {
+  if (!existsSync(configPad)) return verplicht ? `${configPad} bestaat niet` : null;
+  let toml: { web_search?: unknown; tools?: { web_search?: unknown }; features?: Record<string, unknown> };
+  try {
+    toml = Bun.TOML.parse(readFileSync(configPad, "utf8")) as typeof toml;
+  } catch (e) {
+    return `${configPad} is geen geldige TOML (${(e as Error).message.split("\n")[0]})`;
+  }
+  const aan: string[] = [];
+  if (toml.web_search !== undefined && toml.web_search !== "disabled") aan.push(`web_search = ${JSON.stringify(toml.web_search)}`);
+  if (toml.tools?.web_search !== undefined && toml.tools.web_search !== false) aan.push("tools.web_search");
+  for (const k of ["web_search_request", "web_search_cached"]) if (toml.features?.[k] !== undefined && toml.features[k] !== false) aan.push(`features.${k}`);
+  if (aan.length === 0) return null;
+  return `hosted web search kan voor een T3-thread niet uit: ${configPad} zet hem aan (${aan.join(", ")}) en een T3-thread krijgt geen -c per thread. Zet bovenaan dat bestand web_search = "disabled" (buiten een [sectie]) of haal de instelling weg`;
+}
+
 if (import.meta.main) {
-  const pad = process.argv[2] || join(process.env.CODEX_HOME || join(process.env.HOME || homedir(), ".codex"), "config.toml");
+  const args = process.argv.slice(2);
+  const naPad = (vlag: string) => (args.includes(vlag) ? args[args.indexOf(vlag) + 1] : undefined);
+  const project = naPad("--project");
+  const pad = args.find((a, i) => !a.startsWith("--") && args[i - 1] !== "--project") || join(process.env.CODEX_HOME || join(process.env.HOME || homedir(), ".codex"), "config.toml");
   const r = controleerGrenzen(pad);
   if (r) {
     process.stderr.write(`${r}\nDraai: bun scripts/lead/hooks/codex-installeer.ts (eerst met --droog)\n`);
     process.exit(1);
+  }
+  if (args.includes("--web-search")) {
+    const w = controleerWebSearch(pad) ?? (project ? controleerWebSearch(join(project, ".codex", "config.toml"), false) : null);
+    if (w) {
+      process.stderr.write(`${w}\n`);
+      process.exit(3);
+    }
   }
 }
