@@ -7,7 +7,7 @@ describe("e2e-demo van de peerbus", () => {
     expect(d.controles.filter((c) => !c.ok)).toEqual([]);
     expect(d.controles.length).toBeGreaterThanOrEqual(15);
     expect(d.ok).toBe(true);
-    const ls = Bun.spawnSync(["tmux", "-L", `peerbus-e2e-${process.pid}`, "ls"], { env: { PATH: process.env.PATH ?? "" }, stdout: "pipe", stderr: "pipe" });
+    const ls = Bun.spawnSync(["tmux", "-L", d.tmuxNaam, "ls"], { env: { PATH: process.env.PATH ?? "" }, stdout: "pipe", stderr: "pipe" });
     expect(ls.exitCode).not.toBe(0);
   }, 30_000);
 });

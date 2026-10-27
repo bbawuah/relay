@@ -18,7 +18,10 @@ const SERVER = join(PEERS, "server.ts");
 const STANDIN = join(import.meta.dir, "standin-socket.ts");
 
 export type Controle = { naam: string; ok: boolean; detail: string };
-export type Demo = { controles: Controle[]; ok: boolean };
+export type Demo = { controles: Controle[]; ok: boolean; tmuxNaam: string };
+
+/** Hoogstens zo lang mag een CLI- of MCP-proces van de demo draaien. */
+const PROCES_TIJDSGRENS_MS = 15_000;
 
 type Json = any;
 
@@ -34,7 +37,8 @@ export async function draaiDemo(opties: { wacht?: (ms: number) => Promise<void> 
   const sockLog = join(dir, "socket.log");
   const codexLog = join(dir, "codex.log");
   const t3Log = join(dir, "t3.log");
-  const tmuxNaam = `peerbus-e2e-${process.pid}`;
+  const tmuxNaam = `peerbus-e2e-${process.pid}-${Math.random().toString(36).slice(2, 8)}`;
+  let tmuxSocket = "";
   const wacht = opties.wacht ?? ((ms: number) => Bun.sleep(ms));
 
   const schoon: Record<string, string> = {};
@@ -42,7 +46,48 @@ export async function draaiDemo(opties: { wacht?: (ms: number) => Promise<void> 
   const basisEnv = { ...schoon, PATH: `${bin}:${schoon.PATH ?? ""}`, TMPDIR: dir, HOME: join(dir, "home"), LAB_LEAD_STAAT: staat, LAB_T3: join(bin, "t3") };
   const als = (naam: string): Record<string, string> => ({ ...basisEnv, LAB_AGENT_NAAM: naam });
 
-  const tmux = (...a: string[]) => Bun.spawnSync(["tmux", "-L", tmuxNaam, "-f", "/dev/null", ...a], { env: { ...schoon, TMUX: "" } as Record<string, string>, stdout: "pipe", stderr: "pipe" });
+  /** Draait tmux op de wegwerp-socket; een ontbrekende tmux (ENOENT) wordt exitCode -1 met de reden in stderr. */
+  const tmux = (...a: string[]): { exitCode: number; stdout: string; stderr: string } => {
+    try {
+      const r = Bun.spawnSync(["tmux", "-L", tmuxNaam, "-f", "/dev/null", ...a], { env: { ...schoon, TMUX: "" } as Record<string, string>, stdout: "pipe", stderr: "pipe" });
+      return { exitCode: r.exitCode ?? -1, stdout: r.stdout.toString(), stderr: r.stderr.toString() };
+    } catch (e) {
+      return { exitCode: -1, stdout: "", stderr: e instanceof Error ? e.message : String(e) };
+    }
+  };
+  /** Idempotent: tmux-server stoppen, het socketbestand en de tijdelijke map weghalen; elke stap in een eigen try. */
+  let opgeruimd = false;
+  const opruimen = () => {
+    if (opgeruimd) return;
+    opgeruimd = true;
+    tmux("kill-server");
+    try {
+      if (tmuxSocket) rmSync(tmuxSocket, { force: true });
+    } catch {}
+    try {
+      rmSync(dir, { recursive: true, force: true });
+    } catch {}
+  };
+  const bijSignaal = (code: number) => () => {
+    opruimen();
+    process.exit(code);
+  };
+  const onInt = bijSignaal(130);
+  const onTerm = bijSignaal(143);
+  process.once("SIGINT", onInt);
+  process.once("SIGTERM", onTerm);
+
+  /** Wacht op een kindproces met een kill-timer; een proces dat blijft hangen wordt een fout in plaats van een hangende demo. */
+  async function metTijdsgrens(p: ReturnType<typeof Bun.spawn>, wat: string, lees: () => Promise<void>): Promise<void> {
+    const timer = setTimeout(() => p.kill(9), PROCES_TIJDSGRENS_MS);
+    try {
+      await lees();
+      await p.exited;
+      if (p.signalCode) throw new Error(`${wat}: tijdsgrens van ${PROCES_TIJDSGRENS_MS / 1000} s overschreden`);
+    } finally {
+      clearTimeout(timer);
+    }
+  }
 
   /** Wacht (hoogstens 5 s) tot `klaar` waar is; de nep-ontvangers draaien in eigen processen. */
   async function totdat(klaar: () => boolean): Promise<boolean> {
@@ -57,8 +102,12 @@ export async function draaiDemo(opties: { wacht?: (ms: number) => Promise<void> 
 
   async function cli(naam: string, ...args: string[]): Promise<{ code: number; uit: string; fout: string }> {
     const p = Bun.spawn([process.execPath, CLI, ...args], { env: als(naam), stdin: "ignore", stdout: "pipe", stderr: "pipe" });
-    const [uit, fout, code] = await Promise.all([new Response(p.stdout).text(), new Response(p.stderr).text(), p.exited]);
-    return { code, uit, fout };
+    let uit = "";
+    let fout = "";
+    await metTijdsgrens(p, `cli ${args[0]}`, async () => {
+      [uit, fout] = await Promise.all([new Response(p.stdout).text(), new Response(p.stderr).text()]);
+    });
+    return { code: p.exitCode ?? -1, uit, fout };
   }
   /** Een echt MCP-serverproces (stdio): initialize, daarna de tools/call-regels. Geeft de antwoorden op de calls. */
   async function mcp(naam: string, ...calls: [string, Json][]): Promise<string[]> {
@@ -66,8 +115,10 @@ export async function draaiDemo(opties: { wacht?: (ms: number) => Promise<void> 
     const p = Bun.spawn([process.execPath, SERVER], { env: als(naam), stdin: "pipe", stdout: "pipe", stderr: "pipe" });
     p.stdin.write(`${regelsIn.map((r) => JSON.stringify(r)).join("\n")}\n`);
     await p.stdin.end();
-    const uit = await new Response(p.stdout).text();
-    await p.exited;
+    let uit = "";
+    await metTijdsgrens(p, `mcp ${calls.map(([n]) => n).join("+")}`, async () => {
+      uit = await new Response(p.stdout).text();
+    });
     return uit.split("\n").filter(Boolean).map((l) => JSON.parse(l)).filter((r: Json) => r.id >= 1).map((r: Json) => r.result?.content?.[0]?.text ?? JSON.stringify(r.error));
   }
 
@@ -83,7 +134,9 @@ export async function draaiDemo(opties: { wacht?: (ms: number) => Promise<void> 
 
     // tmux op een wegwerp-socket met de stand-in voor de socket van de lead.
     const t = tmux("new-session", "-d", "-s", "e2e", `${process.execPath} ${STANDIN} ${sockPad} ${sockLog}`);
-    controle("tmux wegwerp-server gestart", t.exitCode === 0, new TextDecoder().decode(t.stderr));
+    controle("tmux wegwerp-server gestart", t.exitCode === 0, t.stderr || "tmux ontbreekt of startte niet");
+    if (t.exitCode !== 0) return { controles, ok: false, tmuxNaam };
+    tmuxSocket = tmux("display-message", "-p", "-t", "e2e", "#{socket_path}").stdout.trim();
     controle("stand-in-socket luistert", await totdat(() => existsSync(sockPad)), "socket verscheen niet");
 
     // Register: lead (Claude/tui, met socket), werker-codex (Codex/tui), werker-t3 (T3). Werkers hebben de lead als lead.
@@ -138,10 +191,11 @@ export async function draaiDemo(opties: { wacht?: (ms: number) => Promise<void> 
   } catch (e) {
     controle("demo zonder uitzondering", false, e instanceof Error ? (e.stack ?? e.message) : String(e));
   } finally {
-    tmux("kill-server");
-    rmSync(dir, { recursive: true, force: true });
+    opruimen();
+    process.off("SIGINT", onInt);
+    process.off("SIGTERM", onTerm);
   }
-  return { controles, ok: controles.every((c) => c.ok) };
+  return { controles, ok: controles.every((c) => c.ok), tmuxNaam };
 }
 
 if (import.meta.main) {
