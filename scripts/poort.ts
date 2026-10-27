@@ -967,6 +967,18 @@ export const KANARIES: Kanarie[] = [
     zet: (m) => schrijf(m, "apps/template/src/kanarie-mollie.ts", `export const k = "${"live"}_${"Nep".padEnd(24, "x")}";\n`),
   },
   {
+    stap: "mollie-sleutels",
+    wat: "de ^test_-regel op MOLLIE_API_KEY in kern/config.ts versoepeld (toets 2, zolang infra de globale sleutel noemt)",
+    verwacht: /FOUT mollie-sleutels .*1 treffer/,
+    zet: (m) => {
+      const p = "apps/goldcoast-api/src/kern/config.ts";
+      const oud = readFileSync(path.join(m, p), "utf8");
+      const nieuw = oud.replace(/MOLLIE_API_KEY: z\.string\(\)\.regex\(\/\^test_[^)]*\)/, "MOLLIE_API_KEY: z.string()");
+      if (nieuw === oud) throw new Error("kanarie mollie-sleutels: de ^test_-regel staat niet in " + p);
+      schrijf(m, p, nieuw);
+    },
+  },
+  {
     stap: "gc-data-laag",
     wat: "een useEffect met maakClient( in een fixture-bestand van de klant-app",
     verwacht: /FOUT gc-data-laag .*1 nieuw/,
