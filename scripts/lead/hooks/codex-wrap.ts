@@ -14,8 +14,22 @@
 // Zonder bun faalt de wrapper luid bij PreToolUse (exit 2): zonder wrapper geen identiteit en dus geen rolregels in grenzen.sh.
 // Hetzelfde voor een commando dat ontbreekt of niet uitvoerbaar is (exit 2 bij PreToolUse, anders exit 1).
 
-import { afgeleideNaam, magAfleiden } from "../peers/afgeleide-naam";
 import { type Omgeving, staatMap, zoekIdentiteit } from "./register";
+
+// afgeleide-naam ligt in de repo op ../peers en geïnstalleerd op ./peers (zie peers-kopie.ts). Een statische import zou
+// geïnstalleerd falen en elke Codex-hook laten crashen (#685); faalt het laden, dan is er geen afgeleide naam en werkt de rest.
+type AfgeleideNaam = { afgeleideNaam: (id: unknown) => string | null; magAfleiden: (env: Omgeving, staat: string, cwd: string) => boolean };
+async function laadAfgeleideNaam(): Promise<AfgeleideNaam | null> {
+  for (const map of ["./peers", "../peers"]) {
+    try {
+      return (await import(`${map}/afgeleide-naam`)) as AfgeleideNaam;
+    } catch {
+      // volgende pad
+    }
+  }
+  return null;
+}
+const afgeleide = await laadAfgeleideNaam();
 
 /** Wat de daemon van een andere sessie kan hebben doorgegeven en dus nooit zonder identiteitsbestand mag gelden. */
 export const IDENTITEIT_SLEUTELS = ["LAB_AGENT_NAAM", "LAB_AGENT_ROL", "LAB_LEAD_NAAM", "LAB_OPDRACHT", "LAB_SPAWN_ID", "LAB_T3_THREAD", "LAB_LEAD_STAAT"];
@@ -32,7 +46,7 @@ export function hookOmgeving(env: Omgeving, cwd: string, nu = Date.now(), sessie
   if (Object.keys(i).length > 0) return { ...uit, ...i };
   // Brians eigen Codex-sessie (geen identiteitsbestand, geen naam of rol in de omgeving): een afgeleide naam uit het sessie-id,
   // dezelfde als die van de peers-server (CONTRACT.md, "Wijziging 27 okt"). Rol en lead blijven leeg.
-  const afgeleid = magAfleiden(env, staatMap(env), cwd) ? afgeleideNaam(sessieId) : null;
+  const afgeleid = afgeleide?.magAfleiden(env, staatMap(env), cwd) ? afgeleide.afgeleideNaam(sessieId) : null;
   for (const k of IDENTITEIT_SLEUTELS) delete uit[k];
   if (afgeleid) uit.LAB_AGENT_NAAM = afgeleid;
   return uit;

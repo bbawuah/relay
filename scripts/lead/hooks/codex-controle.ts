@@ -14,8 +14,8 @@
 // Of de hash nog klopt met de hookdefinitie ziet alleen Codex zelf (trustStatus `modified`); na een handmatige wijziging van
 // het blok: codex-installeer.ts opnieuw draaien.
 
-import { accessSync, constants, existsSync, readFileSync, realpathSync } from "node:fs";
-import { homedir } from "node:os";
+import { accessSync, constants, existsSync, mkdtempSync, readFileSync, realpathSync, rmSync } from "node:fs";
+import { homedir, tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { GRENZEN_MERK, commando } from "./codex-installeer";
 
@@ -87,7 +87,33 @@ function controleerCommando(command: string, bronMap: string): string | null {
     const bron = join(bronMap, b);
     if (!existsSync(kopie) || !existsSync(bron) || !readFileSync(kopie).equals(readFileSync(bron))) return `de geïnstalleerde ${b} (${kopie}) wijkt af van de repo (verouderde kopie)`;
   }
-  return null;
+  return rooktoets(doel, bun);
+}
+
+/**
+ * Rooktoets: laden de geïnstalleerde wrapper en hook.ts echt vanuit hun eigen map? De bestandscontrole hierboven ziet een import
+ * die geïnstalleerd niet bestaat niet (#685: elke Codex-hook faalde dicht terwijl dit exit 0 gaf). De wrapper draait `bun --version`
+ * en hook.ts een lege invoer, in een tijdelijke HOME en LAB_LEAD_STAAT. null = in orde, anders de reden.
+ */
+function rooktoets(doel: string, bun: string): string | null {
+  const tmp = mkdtempSync(join(tmpdir(), "codex-rook-"));
+  try {
+    const env = { PATH: process.env.PATH ?? "/usr/bin:/bin", HOME: tmp, LAB_LEAD_STAAT: join(tmp, "staat"), LAB_AGENT_ROL: "agent", LAB_LEAD_BUN: bun };
+    const proeven: [string, string[]][] = [
+      ["codex-wrap.ts", [bun, join(doel, "codex-wrap.ts"), bun, "--version"]],
+      ["hook.ts", [bun, join(doel, "hook.ts"), "--bron", "codex"]],
+    ];
+    for (const [naam, argv] of proeven) {
+      const p = Bun.spawnSync(argv, { env, cwd: tmp, stdin: new TextEncoder().encode("{}"), stdout: "pipe", stderr: "pipe", timeout: 15_000 });
+      if (p.exitCode !== 0) {
+        const regel = p.stderr.toString().split("\n").find((l) => l.trim()) ?? "geen uitvoer";
+        return `de geïnstalleerde ${naam} start niet (exit ${p.exitCode}): ${regel.slice(0, 300)}`;
+      }
+    }
+    return null;
+  } finally {
+    rmSync(tmp, { recursive: true, force: true });
+  }
 }
 
 /** null = in orde, anders de reden. `bronMap` is de map met de repo-versies (standaard deze map). */
