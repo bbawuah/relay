@@ -273,11 +273,13 @@ codex_sandbox() {
   # De CODEX_HOME die spawn gebruikt (kan een andere zijn dan ~/.codex) als geheel onleesbaar: transcripten, geschiedenis, logs, sqlite-staat
   # (ook bestanden die pas na de start ontstaan), config en sleutel. Codex en zijn hooks lezen die buiten de sandbox. Alleen wat de shell
   # van de werker nodig heeft gaat weer op read (een diepere regel wint van de map, zoals $e/HEAD hierboven): shell_snapshots/, skills/,
-  # prompts/, rules/ en AGENTS.md.
+  # prompts/, rules/ en AGENTS.md. En packages/: de standalone-installatie zet de codex-binary daar (~/.local/bin/codex wijst naar
+  # ~/.codex/packages/standalone/current/bin/codex) en de fs-sandboxhelper van Codex start die binary zelf; dicht = "execvp() …
+  # Operation not permitted" en codex stopt bij de start (echte demo, 27 okt).
   local d f k
   for d in "$ch" "$h/.codex"; do
     SANDBOX_FS="$SANDBOX_FS,\"$d\"=\"none\""
-    for k in shell_snapshots skills prompts rules AGENTS.md; do
+    for k in shell_snapshots skills prompts rules AGENTS.md packages; do
       SANDBOX_FS="$SANDBOX_FS,\"$d/$k\"=\"read\""
     done
     [ "$ch" != "$h/.codex" ] || break
