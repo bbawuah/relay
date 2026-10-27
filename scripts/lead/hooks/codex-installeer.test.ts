@@ -1,11 +1,11 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { createHash } from "node:crypto";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { AppServer, HookInfo } from "./codex-appserver";
 import { kiesBun } from "../installeer-hooks";
-import { controleerGrenzen } from "./codex-controle";
+import { GELIJK_AAN_REPO, controleerGrenzen, woorden } from "./codex-controle";
 import { BESTANDEN, EINDE, EVENTS, GRENZEN_MATCHER, START, blokIn, commando, installeer, leesArgs, maakBlok, zetBlok, type Opties } from "./codex-installeer";
 
 const BRON = import.meta.dir;
@@ -21,7 +21,7 @@ beforeEach(() => {
 });
 afterEach(() => rmSync(dir, { recursive: true, force: true }));
 
-const opties = (extra: Partial<Opties> = {}): Opties => ({ droog: false, verwijder: false, codexHome: home, doel: join(home, "hooks", "lab-lead-hooks"), bun: "/usr/local/bin/bun", codex: "codex", bron: BRON, ...extra });
+const opties = (extra: Partial<Opties> = {}): Opties => ({ droog: false, verwijder: false, codexHome: home, doel: join(home, "hooks", "lab-lead-hooks"), bun: process.execPath, codex: "codex", bron: BRON, ...extra });
 const snake = (e: string) => e.replace(/([a-z])([A-Z])/g, "$1_$2").toLowerCase();
 
 /** Nep van `codex app-server`: leest de hooks uit config.toml, rekent een hash uit het commando en legt vertrouwen vast als tabel. */
@@ -205,10 +205,70 @@ describe("installeer", () => {
     expect(controleerGrenzen(cfg)).toMatch(/ontbreekt/);
     // matcher dekt apply_patch niet
     writeFileSync(cfg, heel.replace(`matcher = ${JSON.stringify(GRENZEN_MATCHER)}`, 'matcher = "Bash"'));
-    expect(controleerGrenzen(cfg)).toMatch(/niet vertrouwd .*matcher|matcher dekt/);
+    expect(controleerGrenzen(cfg)).toMatch(/matcher .* dekt Bash en apply_patch niet/);
     expect(controleerGrenzen(join(dir, "weg.toml"))).toMatch(/bestaat niet/);
+    // e) de matcher is geanker: "h" dekt Bash en apply_patch niet, ".*" en "Bash|apply_patch|Edit" wel
+    writeFileSync(cfg, heel.replace(`matcher = ${JSON.stringify(GRENZEN_MATCHER)}`, 'matcher = "h"'));
+    expect(controleerGrenzen(cfg)).toMatch(/matcher .* dekt Bash en apply_patch niet/);
+    writeFileSync(cfg, heel.replace(`matcher = ${JSON.stringify(GRENZEN_MATCHER)}`, 'matcher = ".*"'));
+    expect(controleerGrenzen(cfg)).toBeNull();
     writeFileSync(cfg, "[[hooks.PreToolUse\n");
     expect(controleerGrenzen(cfg)).toMatch(/geen geldige TOML/);
+  });
+
+  test("a) alleen het exacte installer-commando telt: een commando dat de tekst grenzen.sh noemt met een nep-hash gaat niet door", async () => {
+    writeFileSync(cfg, 'model = "x"\n');
+    const nep = nepServer();
+    await installeer(opties(), { start: nep.start });
+    const heel = readFileSync(cfg, "utf8");
+    const echt = commando(opties().doel, process.execPath, "grenzen.sh");
+    expect(heel).toContain(JSON.stringify(echt).slice(1, -1));
+    const nepHash = `sha256:${"a".repeat(64)}`;
+    for (const vals of [`true ${opties().doel}/grenzen.sh`, `${echt} extra`, `env LAB_LEAD_BUN=${process.execPath} /bin/true ${opties().doel}/grenzen.sh`, `echo lab-lead-hooks/grenzen.sh`]) {
+      const stuk = heel.replace(JSON.stringify(echt), JSON.stringify(vals));
+      expect(stuk).not.toBe(heel);
+      writeFileSync(cfg, stuk);
+      expect(controleerGrenzen(cfg)).toMatch(/niet dat van codex-installeer\.ts|ontbreekt/);
+    }
+    writeFileSync(cfg, `[[hooks.PreToolUse]]\nmatcher = "Bash|apply_patch"\n[[hooks.PreToolUse.hooks]]\ntype = "command"\ncommand = "true lab-lead-hooks/grenzen.sh"\n\n[hooks.state."${realpathSync(cfg)}:pre_tool_use:0:0"]\ntrusted_hash = "${nepHash}"\n`);
+    expect(controleerGrenzen(cfg)).toMatch(/niet dat van codex-installeer\.ts/);
+  });
+
+  test("a/c) ontbrekende of niet-uitvoerbare delen en een verouderde kopie van grenzen.sh, codex-wrap of register.ts worden gevonden", async () => {
+    writeFileSync(cfg, 'model = "x"\n');
+    const nep = nepServer();
+    await installeer(opties(), { start: nep.start });
+    expect(controleerGrenzen(cfg)).toBeNull();
+    const doel = opties().doel;
+    // niet uitvoerbaar / weg
+    chmodSync(join(doel, "grenzen.sh"), 0o644);
+    expect(controleerGrenzen(cfg)).toMatch(/grenzen\.sh is niet uitvoerbaar/);
+    chmodSync(join(doel, "grenzen.sh"), 0o755);
+    chmodSync(join(doel, "codex-wrap.sh"), 0o644);
+    expect(controleerGrenzen(cfg)).toMatch(/codex-wrap\.sh is niet uitvoerbaar/);
+    chmodSync(join(doel, "codex-wrap.sh"), 0o755);
+    rmSync(join(doel, "grenzen.sh"));
+    expect(controleerGrenzen(cfg)).toMatch(/grenzen\.sh ontbreekt/);
+    // een afwijkende kopie (de trust-hash dekt de inhoud niet)
+    for (const b of GELIJK_AAN_REPO) {
+      await installeer(opties(), { start: nep.start });
+      expect(controleerGrenzen(cfg)).toBeNull();
+      writeFileSync(join(doel, b), `${readFileSync(join(BRON, b), "utf8")}\n# oud\n`, { mode: 0o755 });
+      expect(controleerGrenzen(cfg)).toMatch(new RegExp(`geïnstalleerde ${b.replace(".", "\\.")} .* wijkt af van de repo.*codex-installeer|wijkt af van de repo`));
+    }
+    // opnieuw installeren herstelt het
+    await installeer(opties(), { start: nep.start });
+    expect(controleerGrenzen(cfg)).toBeNull();
+    // een bun die niet bestaat
+    await installeer(opties({ bun: join(dir, "geen-bun") }), { start: nep.start });
+    expect(controleerGrenzen(cfg)).toMatch(/bun ontbreekt/);
+  });
+
+  test("woorden: splitst zoals shq quote (spaties in een pad, een aanhalingsteken)", () => {
+    expect(woorden("env A=1 /x/y /z")).toEqual(["env", "A=1", "/x/y", "/z"]);
+    expect(woorden("env A='een map/x' '/m m/a'")).toEqual(["env", "A=een map/x", "/m m/a"]);
+    expect(woorden(`'a'\\''b' c`)).toEqual(["a'b", "c"]);
+    expect(woorden("'open")).toBeNull();
   });
 
   test("zonder bestaande config.toml: wordt aangemaakt, geen backup", async () => {

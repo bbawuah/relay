@@ -164,6 +164,24 @@ describe("codex-wrap.sh", () => {
   });
 });
 
+describe("b) een ontbrekend of niet-uitvoerbaar commando", () => {
+  test("PreToolUse: exit 2 met uitleg (Codex leest exit 1 als niet-blokkerend, dus fail-open); andere events exit 1", () => {
+    for (const cmd of [join(dir, "bestaat-niet.sh"), join(dir, "niet-uitvoerbaar.sh")]) {
+      writeFileSync(join(dir, "niet-uitvoerbaar.sh"), "#!/bin/sh\nexit 0\n", { mode: 0o644 });
+      const env = { ...hookEnv({ LAB_LEAD_STAAT: staat }) };
+      const run = (event: string) => {
+        const p = Bun.spawnSync(["/bin/sh", WRAP, cmd], { env, stdin: new TextEncoder().encode(JSON.stringify({ hook_event_name: event, cwd: werk })), stdout: "pipe", stderr: "pipe" });
+        return { code: p.exitCode, err: p.stderr.toString() };
+      };
+      const pre = run("PreToolUse");
+      expect(pre.code).toBe(2);
+      expect(pre.err).toContain("kon");
+      expect(pre.err).toContain("codex-installeer");
+      expect(run("Stop").code).toBe(1);
+    }
+  });
+});
+
 describe("M1: de rol uit het identiteitsbestand komt aan bij grenzen.sh", () => {
   const BASIS = () => join(dir, "repos");
   function git(cwd: string, ...args: string[]) {

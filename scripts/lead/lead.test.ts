@@ -7,6 +7,8 @@ import { join } from "node:path";
 // wegwerpmap met een eigen git-repo en lokale bare "origin". Geen echte tmux, geen echte PR's.
 
 import { identiteitEnv } from "./hooks/codex-wrap";
+import { GELIJK_AAN_REPO } from "./hooks/codex-controle";
+import { commando } from "./hooks/codex-installeer";
 
 const SPAWN = join(import.meta.dir, "spawn.sh");
 const MERGE = join(import.meta.dir, "merge.sh");
@@ -1056,13 +1058,20 @@ describe("spawn.sh --vendor codex", () => {
   };
   let codexHome: string;
   /** Een Codex-config zoals codex-installeer.ts hem achterlaat: hooks-blok + trust-tabel(len) in hooks.state. */
-  const schrijfConfig = (o: { grenzen?: boolean; vertrouwd?: boolean; matcher?: string } = {}) => {
-    const { grenzen = true, vertrouwd = true, matcher = "Bash|apply_patch" } = o;
+  const schrijfConfig = (o: { grenzen?: boolean; vertrouwd?: boolean; matcher?: string; kopieAf?: boolean } = {}) => {
+    const { grenzen = true, vertrouwd = true, matcher = "Bash|apply_patch", kopieAf = false } = o;
     mkdirSync(codexHome, { recursive: true });
     const cfg = join(codexHome, "config.toml");
+    // de geïnstalleerde bestanden zoals codex-installeer.ts ze neerzet (gelijk aan de repo, uitvoerbaar)
+    const doel = join(codexHome, "hooks", "lab-lead-hooks");
+    mkdirSync(doel, { recursive: true });
+    for (const b of [...GELIJK_AAN_REPO, "hook.sh"]) {
+      writeFileSync(join(doel, b), readFileSync(join(import.meta.dir, "hooks", b)), { mode: b.endsWith(".sh") ? 0o755 : 0o644 });
+    }
+    if (kopieAf) appendFileSync(join(doel, "grenzen.sh"), "\n# oud\n");
     const groep = (m: string, cmd: string) => `[[hooks.PreToolUse]]\nmatcher = ${JSON.stringify(m)}\n[[hooks.PreToolUse.hooks]]\ntype = "command"\ncommand = ${JSON.stringify(cmd)}\ntimeout = 5\n`;
-    let t = groep(".*", "env LAB_LEAD_BUN=/x/bun /x/lab-lead-hooks/codex-wrap.sh /x/lab-lead-hooks/hook.sh --bron codex");
-    if (grenzen) t += `\n${groep(matcher, "env LAB_LEAD_BUN=/x/bun /x/lab-lead-hooks/codex-wrap.sh /x/lab-lead-hooks/grenzen.sh")}`;
+    let t = groep(".*", commando(doel, process.execPath));
+    if (grenzen) t += `\n${groep(matcher, commando(doel, process.execPath, "grenzen.sh"))}`;
     writeFileSync(cfg, t);
     if (vertrouwd) appendFileSync(cfg, `\n[hooks.state."${realpathSync(cfg)}:pre_tool_use:1:0"]\ntrusted_hash = "sha256:${"ab".repeat(32)}"\n`);
   };
@@ -1115,7 +1124,7 @@ exit 1
     const r = codex(["--map", wt, "--model", "gpt-6-luna", "--droog"]);
     expect(r.code).toBe(0);
     expect(r.uit).toMatch(/env LAB_AGENT_NAAM=cx1 LAB_AGENT_ROL=agent LAB_LEAD_NAAM=lead-x /);
-    expect(r.uit).toContain(`LAB_LEAD_STAAT=${staat} codex -C ${wt} -m gpt-6-luna`);
+    expect(r.uit).toContain(`LAB_LEAD_STAAT=${staat} CODEX_HOME=${codexHome} codex -C ${wt} -m gpt-6-luna`); // d) de pane krijgt de gecontroleerde CODEX_HOME mee
     expect(r.uit).not.toContain("claude -n");
     expect(r.uit).toContain("met de tool send van MCP-server peers (naar: lead-x)");
     expect(r.uit).not.toContain("SendMessage");
@@ -1170,12 +1179,30 @@ exit 1
     expect(log("spawn.log")).toBe("");
   });
 
+  test("g) onder /bin/bash 3.2 komt een niet-git-map er niet door (cd \"\" slaagt daar); een relatieve --map werkt", () => {
+    const kaal = join(dir, "geen-git-32");
+    mkdirSync(kaal);
+    const bash32 = (map: string, cwd: string) => {
+      const r = Bun.spawnSync(["/bin/bash", SPAWN, "--naam", "cx1", "--opdracht", opdracht(), "--lead", "lead-x", "--vendor", "codex", "--map", map, "--droog"], { cwd, env: omgeving(basis()) });
+      return { code: r.exitCode, uit: r.stdout.toString(), fout: r.stderr.toString() };
+    };
+    const slecht = bash32(kaal, repo);
+    expect(slecht.code).toBe(1);
+    expect(slecht.fout).toMatch(/eigen worktree als --map/);
+    expect(bash32(repo, repo).code).toBe(1);
+    const ok = bash32("eigen-worktree", dir); // relatief pad
+    expect(ok.code).toBe(0);
+    expect(ok.uit).toContain(`codex -C ${realpathSync(wt)}`); // absoluut vóór codex -C
+  });
+
   test("M1: zonder grenzen-hook in de Codex-config, of zonder geldige trusted_hash ervoor, start spawn niet (tmux, T3 en --droog)", () => {
     writeFileSync(join(dir, "pane.txt"), "Ask Codex\n• Ran ls\n");
     const gevallen: [Parameters<typeof schrijfConfig>[0], RegExp][] = [
       [{ grenzen: false }, /grenzen-hook .* ontbreekt/],
       [{ vertrouwd: false }, /niet vertrouwd/],
-      [{ matcher: "Bash" }, /niet vertrouwd .*apply_patch niet|matcher dekt Bash en apply_patch niet/],
+      [{ matcher: "Bash" }, /dekt Bash en apply_patch niet/],
+      [{ matcher: "h" }, /dekt Bash en apply_patch niet/],
+      [{ kopieAf: true }, /wijkt af van de repo/],
     ];
     for (const [conf, re] of gevallen) {
       schrijfConfig(conf);

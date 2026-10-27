@@ -68,7 +68,7 @@ describe("protocol via een echt proces", () => {
 describe("tools via een echt proces", () => {
   test("send komt aan; inbox van de ontvanger toont toon() en ackt; tweede inbox is leeg", async () => {
     const s = await draaiProces("a", [roep(1, "send", { naar: "b", tekst: "hoi b" })]);
-    expect(tekstVan(s[0])).toMatch(/^afgeleverd [0-9a-f-]{36}, wek: nee \(geen\)$/);
+    expect(tekstVan(s[0])).toMatch(/^afgeleverd [0-9a-f-]{36}, wek: nee \(socket\)$/);
     const verwacht = toon(bus().inbox("b")[0]!);
     const i = await draaiProces("b", [roep(1, "inbox"), roep(2, "inbox")]);
     expect(tekstVan(i[0])).toBe(verwacht);

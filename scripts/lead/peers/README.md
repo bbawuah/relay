@@ -121,6 +121,25 @@ node_modules/.bin/tsc -p scripts/tsconfig.json
 
 Tests gebruiken een tijdelijke staatmap, een nep-wekker en een injecteerbare klok (`nu`); de parallelle tests starten echte `bun`-processen.
 
+## Wekkers
+
+`wekker.ts` (`maakWekker({env, run?, socketSchrijf?, nu?})`) geeft een ontvanger na `send` één seintje, nooit andere tekst dan `seintje(n)`. De route volgt uit `vendor` + `host` van het register:
+
+| Doel | Route | Tijdsgrens |
+|---|---|---|
+| claude / tui | één regel `{"type":"user","message":{"role":"user","content":"<seintje>"}}` naar `socket` (unix-socket, geen auth-regel). Het pad moet na `realpath` van de map `/tmp/cc-socks/<cijfers>.sock` of `$TMPDIR/cc-socks/<cijfers>.sock` zijn en `lstat` moet een socket zijn (een symlink telt niet); anders niet gewekt | 2 s |
+| codex / tui | `codex queue --thread=<thread_id> --message <seintje>`, met `CODEX_HOME=<codex_home van het doel>` als gezet (nooit die van de afzender); de TUI haalt de wachtrij elke 10 s op | 5 s |
+| t3 (beide vendors) | `t3 thread show <t3_thread> --json`; alleen bij `pendingRequestCount` 0 daarna `t3 thread send <t3_thread> <seintje>` (open vraag, ontbrekend veld of kapotte JSON: niet sturen, T3 #15517) | 10 s voor show + send samen |
+| acp | niet gewekt, `route: "acp"`, melding "niet in fase 1" | |
+| host `geen`, of een doel zonder `socket`/`thread_id`/`t3_thread` | niet gewekt, met reden in `melding` | |
+
+- **Ids**: `thread_id` en `t3_thread` moeten `^[A-Za-z0-9][A-Za-z0-9._:-]*$` zijn (t3-ids beginnen met `mcp:`); een id dat met `-` begint zou als vlag gelezen worden. Faalt de controle, dan wordt er niet gewekt. Bij codex staat het id in `--thread=<id>`; een `--` vóór de positionele argumenten van `t3` is niet gemeten en niet nodig, want de ids kunnen geen vlag zijn en het seintje begint met een letter.
+- **Tijdsgrens**: `echteRun` start het kind in een eigen procesgroep. Bij de tijdsgrens gaat de groep eruit (SIGTERM, 200 ms later SIGKILL) en komt de aanroep meteen terug, ook als een kleinkind de pipes openhoudt.
+- **Omgeving van het kind**: alleen `PATH`, `HOME`, `T3CODE_HOME` (als gezet) en bij codex de `CODEX_HOME` van het doel. Geen `LAB_*`, geen socketvariabelen, niet de `CODEX_HOME` van de afzender.
+- **Race bij T3**: tussen `show` en `send` kan de thread alsnog een vraag openen; dan komt het seintje bij een open vraag aan (T3 #15517). Het venster is klein maar niet nul.
+- De t3-binary wordt gevonden als in `spawn.sh` (`LAB_T3`, anders `t3` op PATH, anders de nieuwste versie onder `~/.t3/runtime/versions`), maar alleen een uitvoerbaar bestand telt.
+- `wek` gooit nooit; een mislukte wek (`gewekt: false`, `melding`) maakt de send niet mislukt, en de afzender ziet alleen `{gewekt, route}`. `standaardBus` gebruikt deze wekker. De tests gebruiken een echte unix-socket in een tijdelijke map en nep-`codex`/`t3` in PATH; er wordt geen echte sessie gewekt.
+
 ## MCP
 
 `server.ts` is een stdio-MCP-server (eigen JSON-RPC, JSON-regels, geen dependency) op `standaardBus(env)`. Server-naam `peers`, dus de tools heten `mcp__peers__send` enz. Afzender = `LAB_AGENT_NAAM`; zonder die variabele geeft elke tool een tool-fout (ook `list`). Staatmap = `LAB_LEAD_STAAT`.
@@ -158,3 +177,25 @@ Codex geeft een MCP-server niet de omgeving van de sessie door (ook `env_vars` w
 - Een `-c`-override zet de TUI in embedded mode ("Running without the shared background server"): de MCP-server en de hooks erven dan de omgeving van de pane.
 - Zonder `-c` (en in T3) draait een gedeelde app-server-daemon per `CODEX_HOME`; MCP-servers en hooks erven de omgeving van die daemon, en de cwd van de MCP-server is de cwd van de thread.
 - **Identiteitsfallback.** Ontbreekt `LAB_AGENT_NAAM`, dan zoekt `server.ts` vanaf zijn cwd omhoog naar `<staat>/identiteit/<sha256(echt pad van de checkout)[:24]>.json` (door `spawn.sh --vendor codex` geschreven, alleen voor een eigen worktree, alleen rol `agent`/`sublead`/`vervolg`) en gebruikt naam, lead en spawn-id daaruit. `LAB_AGENT_NAAM` uit de omgeving gaat voor. **Iedereen met dezelfde cwd krijgt die identiteit**: het is routering, geen authenticatie.
+
+## End-to-end
+
+`e2e/demo.ts` bouwt een wegwerpomgeving en loopt de hele stroom door; het draait ook als bun-test (`e2e/demo.test.ts`, dus in `bun test scripts/lead/peers`).
+
+```sh
+bun scripts/lead/peers/e2e/demo.ts     # eindigt met "e2e: groen" (exit 0) of "e2e: rood" (exit 1)
+```
+
+De omgeving: een eigen tmux (`tmux -L peerbus-e2e-<pid> -f /dev/null`, daarna `kill-server`) waarin `e2e/standin-socket.ts` de inbox-socket van de lead nabootst (`$TMPDIR/cc-socks/4242.sock`, `TMPDIR` is de tijdelijke map); een tijdelijke `LAB_LEAD_STAAT` en `HOME`; een nep-`codex` en nep-`t3` voorop in `PATH` die hun argv vastleggen. Er wordt geen echte sessie, geen echt register en geen socket van een andere sessie aangeraakt.
+
+De stroom die getoetst wordt:
+
+```
+lead ──send──▶ bus ──wekker──▶ werker            (seintje(n), nooit inhoud)
+                                 │
+                werker ──MCP inbox──▶ bus        (toon(): kop + inhoud, daarna ack)
+                werker ──MCP send───▶ bus ──wekker (socket)──▶ lead
+lead ──notify_when_idle──▶ bus ◀──idleGemeld── werker klaar ──▶ idle-bericht + seintje
+```
+
+Controles: `codex queue` krijgt exact `--thread=<id> --message <seintje>` met de `CODEX_HOME` van het doel; `t3` doet `thread show` en daarna `thread send` met alleen het seintje; de socket krijgt één regel met alleen het seintje; de inbox toont de kop van `toon()` en is na de ack leeg; het rapport van de werker komt aan en wekt de lead; `notify_when_idle` levert één idle-bericht en een seintje; `list` toont de werker als `klaar`. De CLI en de MCP-server draaien als echte processen. Niet gedekt (spoor F2): een echte Codex- of Claude-sessie, de hooks (`UserPromptSubmit`, `Stop`) en `status.sh`.

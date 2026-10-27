@@ -191,9 +191,15 @@ identiteit_pad() {
 # Is $map een eigen (linked) worktree? De hoofdcheckout krijgt nooit een identiteit: iedereen met dezelfde cwd zou die erven.
 eigen_worktree() {
   local gemeen eigen
-  gemeen=$(cd "$map" && cd "$(git_schoon rev-parse --git-common-dir)" && pwd -P) || return 1
-  eigen=$(cd "$(git_schoon -C "$map" rev-parse --absolute-git-dir)" && pwd -P) || return 1
-  [ "$eigen" != "$gemeen" ]
+  # Elke rev-parse apart toetsen: onder bash 3.2 laat `cd ""` (een mislukte git in $(…)) de werkmap staan en slaagt.
+  gemeen=$(git_schoon -C "$map" rev-parse --git-common-dir 2>/dev/null) || return 1
+  [ -n "$gemeen" ] || return 1
+  case $gemeen in /*) ;; *) gemeen="$map/$gemeen" ;; esac
+  gemeen=$(cd "$gemeen" 2>/dev/null && pwd -P) || return 1
+  eigen=$(git_schoon -C "$map" rev-parse --absolute-git-dir 2>/dev/null) || return 1
+  [ -n "$eigen" ] || return 1
+  eigen=$(cd "$eigen" 2>/dev/null && pwd -P) || return 1
+  [ -n "$gemeen" ] && [ -n "$eigen" ] && [ "$eigen" != "$gemeen" ]
 }
 
 # Een andere sessie in dezelfde checkout? Dan weigeren (de identiteit is per checkout, niet per sessie).
@@ -234,8 +240,11 @@ schrijf_identiteit() {
 #  1. --map is een eigen (linked) worktree (git-dir != git-common-dir): de identiteit is per checkout en de hoofdcheckout
 #     is van iedereen; zonder identiteit zou de werker zonder rol draaien en dan past grenzen.sh de rolregels niet toe.
 #  2. De Codex-config heeft de grenzen-hook (grenzen.sh) mét een geldige trusted_hash; zonder draait hij stil niet.
+CODEX_HOME_GEKOZEN=""
 codex_controles() {
-  local cfg="${CODEX_HOME:-$HOME/.codex}/config.toml" uit
+  CODEX_HOME_GEKOZEN="${CODEX_HOME:-$HOME/.codex}"
+  case $CODEX_HOME_GEKOZEN in /*) ;; *) CODEX_HOME_GEKOZEN="$PWD/$CODEX_HOME_GEKOZEN" ;; esac
+  local cfg="$CODEX_HOME_GEKOZEN/config.toml" uit
   eigen_worktree || fout "--vendor codex eist een eigen worktree als --map (git worktree add), niet de hoofdcheckout of een map zonder eigen worktree: $map"
   command -v "$BUN" >/dev/null 2>&1 || fout "--vendor codex heeft bun nodig om de grenzen-hook in $cfg te controleren"
   uit=$("$BUN" "$HIER/hooks/codex-controle.ts" "$cfg" 2>&1) || fout "Codex-config niet in orde, de grenzen zouden niet gelden: $uit"
@@ -357,7 +366,10 @@ if [ "$vendor" = codex ]; then
   # LAB_LEAD_STAAT mee als hij gezet is, zodat de hooks en de peers-MCP hetzelfde register zien als deze aanroep.
   staat_q=""
   [ -z "${LAB_LEAD_STAAT:-}" ] || staat_q=" LAB_LEAD_STAAT=$(printf '%q' "$LAB_LEAD_STAAT")"
-  cmd="env LAB_AGENT_NAAM=$naam LAB_AGENT_ROL=$rol LAB_LEAD_NAAM=$lead LAB_OPDRACHT=$opdracht_q LAB_SPAWN_ID=$spawn_id$staat_q codex -C $(printf '%q' "$map")"
+  # CODEX_HOME vast in het startcommando: de pane erft de omgeving van de tmux-server, niet die van deze aanroep, en
+  # codex_controles heeft juist de config van dit pad gecontroleerd. (Een T3-thread draait onder T3's eigen CODEX_HOME.)
+  codex_home_q=" CODEX_HOME=$(printf '%q' "$CODEX_HOME_GEKOZEN")"
+  cmd="env LAB_AGENT_NAAM=$naam LAB_AGENT_ROL=$rol LAB_LEAD_NAAM=$lead LAB_OPDRACHT=$opdracht_q LAB_SPAWN_ID=$spawn_id$staat_q$codex_home_q codex -C $(printf '%q' "$map")"
   [ -z "$model" ] || cmd="$cmd -m $model"
   # De peers-MCP alleen voor deze sessie (-c), nooit globaal in ~/.codex.
   server="${LAB_PEERS_SERVER:-$HIER/peers/server.ts}"
@@ -405,7 +417,7 @@ if [ "$droog" = 1 ]; then
   echo "droog: tmux set -p -t <pane> @agent_rol $rol; tmux set -p -t <pane> @agent_naam $naam"
   if [ "$vendor" = codex ]; then
     echo "droog: schrijf de identiteit (naam=$naam rol=$rol) naar $(identiteit_pad) (0600 in een map 0700); codex-wrap.sh zet die in elke hook"
-    echo "droog: gecontroleerd: $map is een eigen worktree en ${CODEX_HOME:-$HOME/.codex}/config.toml heeft de vertrouwde grenzen-hook"
+    echo "droog: gecontroleerd: $map is een eigen worktree en $CODEX_HOME_GEKOZEN/config.toml heeft de vertrouwde, actuele grenzen-hook"
   fi
   echo "droog: wacht (max ${WACHT}s) tot de pane '$KLAAR_TEKST' of de promptregel toont"
   echo "droog: toont de pane de vertrouwensvraag ('$VERTROUWEN_TEKST'), dan melding aan Brian (tmux display-message + stderr) en wachten (max ${WACHT_VERTROUWEN}s, WACHT_VERTROUWEN) tot de vraag weg is; nooit zelf antwoorden; bij time-out fout met pane en startzin"

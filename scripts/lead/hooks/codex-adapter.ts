@@ -15,10 +15,10 @@ export const PEERS_SEND = "mcp__peers__send";
 
 /**
  * Is een peers.send gelukt? De server antwoordt `afgeleverd <id>`, `dubbel <id>` (al eerder afgeleverd) of `vastgehouden <id>`
- * (nog niet in de inbox), en bij een fout met isError en "niet verstuurd (reden): melding". Alleen een mislukte of vastgehouden
- * send telt niet als rapport. `tool_response` is bij Codex een string, bij Claude een object ({content:[{text}], isError});
- * de MCP-vorm bij Codex is niet gemeten. Ontbreekt de response of herkennen we de vorm niet, dan telt de send: de gate mag
- * een werker niet vastzetten op een onbekend formaat (hij laat na MAX_BLOKKADES toch door).
+ * (nog niet in de inbox), en bij een fout met isError en "niet verstuurd (reden): melding". Alleen `afgeleverd` en `dubbel`
+ * tellen als rapport. `tool_response` is bij Codex een string, bij Claude een object ({content:[{text}], isError}); de MCP-vorm
+ * bij Codex is niet gemeten. Ontbreekt de response of is er geen tekst uit te halen, dan telt de send: de gate mag een
+ * werker niet vastzetten op een onbekend formaat (hij laat na MAX_BLOKKADES toch door).
  */
 export function sendAfgeleverd(response: unknown): boolean {
   if (response === undefined || response === null) return true;
@@ -38,9 +38,9 @@ export function sendAfgeleverd(response: unknown): boolean {
     if (Array.isArray(o.content)) tekst = o.content.map((d) => (d && typeof (d as { text?: unknown }).text === "string" ? (d as { text: string }).text : "")).join("\n");
     else if (typeof o.text === "string") tekst = o.text;
   }
-  const t = tekst.trim();
-  if (/^(niet verstuurd|vastgehouden)\b/.test(t)) return false;
-  return true;
+  // Een antwoord waarvan we de tekst kennen telt alleen als het positief met afgeleverd of dubbel begint.
+  if (tekst.trim() === "") return true;
+  return /^(afgeleverd|dubbel)\b/.test(tekst.trim());
 }
 
 /** Lees `--bron codex` uit de argumenten van hook.ts; geeft de bron en de overige argumenten. */
