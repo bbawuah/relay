@@ -46,12 +46,12 @@ function vanTekst(a: Record<string, unknown>, veld: string): string | null {
 async function roepAan(bus: Bus, ikzelf: string, naam: string, a: Record<string, unknown>): Promise<{ result: unknown; daarna?: () => void } | null> {
   if (!TOOLS.some((t) => t.name === naam)) return null;
   const mis = (t: string) => ({ result: tekst(t, true) });
-  if (naam === "list") {
-    const peers = bus.list();
-    return { result: tekst(peers.length === 0 ? "Niemand aanwezig." : JSON.stringify(peers, null, 2)) };
-  }
   if (!ikzelf) return mis("LAB_AGENT_NAAM ontbreekt: ik weet niet namens wie ik spreek.");
   switch (naam) {
+    case "list": {
+      const peers = bus.list();
+      return { result: tekst(peers.length === 0 ? "Niemand aanwezig." : JSON.stringify(peers, null, 2)) };
+    }
     case "send": {
       const naar = vanTekst(a, "naar");
       const t = typeof a.tekst === "string" ? a.tekst : null;
@@ -80,15 +80,24 @@ async function roepAan(bus: Bus, ikzelf: string, naam: string, a: Record<string,
   }
 }
 
+const PROTOCOLLEN = ["2024-11-05", "2025-03-26", "2025-06-18"];
+/** Details van een fout gaan naar stderr (kort, zonder stack); het model krijgt altijd dezelfde tekst, zonder paden. */
+const logFout = (wat: string, e: unknown) => process.stderr.write(`peers-mcp: ${wat}: ${e instanceof Error ? e.message : String(e)}\n`);
+const VASTE_FOUT = "interne fout: de peerbus kon dit niet uitvoeren (details staan in de serverlog).";
+
 /** Verwerkt één JSON-RPC-bericht. Notificaties (zonder id) krijgen geen antwoord. */
 export async function verwerk(m: Rpc, bus: Bus, env: Omgeving): Promise<Verwerkt> {
+  const geldigId = (i: unknown) => i === undefined || i === null || typeof i === "string" || typeof i === "number";
+  if (!m || typeof m !== "object" || Array.isArray(m) || !geldigId(m.id)) {
+    return { antwoord: { jsonrpc: "2.0", id: null, error: { code: -32600, message: "ongeldig verzoek (batches en losse waarden worden niet ondersteund)" } } };
+  }
   const id = m.id ?? null;
   const heeftId = m.id !== undefined && m.id !== null;
   const goed = (result: unknown, daarna?: () => void): Verwerkt => ({ antwoord: heeftId ? { jsonrpc: "2.0", id, result } : null, daarna });
   const fout = (code: number, message: string): Verwerkt => ({ antwoord: heeftId ? { jsonrpc: "2.0", id, error: { code, message } } : null });
   switch (m.method) {
     case "initialize":
-      return goed({ protocolVersion: typeof m.params?.protocolVersion === "string" ? m.params.protocolVersion : "2024-11-05", capabilities: { tools: {} }, serverInfo: { name: "peers", version: "1" } });
+      return goed({ protocolVersion: PROTOCOLLEN.includes(m.params?.protocolVersion as string) ? (m.params?.protocolVersion as string) : PROTOCOLLEN[PROTOCOLLEN.length - 1], capabilities: { tools: {} }, serverInfo: { name: "peers", version: "1" } });
     case "ping":
       return goed({});
     case "tools/list":
@@ -102,7 +111,8 @@ export async function verwerk(m: Rpc, bus: Bus, env: Omgeving): Promise<Verwerkt
       try {
         r = await roepAan(bus, env.LAB_AGENT_NAAM || "", naam, a);
       } catch (e) {
-        return goed(tekst(`interne fout: ${e instanceof Error ? e.message : String(e)}`, true));
+        logFout(`tool ${naam}`, e);
+        return goed(tekst(VASTE_FOUT, true));
       }
       return r ? goed(r.result, r.daarna) : fout(-32602, `onbekende tool: ${naam}`);
     }
@@ -115,21 +125,28 @@ if (import.meta.main) {
   const { createInterface } = await import("node:readline");
   const bus = standaardBus(process.env);
   let keten: Promise<void> = Promise.resolve();
-  const schrijf = (o: unknown) => new Promise<void>((klaar) => process.stdout.write(`${JSON.stringify(o)}\n`, () => klaar()));
-  createInterface({ input: process.stdin }).on("line", (regel) => {
-    keten = keten.then(async () => {
-      let m: Rpc;
-      try {
-        m = JSON.parse(regel);
-      } catch {
-        if (regel.trim()) await schrijf({ jsonrpc: "2.0", id: null, error: { code: -32700, message: "geen geldige JSON" } });
-        return;
-      }
-      if (!m || typeof m !== "object") return;
-      const v = await verwerk(m, bus, process.env);
-      if (v.antwoord) await schrijf(v.antwoord);
+  // true alleen als de regel echt naar stdout is geschreven; een dichte lezer (EPIPE) geeft false.
+  const schrijf = (o: unknown) => new Promise<boolean>((klaar) => process.stdout.write(`${JSON.stringify(o)}\n`, (err) => klaar(!err)));
+  process.stdout.on("error", (e) => logFout("stdout", e));
+  const stuur = async (regel: string) => {
+    let m: Rpc;
+    try {
+      m = JSON.parse(regel);
+    } catch {
+      if (regel.trim()) await schrijf({ jsonrpc: "2.0", id: null, error: { code: -32700, message: "geen geldige JSON" } });
+      return;
+    }
+    const v = await verwerk(m, bus, process.env);
+    const geschreven = v.antwoord ? await schrijf(v.antwoord) : true;
+    if (!geschreven) return logFout("antwoord niet geschreven", "stdout dicht; bijwerkingen overgeslagen");
+    try {
       v.daarna?.();
-    });
+    } catch (e) {
+      logFout("na het antwoord", e);
+    }
+  };
+  createInterface({ input: process.stdin }).on("line", (regel) => {
+    keten = keten.then(() => stuur(regel)).catch((e) => logFout("verzoek", e));
   });
   process.stdin.on("close", () => void keten.then(() => process.exit(0)));
 }

@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { type Rec, nieuwRecord, schrijfRecord } from "../hooks/register";
@@ -109,13 +109,12 @@ describe("tools via een echt proces", () => {
     expect(r[1].result.isError).toBe(true);
   });
 
-  test("zonder LAB_AGENT_NAAM geven send, inbox en notify_when_idle een duidelijke fout; list werkt", async () => {
+  test("zonder LAB_AGENT_NAAM geven alle tools een duidelijke fout", async () => {
     const r = await draaiProces(undefined, [roep(1, "send", { naar: "b", tekst: "x" }), roep(2, "inbox"), roep(3, "notify_when_idle", { naam: "b" }), roep(4, "list")]);
-    for (const x of r.slice(0, 3)) {
+    for (const x of r) {
       expect(x.result.isError).toBe(true);
       expect(tekstVan(x)).toContain("LAB_AGENT_NAAM");
     }
-    expect(r[3].result.isError).toBeUndefined();
   });
 
   test("een afzender die niet in het register staat krijgt geen_afzender", async () => {
@@ -124,7 +123,63 @@ describe("tools via een echt proces", () => {
   });
 });
 
+describe("leeslus", () => {
+  const env = () => {
+    const e: Record<string, string> = {};
+    for (const [k, v] of Object.entries(process.env)) if (v !== undefined && !k.startsWith("GIT_")) e[k] = v;
+    return { ...e, LAB_LEAD_STAAT: staat, LAB_AGENT_NAAM: "b" };
+  };
+
+  test("stdout dicht: het bericht blijft ongelezen (geen ack zonder levering)", async () => {
+    await bus().send("a", "b", "hoi");
+    const p = Bun.spawn(["bun", SERVER], { env: env(), stdin: "pipe", stdout: "pipe", stderr: "pipe" });
+    await p.stdout.cancel(); // lezer weg vóór het antwoord
+    p.stdin.write(JSON.stringify(roep(1, "inbox")) + "\n");
+    await p.stdin.end();
+    await p.exited;
+    expect(bus().inbox("b")).toHaveLength(1);
+  });
+
+  test("een ack die gooit: geen stacktrace, volgende verzoeken worden nog beantwoord, nette exit", async () => {
+    await bus().send("a", "b", "hoi");
+    // een map op de plek van het gelezen-bestand laat ack falen (EISDIR)
+    mkdirSync(join(staat, "peers", "inbox", "b.gelezen"), { recursive: true });
+    const p = Bun.spawn(["bun", SERVER], { env: env(), stdin: "pipe", stdout: "pipe", stderr: "pipe" });
+    p.stdin.write(JSON.stringify(roep(1, "inbox")) + "\n");
+    p.stdin.write(JSON.stringify({ jsonrpc: "2.0", id: 3, method: "ping" }) + "\n");
+    await p.stdin.end();
+    const [uit, fout] = await Promise.all([new Response(p.stdout).text(), new Response(p.stderr).text()]);
+    expect(await p.exited).toBe(0);
+    expect(uit.split("\n").filter(Boolean).map((l) => JSON.parse(l).id)).toContain(3);
+    expect(fout).toContain("peers-mcp:");
+    expect(fout).not.toContain("    at ");
+  });
+});
+
 describe("verwerk", () => {
+  test("protocolVersion: bekende versie terug, onbekende wordt de nieuwste", async () => {
+    const v = (pv: unknown) => verwerk({ jsonrpc: "2.0", id: 1, method: "initialize", params: { protocolVersion: pv } }, bus(), {}).then((x) => (x.antwoord!.result as any).protocolVersion);
+    expect(await v("2024-11-05")).toBe("2024-11-05");
+    expect(await v("2025-06-18")).toBe("2025-06-18");
+    expect(await v("2099-01-01")).toBe("2025-06-18");
+    expect(await v(undefined)).toBe("2025-06-18");
+  });
+
+  test("batch, losse waarde en object als id geven -32600 met id null", async () => {
+    for (const m of [[{ id: 1, method: "ping" }], 5, null, "x", { jsonrpc: "2.0", id: { a: 1 }, method: "ping" }]) {
+      const v = await verwerk(m as any, bus(), {});
+      expect(v.antwoord).toMatchObject({ id: null, error: { code: -32600 } });
+    }
+  });
+
+  test("een gooiende bus geeft de vaste fouttekst zonder pad of details", async () => {
+    const kapot = { inbox: () => { throw new Error("EACCES /geheim/pad"); } } as any;
+    const v = await verwerk(roep(1, "inbox") as any, kapot, { LAB_AGENT_NAAM: "b" });
+    const t = (v.antwoord!.result as any).content[0].text;
+    expect(t).toContain("interne fout");
+    expect(t).not.toContain("/geheim");
+  });
+
   test("inbox ackt pas na `daarna`, niet bij het antwoord zelf", async () => {
     await bus().send("a", "b", "hoi");
     const v = await verwerk(roep(1, "inbox") as any, bus(), { LAB_AGENT_NAAM: "b" });
@@ -133,9 +188,4 @@ describe("verwerk", () => {
     expect(bus().inbox("b")).toEqual([]);
   });
 
-  test("een gooiende bus wordt een tool-fout, geen crash", async () => {
-    const kapot = { list: () => { throw new Error("stuk"); } } as any;
-    const v = await verwerk(roep(1, "list") as any, kapot, {});
-    expect((v.antwoord!.result as any).isError).toBe(true);
-  });
 });

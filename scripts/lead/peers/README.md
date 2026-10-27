@@ -80,7 +80,7 @@ Tests gebruiken een tijdelijke staatmap, een nep-wekker en een injecteerbare klo
 
 ## MCP
 
-`server.ts` is een stdio-MCP-server (eigen JSON-RPC, JSON-regels, geen dependency) op `standaardBus(env)`. Server-naam `peers`, dus de tools heten `mcp__peers__send` enz. Afzender = `LAB_AGENT_NAAM`; zonder die variabele geven `send`, `inbox` en `notify_when_idle` een tool-fout (`list` werkt). Staatmap = `LAB_LEAD_STAAT`.
+`server.ts` is een stdio-MCP-server (eigen JSON-RPC, JSON-regels, geen dependency) op `standaardBus(env)`. Server-naam `peers`, dus de tools heten `mcp__peers__send` enz. Afzender = `LAB_AGENT_NAAM`; zonder die variabele geeft elke tool een tool-fout (ook `list`). Staatmap = `LAB_LEAD_STAAT`.
 
 | Tool | Argumenten | Doet |
 |---|---|---|
@@ -88,6 +88,8 @@ Tests gebruiken een tijdelijke staatmap, een nep-wekker en een injecteerbare klo
 | `inbox` | — | ongelezen berichten via `toon()`; ackt pas nadat het antwoord naar stdout geschreven is |
 | `list` | — | levende sessies als JSON, met tellers |
 | `notify_when_idle` | `naam` | `bus.notifyWhenIdle`; eenmalig |
+
+Een interne fout geeft het model altijd dezelfde vaste tekst (geen paden); de details gaan kort naar stderr. De server ondersteunt protocolversies 2024-11-05, 2025-03-26 en 2025-06-18 (een onbekende gevraagde versie krijgt de nieuwste) en geen batches. `inbox` ackt alleen als het antwoord echt geschreven is.
 
 `vasthouden` en `vrijgeven` bestaan hier bewust niet (alleen CLI, voor Brian of de lead).
 
