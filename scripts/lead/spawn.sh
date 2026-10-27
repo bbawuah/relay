@@ -492,6 +492,20 @@ case $opdracht_q in *[!A-Za-z0-9_/.:+=@-]*) opdracht_q="'$opdracht_q'" ;; esac
 spawn_id="$(date +%s)-$$-$RANDOM"
 cmd="env LAB_AGENT_NAAM=$naam LAB_AGENT_ROL=$rol LAB_LEAD_NAAM=$lead LAB_OPDRACHT=$opdracht_q LAB_SPAWN_ID=$spawn_id claude -n $naam"
 if [ -n "$model" ]; then cmd="$cmd --model $model"; fi
+server="${LAB_PEERS_SERVER:-$HIER/peers/server.ts}"
+bun_abs=$(command -v "$BUN" 2>/dev/null || true)
+if [ "$vendor" = claude ] && [ "$t3" = 0 ]; then
+  # De peers-MCP alleen voor deze sessie (--mcp-config), nooit globaal (besluit Brian 27 okt: geen `claude mcp add --scope user`).
+  # Zonder deze server krijgt een Claude-werker wel het seintje van de wekker, maar kan hij zijn inbox niet lezen (echte demo).
+  # --allowedTools mcp__peers: geen toestemmingsvraag in een pane zonder mens; de tools zijn de bus, net als SendMessage.
+  if [ -f "$server" ] && [ -n "$bun_abs" ] && [[ $server$bun_abs != *"'"* && $server$bun_abs != *'"'* && $server$bun_abs != *\\* ]]; then
+    mcp_env="\"LAB_AGENT_NAAM\":\"$naam\",\"LAB_LEAD_NAAM\":\"$lead\""
+    [ -z "${LAB_LEAD_STAAT:-}" ] || [[ $LAB_LEAD_STAAT == *"'"* || $LAB_LEAD_STAAT == *'"'* || $LAB_LEAD_STAAT == *\\* ]] || mcp_env="$mcp_env,\"LAB_LEAD_STAAT\":\"$LAB_LEAD_STAAT\""
+    cmd="$cmd --mcp-config '{\"mcpServers\":{\"peers\":{\"command\":\"$bun_abs\",\"args\":[\"$server\"],\"env\":{$mcp_env}}}}' --allowedTools=mcp__peers"
+  else
+    echo "spawn: waarschuwing: peers-MCP ($server) of bun ontbreekt; de sessie start zonder de tools van peers" >&2
+  fi
+fi
 if [ "$vendor" = codex ]; then
   # LAB_AGENT_ROL staat altijd in de omgeving (grenzen.sh past de hoofdcheckout-regel alleen toe met een rol; Codex stuurt geen agent_id).
   # LAB_LEAD_STAAT mee als hij gezet is, zodat de hooks en de peers-MCP hetzelfde register zien als deze aanroep.
@@ -512,8 +526,6 @@ if [ "$vendor" = codex ]; then
   net=false; [ "$netwerk" = 0 ] || net=true
   [ "$t3" = 1 ] || cmd="$cmd -a never -c 'default_permissions=\"lab-werker\"' -c 'permissions.lab-werker.filesystem={$SANDBOX_FS}' -c 'permissions.lab-werker.network={enabled=$net}'"
   # De peers-MCP alleen voor deze sessie (-c), nooit globaal in ~/.codex.
-  server="${LAB_PEERS_SERVER:-$HIER/peers/server.ts}"
-  bun_abs=$(command -v "$BUN" 2>/dev/null || true)
   if [ "$t3" = 1 ]; then
     :   # een T3-thread krijgt geen -c per thread: de peers-MCP leest de identiteit uit <staat>/identiteit (zie peers/server.ts)
   elif [ -f "$server" ] && [ -n "$bun_abs" ] && [[ $server$bun_abs != *"'"* && $server$bun_abs != *'"'* ]]; then
