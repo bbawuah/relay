@@ -77,3 +77,17 @@ node_modules/.bin/tsc -p scripts/tsconfig.json
 ```
 
 Tests gebruiken een tijdelijke staatmap, een nep-wekker en een injecteerbare klok (`nu`); de parallelle tests starten echte `bun`-processen.
+
+## Wekkers
+
+`wekker.ts` (`maakWekker({env, run?, socketSchrijf?, nu?})`) geeft een ontvanger na `send` één seintje, nooit andere tekst dan `seintje(n)`. De route volgt uit `vendor` + `host` van het register:
+
+| Doel | Route | Tijdsgrens |
+|---|---|---|
+| claude / tui | één regel `{"type":"user","message":{"role":"user","content":"<seintje>"}}` naar `socket` (unix-socket, geen auth-regel) | 2 s |
+| codex / tui | `codex queue --thread <thread_id> --message <seintje>`, met `CODEX_HOME=<codex_home>` als gezet; de TUI haalt de wachtrij elke 10 s op | 5 s |
+| t3 (beide vendors) | `t3 thread show <t3_thread> --json`; alleen bij `pendingRequestCount` 0 daarna `t3 thread send <t3_thread> <seintje>` (open vraag, ontbrekend veld of kapotte JSON: niet sturen, T3 #15517) | 10 s per commando |
+| acp | niet gewekt, `route: "acp"`, melding "niet in fase 1" | |
+| host `geen`, of een doel zonder `socket`/`thread_id`/`t3_thread` | niet gewekt, met reden in `melding` | |
+
+De t3-binary wordt gevonden als in `spawn.sh`: `LAB_T3`, anders `t3` op PATH, anders de nieuwste versie onder `~/.t3/runtime/versions`. `wek` gooit nooit; een mislukte wek (`gewekt: false`, `melding`) maakt de send niet mislukt, en de afzender ziet alleen `{gewekt, route}`. `standaardBus` gebruikt deze wekker. De tests gebruiken een echte unix-socket in een tijdelijke map en nep-`codex`/`t3` in PATH; er wordt geen echte sessie gewekt.
