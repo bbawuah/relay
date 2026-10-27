@@ -201,3 +201,15 @@ lead ──notify_when_idle──▶ bus ◀──idleGemeld── werker klaar 
 ```
 
 Controles: `codex queue` krijgt exact `--thread=<id> --message <seintje>` met de `CODEX_HOME` van het doel; `t3` doet `thread show` en daarna `thread send` met alleen het seintje; de socket krijgt één regel met alleen het seintje; de inbox toont de kop van `toon()` en is na de ack leeg; het rapport van de werker komt aan en wekt de lead; `notify_when_idle` levert één idle-bericht en een seintje; `list` toont de werker als `klaar`. De CLI en de MCP-server draaien als echte processen. Niet gedekt (spoor F2): een echte Codex- of Claude-sessie, de hooks (`UserPromptSubmit`, `Stop`) en `status.sh`.
+
+## Afgeleide naam voor Codex-sessies zonder identiteit
+
+Brians eigen Codex-sessies hebben geen `LAB_AGENT_NAAM`, geen identiteitsbestand en geen rol. De peers-server leidt dan per MCP-aanroep de afzender af uit `_meta.threadId` (anders `_meta.sessionId`): `codex-<laatste 12 hexcijfers van de id, zonder streepjes>`. De hook-kant (`hookOmgeving` in `codex-wrap.ts`) leidt dezelfde naam af uit `session_id` van de hookinvoer. Gemeten (Codex 0.164.0): beide id's zijn gelijk, in embedded modus en in daemon-modus; ouder-pid en `TMUX_PANE` zijn in daemon-modus gedeeld tussen sessies en dus geen sleutel. De MCP-server krijgt geen omgeving van de sessie, alleen wat in `env` van de MCP-config staat.
+
+- Alleen als er geen `LAB_AGENT_NAAM`, geen `LAB_AGENT_ROL` en geen identiteitsbestand is voor de map of een bovenliggende map (`magAfleiden`). Een kapot of verlopen bestand telt mee: een werker die zijn identiteit kwijt is, blijft weigeren.
+- Alleen `_meta` van de aanroep telt (door Codex gezet); `arguments.threadId` wordt genegeerd (test).
+- Ontbreekt een geldig id, dan weigert de server (`LAB_AGENT_NAAM ontbreekt …`). Rol en lead blijven leeg: geen rapport-gate, geen rolregels.
+- `spawn.sh` accepteert namen die met `codex-` beginnen (`^[A-Za-z0-9._-]+$`); een werker met zo'n naam zou botsen met een afgeleide naam. Een wijziging van spawn.sh volgt na #683.
+- Bekend gat: `hook.sh` en `hook.ts` doen niets zonder `LAB_AGENT_ROL`; een sessie met alleen een afgeleide naam komt dus niet in het register. Gemeten: `send` vanaf zo'n naam geeft `geen_afzender` en de inbox blijft leeg; vandaag werkt alleen `list`. Sturen en gelezen worden komt pas met een eigen rol voor Brians sessies (beleidslaag).
+- De server weigert ook als een levende registersessie met een ander id al die naam draagt (een werker die toevallig `codex-<12 hex>` heet), als `threadId` en `sessionId` beide aanwezig zijn en verschillen, en als het cwd van de hook geen absoluut pad is. `heeftIdentiteitsbestand` telt elke lstat-fout behalve ENOENT als aanwezig (faalt dicht).
+- Subagents: een `UserPromptSubmit` met `agent_id` telt niet als beurt van de hoofdsessie; een `Stop` met `agent_id` valt gewoon onder de rapport-gate.
