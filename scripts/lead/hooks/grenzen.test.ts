@@ -1208,30 +1208,42 @@ describe("python draait geïsoleerd (-I): de procesmap telt niet", () => {
     }
   });
 
-  test("mutatie: zonder -I importeert python de json.py uit de procesmap wel, en faalt de hook bij een onleesbare map", () => {
+  /** Een kopie van de hook zonder `-I`, in een eigen tijdelijke map. */
+  const zonderI = () => {
     const hooktekst = readFileSync(HOOK, "utf8");
     expect(hooktekst).toContain("/usr/bin/python3 -I -c");
     const map = tijdelijk();
     const kopie = join(map, "grenzen-zonder-I.sh");
+    writeFileSync(kopie, hooktekst.replace("/usr/bin/python3 -I -c", "/usr/bin/python3 -c"));
+    return { map, kopie };
+  };
+
+  test("mutatie: zonder -I importeert python de json.py uit de procesmap wel", () => {
+    const { map, kopie } = zonderI();
     const werk = tijdelijk();
     const merk = join(werk, "MARK-JSON");
     try {
-      writeFileSync(kopie, hooktekst.replace("/usr/bin/python3 -I -c", "/usr/bin/python3 -c"));
       writeFileSync(join(werk, "json.py"), `open(${JSON.stringify(merk)}, "w").write("gedraaid")\nraise ImportError("nep")\n`);
       inMap(kopie, werk, false);
       expect(existsSync(merk)).toBe(true);
-      if (!alsRoot) {
-        const dicht = tijdelijk();
-        try {
-          expect(inMap(kopie, dicht, true).code).toBe(2);
-        } finally {
-          chmodSync(dicht, 0o755);
-          rmSync(dicht, { recursive: true, force: true });
-        }
-      }
     } finally {
       rmSync(map, { recursive: true, force: true });
       rmSync(werk, { recursive: true, force: true });
+    }
+  });
+
+  test("mutatie (alleen macOS): zonder -I faalt de hook bij een onleesbare procesmap", () => {
+    // Alleen op macOS: daar geeft python met `''` op sys.path een PermissionError bij een onleesbare cwd. Op Linux (CI) blijft
+    // die import werken (de map wordt alleen niet gelezen), dus daar is deze mutatie niet rood te krijgen.
+    if (process.platform !== "darwin" || alsRoot) return;
+    const { map, kopie } = zonderI();
+    const dicht = tijdelijk();
+    try {
+      expect(inMap(kopie, dicht, true).code).toBe(2);
+    } finally {
+      chmodSync(dicht, 0o755);
+      rmSync(dicht, { recursive: true, force: true });
+      rmSync(map, { recursive: true, force: true });
     }
   });
 });
