@@ -106,7 +106,7 @@ exit 0
   // nep-agent-spawn: print een pane-id.
   schrijfBin("nep-agent-spawn.sh", `#!/usr/bin/env bash\necho "spawn $*" >> "$FAKE_DIR/spawn.log"\necho "bijvangst"\necho "%7"\n`);
 
-  git(dir, "init", "-q", "--bare", origin);
+  git(dir, "init", "-q", "--bare", "-b", "main", origin); // CI kent geen init.defaultBranch: anders wijst HEAD van origin naar master
   git(repo, "init", "-q", "-b", "main");
   // vangnet: nooit verdergaan als dit niet de wegwerp-repo is
   expect(git(repo, "rev-parse", "--git-dir").stdout.toString().trim()).toBe(".git");
@@ -729,7 +729,7 @@ describe("spawn.sh", () => {
     // Een tweede clone zet een commit op origin/main (in `pad`), zoals een gemergde PR terwijl de checkout van de lead stilstaat.
     const mergeOpMain = (pad: string) => {
       const clone = join(dir, "andere-clone");
-      git(dir, "clone", "-q", origin, clone);
+      git(dir, "clone", "-q", "-b", "main", origin, clone);
       mkdirSync(join(clone, dirname(pad)), { recursive: true });
       writeFileSync(join(clone, pad), "nieuw\n");
       git(clone, "add", "-A");
@@ -784,17 +784,20 @@ describe("spawn.sh", () => {
     });
 
     test("een hangende fetch stopt na LAB_SPAWN_FETCH_S: git zelf is weg (geen wees), spawn gaat door met een waarschuwing", () => {
-      // Nep-ssh op PATH (GIT_SSH_COMMAND='ssh -oBatchMode=yes'): noteert de pid van git (zijn ouder) en zichzelf, en hangt.
+      // Nep-ssh op PATH (GIT_SSH_COMMAND='ssh -oBatchMode=yes'): noteert zichzelf en zijn argumenten, en hangt.
+      // Geen $PPID als pid van git: op Linux zit er een `sh -c` (dash, zonder exec) tussen git en ssh.
       const pids = join(dir, "ssh-pids");
-      schrijfBin("ssh", `#!/bin/sh\necho "$PPID $$ $*" > ${pids}\nexec sleep 30\n`);
+      schrijfBin("ssh", `#!/bin/sh\necho "$$ $*" > ${pids}\nexec sleep 30\n`);
       git(repo, "remote", "set-url", "origin", "ssh://hangt.invalid/x.git");
       const r = draai(SPAWN, args(), basis({ LAB_SPAWN_FETCH_S: "1" }));
-      const [gitPid, sshPid, ...sshArgs] = readFileSync(pids, "utf8").trim().split(" ");
+      const [sshPid, ...sshArgs] = readFileSync(pids, "utf8").trim().split(" ");
       try {
         expect(r.code).toBe(0);
         expect(r.fout).toMatch(/waarschuwing: ophalen van origin\/main mislukte \(exit 143\)/);
         expect(sshArgs).toContain("-oBatchMode=yes");
-        expect(() => process.kill(Number(gitPid), 0)).toThrow();
+        // git zelf (met -C <deze wegwerp-repo> fetch) draait niet meer
+        const nog = Bun.spawnSync(["ps", "-eo", "args"]).stdout.toString().split("\n").filter((l) => l.startsWith("git ") && l.includes(` -C ${repo} fetch`));
+        expect(nog).toEqual([]);
       } finally {
         try {
           process.kill(Number(sshPid));
