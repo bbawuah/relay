@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { AppServer, HookInfo } from "./codex-appserver";
 import { kiesBun } from "../installeer-hooks";
+import { PEERS_BESTANDEN } from "./peers-kopie";
 import { GELIJK_AAN_REPO, controleerGrenzen, woorden } from "./codex-controle";
 import { BESTANDEN, EINDE, EVENTS, GRENZEN_MATCHER, START, blokIn, commando, installeer, leesArgs, maakBlok, zetBlok, type Opties } from "./codex-installeer";
 
@@ -153,7 +154,7 @@ describe("installeer", () => {
     expect(statSync(join(home, "hooks/lab-lead-hooks/codex-wrap.sh")).mode & 0o100).toBeTruthy();
     expect(statSync(join(home, "hooks/lab-lead-hooks/grenzen.sh")).mode & 0o100).toBeTruthy();
     // de peerbus voor hook.ts (laadPeers): peers/ en een tweede register.ts onder hooks/
-    for (const b of ["bus.ts", "standaard.ts", "types.ts", "uuid.ts"]) expect(existsSync(join(home, "hooks/lab-lead-hooks/peers", b))).toBe(true);
+    for (const b of PEERS_BESTANDEN) expect(existsSync(join(home, "hooks/lab-lead-hooks/peers", b))).toBe(true);
     expect(existsSync(join(home, "hooks/lab-lead-hooks/hooks/register.ts"))).toBe(true);
     expect(u.stdout).toContain(`klaar: ${EVENTS.length} hooks vertrouwd`);
   });

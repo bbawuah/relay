@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, readlinkSync, renameSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { PEERS_BESTANDEN } from "./hooks/peers-kopie";
 import { EVENTS, MERK, type Opties, installeer, kiesBun, leesArgs } from "./installeer-hooks";
 
 // Alles in een wegwerpmap; de echte ~/.claude wordt nooit gelezen of geschreven.
@@ -79,9 +80,16 @@ describe("installeer-hooks", () => {
   test("kopieert hook.sh (uitvoerbaar), hook.ts, register.ts, codex-adapter.ts en de peerbus (peers/ en hooks/register.ts)", () => {
     installeer(opties());
     expect(readdirSync(doel).sort()).toEqual(["codex-adapter.ts", "hook.sh", "hook.ts", "hooks", "peers", "register.ts"]);
-    expect(readdirSync(join(doel, "peers")).sort()).toEqual(["bus.ts", "standaard.ts", "types.ts", "uuid.ts"]);
+    expect(readdirSync(join(doel, "peers")).sort()).toEqual(["bus.ts", "standaard.ts", "types.ts", "uuid.ts", "wekker.ts"]);
     expect(readdirSync(join(doel, "hooks"))).toEqual(["register.ts"]);
     expect(statSync(join(doel, "hook.sh")).mode & 0o111).toBeGreaterThan(0);
+  });
+
+  test("elk lokaal importbestand van de gekopieerde peers-bestanden staat zelf in de kopielijst (anders laadt de geïnstalleerde hook geen bus)", () => {
+    for (const b of PEERS_BESTANDEN) {
+      const tekst = readFileSync(join(import.meta.dir, "peers", b), "utf8");
+      for (const m of tekst.matchAll(/from "\.\/([\w-]+)"/g)) expect(PEERS_BESTANDEN).toContain(`${m[1]}.ts`);
+    }
   });
 
   test("de geïnstalleerde hook laadt de peerbus: een bericht geeft het seintje (niet de inhoud)", async () => {

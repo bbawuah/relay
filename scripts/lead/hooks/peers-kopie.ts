@@ -4,7 +4,7 @@
 
 import { join } from "node:path";
 
-export const PEERS_BESTANDEN = ["bus.ts", "standaard.ts", "types.ts", "uuid.ts"];
+export const PEERS_BESTANDEN = ["bus.ts", "standaard.ts", "types.ts", "uuid.ts", "wekker.ts"];
 
 /** [bron, doel]-paren; `bron` is de map met hook.ts (scripts/lead/hooks), `doel` de installatiemap. */
 export function peersKopieen(bron: string, doel: string): [string, string][] {
