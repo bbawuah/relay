@@ -738,4 +738,11 @@ describe("Codex-subagent (fixture codex-UserPromptSubmit-subagent.json)", () => 
     await verwerk("UserPromptSubmit", gewoon, omgeving(), codex);
     expect(leesRecord(staat, sid)).toMatchObject({ toestand: "bezig", rapport_in_beurt: false, tools_in_beurt: 0 });
   });
+
+  test("een Stop met agent_id valt nog gewoon onder de rapport-gate (alleen UserPromptSubmit wordt gefilterd)", async () => {
+    const env = omgeving({ LAB_AGENT_ROL: "agent" });
+    await stuurTool(env);
+    const u = await verwerk("Stop", inv({ stop_hook_active: false, agent_id: "sub-1", agent_type: "default" }), env, opt);
+    expect(JSON.parse(u.stdout).decision).toBe("block");
+  });
 });

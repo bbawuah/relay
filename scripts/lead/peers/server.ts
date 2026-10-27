@@ -8,7 +8,7 @@
 
 import { identiteitEnv } from "../hooks/codex-wrap";
 import { type Omgeving, staatMap } from "../hooks/register";
-import { afgeleideNaam, magAfleiden } from "./afgeleide-naam";
+import { afgeleideNaam, botstMetLevendeSessie, magAfleiden } from "./afgeleide-naam";
 import { standaardBus } from "./standaard";
 import { type Bus, toon } from "./types";
 
@@ -98,10 +98,16 @@ export function metIdentiteit(env: Omgeving, cwd: string, nu = Date.now()): Omge
 }
 
 /** De afgeleide naam uit `_meta` van de aanroep (door Codex gezet, niet door het model); `arguments` telt nooit mee. */
-function metaNaam(meta: unknown): string | null {
+function metaNaam(meta: unknown, env: Omgeving): string | null {
   if (!meta || typeof meta !== "object" || Array.isArray(meta)) return null;
   const m = meta as Record<string, unknown>;
-  return afgeleideNaam(m.threadId) ?? afgeleideNaam(m.sessionId);
+  // Staan beide id's er, dan moeten ze gelijk zijn; anders weigert de server.
+  if (m.threadId !== undefined && m.sessionId !== undefined && m.threadId !== m.sessionId) return null;
+  const id = m.threadId ?? m.sessionId;
+  const naam = afgeleideNaam(id);
+  if (!naam || typeof id !== "string") return null;
+  // De naam van een levende andere sessie (bijvoorbeeld een werker die zo heet) is nooit de onze.
+  return botstMetLevendeSessie(staatMap(env), naam, id) ? null : naam;
 }
 
 const PROTOCOLLEN = ["2024-11-05", "2025-03-26", "2025-06-18"];
@@ -134,7 +140,7 @@ export async function verwerk(m: Rpc, bus: Bus, env: Omgeving, afleiden = false)
       const a = args && typeof args === "object" && !Array.isArray(args) ? (args as Record<string, unknown>) : {};
       let r: Awaited<ReturnType<typeof roepAan>>;
       try {
-        r = await roepAan(bus, env.LAB_AGENT_NAAM || (afleiden ? metaNaam(m.params?._meta) : "") || "", naam, a);
+        r = await roepAan(bus, env.LAB_AGENT_NAAM || (afleiden ? metaNaam(m.params?._meta, env) : "") || "", naam, a);
       } catch (e) {
         logFout(`tool ${naam}`, e);
         return goed(tekst(VASTE_FOUT, true));

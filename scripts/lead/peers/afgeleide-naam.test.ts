@@ -1,9 +1,9 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { identiteitPad } from "../hooks/register";
-import { afgeleideNaam, magAfleiden } from "./afgeleide-naam";
+import { heeftIdentiteitsbestand, identiteitPad, nieuwRecord, schrijfRecord } from "../hooks/register";
+import { afgeleideNaam, botstMetLevendeSessie, magAfleiden } from "./afgeleide-naam";
 import { geldigeNaam } from "./bus";
 
 let dir: string;
@@ -45,5 +45,36 @@ describe("magAfleiden", () => {
     expect(magAfleiden({}, staat, map)).toBe(false);
     expect(magAfleiden({}, staat, join(map, "sub"))).toBe(false);
     expect(magAfleiden({}, staat, dir)).toBe(true);
+  });
+});
+
+describe("fail closed", () => {
+  test("een cwd dat geen absoluut pad is geeft nooit een naam", () => {
+    for (const c of ["", ".", "relatief/pad", "../x"]) expect(magAfleiden({}, staat, c)).toBe(false);
+  });
+  test("heeftIdentiteitsbestand: een andere lstat-fout dan ENOENT telt als aanwezig", () => {
+    mkdirSync(join(staat, "identiteit"), { recursive: true, mode: 0o700 });
+    expect(heeftIdentiteitsbestand(staat, map)).toBe(false);
+    chmodSync(join(staat, "identiteit"), 0o000); // lstat op een bestand in een map zonder rechten: EACCES
+    try {
+      expect(heeftIdentiteitsbestand(staat, map)).toBe(true);
+      expect(magAfleiden({}, staat, map)).toBe(false);
+    } finally {
+      chmodSync(join(staat, "identiteit"), 0o700);
+    }
+  });
+});
+
+describe("botstMetLevendeSessie", () => {
+  const naam = "codex-ac8ef9f536d4";
+  const rec = (id: string, extra = {}) => schrijfRecord(staat, { ...nieuwRecord(id, { LAB_AGENT_NAAM: naam, LAB_AGENT_ROL: "agent" }, "/w", 1), ...extra });
+  test("een levende andere sessie met die naam botst; de eigen sessie, een beëindigde of een andere naam niet", () => {
+    expect(botstMetLevendeSessie(staat, naam, "eigen")).toBe(false);
+    rec("werker-1");
+    expect(botstMetLevendeSessie(staat, naam, "eigen")).toBe(true);
+    expect(botstMetLevendeSessie(staat, naam, "werker-1")).toBe(false);
+    expect(botstMetLevendeSessie(staat, "codex-000000000000", "eigen")).toBe(false);
+    rec("werker-1", { toestand: "weg", einde: 2 });
+    expect(botstMetLevendeSessie(staat, naam, "eigen")).toBe(false);
   });
 });

@@ -130,6 +130,9 @@ describe("identiteitEnv", () => {
     schrijfIdentiteit(staat, werk, { ...ident, ts: Date.now() - IDENTITEIT_MAX_MS - 1000 });
     expect(hookOmgeving({ PATH: "/bin", LAB_LEAD_STAAT: staat }, werk, Date.now(), sid).LAB_AGENT_NAAM).toBeUndefined();
   });
+  test("hookOmgeving: een cwd dat geen absoluut pad is geeft geen afgeleide naam", () => {
+    for (const c of ["", "relatief", "../x"]) expect(hookOmgeving({ PATH: "/bin", LAB_LEAD_STAAT: staat }, c, Date.now(), "01a17ebd-76bc-7472-a451-ac8ef9f536d4").LAB_AGENT_NAAM).toBeUndefined();
+  });
   test("sessieUitInvoer", () => {
     expect(sessieUitInvoer('{"session_id":"abc"}')).toBe("abc");
     expect(sessieUitInvoer("{kapot")).toBe("");

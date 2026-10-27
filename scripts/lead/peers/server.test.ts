@@ -242,7 +242,8 @@ describe("afgeleide naam voor een Codex-sessie zonder identiteit (CONTRACT.md, W
   const naam = "codex-ac8ef9f536d4";
   const metaRoep = (id: number, name: string, meta: unknown, args: unknown = {}) => ({ jsonrpc: "2.0", id, method: "tools/call", params: { name, arguments: args, ...(meta === undefined ? {} : { _meta: meta }) } });
   const bus1 = () => maakBus({ staat, nu: () => T0, machine: "testmachine" });
-  beforeEach(() => sessie(naam));
+  // de eigen sessie staat onder het thread-id in het register (zoals een toekomstige eigen rol dat doet)
+  beforeEach(() => schrijfRecord(staat, { ...nieuwRecord(tid, { LAB_AGENT_NAAM: naam }, "/w/eigen", T0), inbound: { standaard: "accept" } } as Rec));
 
   test("zonder naam, rol en identiteitsbestand komt de afzender uit _meta.threadId", async () => {
     const r = await verwerk(metaRoep(1, "send", { threadId: tid }, { naar: "a", tekst: "hoi" }) as any, bus1(), { LAB_LEAD_STAAT: staat }, true);
@@ -279,5 +280,19 @@ describe("afgeleide naam voor een Codex-sessie zonder identiteit (CONTRACT.md, W
     await Bun.write(identiteitPad(staat, realpathSync(wt)), "{kapot");
     const [, fout] = await draaiProces(undefined, [init, metaRoep(1, "list", { threadId: tid })], wt);
     expect(tekstVan(fout)).toContain("LAB_AGENT_NAAM ontbreekt");
+  });
+  test("een levende andere sessie met die naam (een werker die zo heet): geen afgeleide naam, de inbox van die werker blijft dicht", async () => {
+    sessie(naam); // zet een registerrecord met die naam (id `id-<naam>`, niet de thread-id)
+    await verwerk(metaRoep(1, "send", { threadId: tid }, { naar: "a", tekst: "hoi" }) as any, bus1(), { LAB_LEAD_STAAT: staat }, true);
+    const r = await verwerk(metaRoep(2, "inbox", { threadId: tid }) as any, bus1(), { LAB_LEAD_STAAT: staat }, true);
+    expect(tekstVan(r.antwoord)).toContain("LAB_AGENT_NAAM ontbreekt");
+    expect(bus1().inbox("a")).toHaveLength(0);
+  });
+  test("threadId en sessionId allebei aanwezig: gelijk is goed, verschillend weigert", async () => {
+    const ander = "01a17ebd-76bc-7472-a451-000000000001";
+    const goed = await verwerk(metaRoep(1, "list", { threadId: tid, sessionId: tid }) as any, bus1(), { LAB_LEAD_STAAT: staat }, true);
+    expect(tekstVan(goed.antwoord)).not.toContain("LAB_AGENT_NAAM ontbreekt");
+    const fout = await verwerk(metaRoep(2, "list", { threadId: tid, sessionId: ander }) as any, bus1(), { LAB_LEAD_STAAT: staat }, true);
+    expect(tekstVan(fout.antwoord)).toContain("LAB_AGENT_NAAM ontbreekt");
   });
 });
