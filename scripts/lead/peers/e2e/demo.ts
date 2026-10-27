@@ -128,7 +128,7 @@ export async function draaiDemo(opties: { wacht?: (ms: number) => Promise<void> 
     mkdirSync(codexHome, { recursive: true });
     mkdirSync(join(dir, "home"), { recursive: true });
     writeFileSync(join(bin, "codex"), `#!/bin/sh\nprintf 'CODEX_HOME=%s\\n' "$CODEX_HOME" >> "${codexLog}"\nprintf 'ARG=%s\\n' "$@" >> "${codexLog}"\nexit 0\n`);
-    writeFileSync(join(bin, "t3"), `#!/bin/sh\nprintf '%s\\n' "$*" >> "${t3Log}"\n[ "$2" = show ] && echo '{"pendingRequestCount":0}'\nexit 0\n`);
+    writeFileSync(join(bin, "t3"), `#!/bin/sh\nprintf '%s\\n' "$*" >> "${t3Log}"\n[ "$2" = show ] && echo '{"messages":[],"thread":{"pendingRequestCount":0}}'\nexit 0\n`);
     chmodSync(join(bin, "codex"), 0o755);
     chmodSync(join(bin, "t3"), 0o755);
 

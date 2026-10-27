@@ -190,7 +190,8 @@ export function maakWekker(opties: { env: Omgeving; run?: Run; socketSchrijf?: S
     if (toon.code !== 0) return mislukt("t3", `t3 thread show: exit ${toon.code}`);
     let open: unknown;
     try {
-      open = (JSON.parse(toon.stdout) as { pendingRequestCount?: unknown }).pendingRequestCount;
+      // `t3 thread show --json` geeft {messages, thread}; het veld staat onder thread (zoals spawn.sh het leest).
+      open = (JSON.parse(toon.stdout) as { thread?: { pendingRequestCount?: unknown } } | null)?.thread?.pendingRequestCount;
     } catch {
       return mislukt("t3", "t3 thread show: uitvoer is geen JSON");
     }
