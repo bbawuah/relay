@@ -15,3 +15,7 @@ Eén bron voor wat Claude (en straks Codex) aan hooks krijgt. Plan en contract: 
 - De grenzen-hook staat in de bron, maar de installer zet hem nog niet (`metGrenzen` staat uit): Brian heeft die entry met de hand. Met `metGrenzen` neemt de generator een bestaande, ongemarkeerde `grenzen.sh`-entry over (één entry, gemarkeerd `LAB_BELEID_ID=grenzen`); dat is voor fase 2.
 - Markering: lead-hooks behouden `lab-lead-hooks/hook.sh` in het commando (bestaande installaties blijven "eigen"); nieuwe entries krijgen `LAB_BELEID_ID=<id>`.
 - Snapshots in `fixtures/claude-*.json`: opnieuw maken met `BELEID_FIXTURES=1 bun test scripts/lead/beleid` en de diff nalopen.
+
+## Merge-gevaar fase 1 en 2
+- De grenzen-hook wordt in fase 1 niet door de installer gezet (Brian heeft die entry met de hand, de oude installer zette hem nooit); aanzetten (`metGrenzen`) is fase 2.
+- Contractaanvulling: `hosts.ts` heeft naast `events` en `tools` een tabel `eventMatcher` voor matchers van events die geen toolklasse zijn (SessionStart `startup|clear|resume`, Notification `permission_prompt|idle_prompt`).
