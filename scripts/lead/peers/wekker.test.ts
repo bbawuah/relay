@@ -95,7 +95,7 @@ describe("codex/tui: codex queue", () => {
     const a = await maakWekker({ env: {}, run: nepRun(() => ({ code: 1, stderr: "Error: No active session" })).run }).wek(doel, 1);
     expect(a.gewekt).toBe(false);
     expect(a.melding).toContain("No active session");
-    const b = await maakWekker({ env: {}, run: nepRun(() => ({ code: null, timeout: true })).run }).wek(doel, 1);
+    const b = await maakWekker({ env: {}, run: nepRun(() => ({ code: 137, timeout: true })).run }).wek(doel, 1);
     expect(b).toMatchObject({ gewekt: false, route: "codex-queue" });
   });
 
