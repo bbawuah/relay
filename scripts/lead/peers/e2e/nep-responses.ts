@@ -36,7 +36,7 @@ export function startNep(stappen: Stap[]): Nep {
     hostname: "127.0.0.1",
     async fetch(req) {
       const url = new URL(req.url);
-      verzoeken.push({ pad: url.pathname, body: (await req.text()).slice(0, 300_000) });
+      verzoeken.push({ pad: url.pathname, body: (await req.text()).slice(-300_000) });
       if (url.pathname.endsWith("/models")) return Response.json({ models: [] });
       if (!url.pathname.endsWith("/responses")) return new Response("{}", { status: 404 });
       const stap = stappen[Math.min(n, stappen.length - 1)] ?? { tekst: "klaar" };

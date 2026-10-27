@@ -1,5 +1,8 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { SPAWN_STUB, STAPPEN, codexConfig } from "./codex-demo";
+import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { SPAWN_STUB, STAPPEN, codexConfig, ruimSocketOp, shellQuote } from "./codex-demo";
 import { type Nep, antwoord, startNep } from "./nep-responses";
 
 // De echte Codex-run (codex-demo.ts) eist codex en tmux en duurt ~30 s: die draait handmatig (README, F-echte-demo.md), niet in
@@ -60,5 +63,39 @@ describe("codex-demo onderdelen", () => {
     expect(SPAWN_STUB).toContain("tmux new-window -P -F '#{pane_id}' -c \"$2\" \"$3\"");
     expect(SPAWN_STUB).not.toContain(".claude");
     expect(SPAWN_STUB).toContain('[ "$1" = window ] || exit 1');
+  });
+});
+
+describe("opruimen van de stand-in-socket", () => {
+  const maak = () => {
+    const d = mkdtempSync(join(tmpdir(), "codex-demo-test-"));
+    const pad = join(d, "1.sock");
+    writeFileSync(pad, "van een ander");
+    return { d, pad };
+  };
+
+  test("een bestaand bestand dat niet van ons is, blijft staan", () => {
+    const { d, pad } = maak();
+    try {
+      expect(ruimSocketOp(pad, false)).toBe(false);
+      expect(existsSync(pad)).toBe(true);
+    } finally {
+      rmSync(d, { recursive: true, force: true });
+    }
+  });
+
+  test("een eigen socket wordt verwijderd", () => {
+    const { d, pad } = maak();
+    try {
+      expect(ruimSocketOp(pad, true)).toBe(true);
+      expect(existsSync(pad)).toBe(false);
+    } finally {
+      rmSync(d, { recursive: true, force: true });
+    }
+  });
+
+  test("shellQuote zet een pad met spaties en een aanhalingsteken veilig tussen quotes", () => {
+    expect(shellQuote("/tmp/a b")).toBe("'/tmp/a b'");
+    expect(shellQuote("it's")).toBe("'it'\\''s'");
   });
 });

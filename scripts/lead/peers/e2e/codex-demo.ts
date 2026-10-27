@@ -7,7 +7,7 @@
 // Stroom: spawn → Codex start in tmux → nep-model: Bash `ls`, dan peers.send naar de lead, dan eindbericht → hooks vullen het
 // register → de lead leest het rapport en de socket kreeg één seintje. Zie README "End-to-end" en F-echte-demo.md.
 
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { schoneEnv } from "../../../test-integriteit";
@@ -39,6 +39,20 @@ export function codexConfig(nepUrl: string, worktree: string): string {
 }
 
 /** Een spawn-script voor tmux: opent een venster in de tmux-server van de demo (de echte staat in ~/.claude blijft ongemoeid). */
+/** Verwijdert de stand-in-socket alleen als de demo hem zelf aanmaakte; een bestaand bestand van een ander blijft staan. */
+export function ruimSocketOp(pad: string, eigen: boolean): boolean {
+  if (!eigen) return false;
+  try {
+    rmSync(pad, { force: true });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/** Zet `s` veilig tussen enkele aanhalingstekens voor een shell-opdrachtregel. */
+export const shellQuote = (s: string): string => `'${s.replace(/'/g, `'\\''`)}'`;
+
 export const SPAWN_STUB = `#!/bin/bash\n[ "$1" = window ] || exit 1\ntmux new-window -P -F '#{pane_id}' -c "$2" "$3"\n`;
 
 export async function draaiCodexDemo(): Promise<Demo> {
@@ -59,6 +73,7 @@ export async function draaiCodexDemo(): Promise<Demo> {
   const tmuxNaam = `peerbus-codex-e2e-${process.pid}-${Math.random().toString(36).slice(2, 8)}`;
   let nep: ReturnType<typeof startNep> | undefined;
   let tmuxSocket = "";
+  let eigenSock = false; // pas waar na de bestaanscontrole: alleen een socket die wij aanmaken, ruimen wij op
 
   const schoon: Record<string, string> = {};
   for (const [k, v] of Object.entries(process.env)) if (v !== undefined && !k.startsWith("GIT_") && !k.startsWith("LAB_") && !k.startsWith("CODEX_") && k !== "TMUX" && k !== "TMUX_PANE" && !k.startsWith("CLAUDE")) schoon[k] = v;
@@ -68,7 +83,7 @@ export async function draaiCodexDemo(): Promise<Demo> {
 
   const tmux = (...a: string[]): { exitCode: number; stdout: string; stderr: string } => {
     try {
-      const r = Bun.spawnSync(["tmux", "-L", tmuxNaam, "-f", "/dev/null", ...a], { env: { ...schoon, TMUX: "" } as Record<string, string>, stdout: "pipe", stderr: "pipe" });
+      const r = Bun.spawnSync(["tmux", "-L", tmuxNaam, "-f", "/dev/null", ...a], { env: { ...schoon, TMUX: "" } as Record<string, string>, stdout: "pipe", stderr: "pipe", timeout: 30_000 });
       return { exitCode: r.exitCode ?? -1, stdout: r.stdout.toString(), stderr: r.stderr.toString() };
     } catch (e) {
       return { exitCode: -1, stdout: "", stderr: e instanceof Error ? e.message : String(e) };
@@ -91,9 +106,7 @@ export async function draaiCodexDemo(): Promise<Demo> {
     try {
       if (tmuxSocket) rmSync(tmuxSocket, { force: true });
     } catch {}
-    try {
-      rmSync(sockPad, { force: true });
-    } catch {}
+    ruimSocketOp(sockPad, eigenSock);
     for (const pid of demoPids()) {
       try {
         process.kill(pid, "SIGTERM");
@@ -106,14 +119,19 @@ export async function draaiCodexDemo(): Promise<Demo> {
       rmSync(dir, { recursive: true, force: true });
     } catch {}
   };
+  // `on`, niet `once`: een tweede Ctrl-C ruimt dan ook nog op (opruimen() doet het hooguit één keer).
   const bijSignaal = (code: number) => () => {
     opruimen();
     process.exit(code);
   };
-  const onInt = bijSignaal(130);
-  const onTerm = bijSignaal(143);
-  process.once("SIGINT", onInt);
-  process.once("SIGTERM", onTerm);
+  const handlers: [string, () => void][] = [
+    ["SIGINT", bijSignaal(130)],
+    ["SIGTERM", bijSignaal(143)],
+    ["SIGHUP", bijSignaal(129)],
+    ["uncaughtException", bijSignaal(1)],
+    ["unhandledRejection", bijSignaal(1)],
+  ];
+  for (const [sig, h] of handlers) process.on(sig, h);
 
   const regels = (pad: string) => (existsSync(pad) ? readFileSync(pad, "utf8").split("\n").filter(Boolean) : []);
   /** Wacht (hoogstens `s` seconden) tot `klaar` waar is. */
@@ -143,7 +161,14 @@ export async function draaiCodexDemo(): Promise<Demo> {
       controle(`${prog} gevonden`, w.exitCode === 0, `${prog} staat niet in PATH`);
       if (w.exitCode !== 0) return { controles, ok: false, tmuxNaam };
     }
-    if (existsSync(sockPad)) throw new Error(`${sockPad} bestaat al: niet van ons, de demo stopt`);
+    let bestaat = true;
+    try {
+      lstatSync(sockPad); // lstat: ook een dode symlink telt als bestaand
+    } catch {
+      bestaat = false;
+    }
+    if (bestaat) throw new Error(`${sockPad} bestaat al: niet van ons, de demo stopt`);
+    eigenSock = true; // vanaf hier is het pad van ons
     mkdirSync(staat, { recursive: true });
     mkdirSync(codexHome, { recursive: true });
     mkdirSync(repo, { recursive: true });
@@ -166,7 +191,7 @@ export async function draaiCodexDemo(): Promise<Demo> {
     if (inst.exitCode !== 0) return { controles, ok: false, tmuxNaam };
 
     // tmux met de stand-in-socket van de lead; de lead staat in het register.
-    const t = tmux("new-session", "-d", "-s", "lead", `${process.execPath} ${STANDIN} ${sockPad} ${sockLog}`);
+    const t = tmux("new-session", "-d", "-s", "lead", `${shellQuote(process.execPath)} ${shellQuote(STANDIN)} ${shellQuote(sockPad)} ${shellQuote(sockLog)}`);
     controle("tmux wegwerp-server gestart", t.exitCode === 0, t.stderr || "tmux startte niet");
     if (t.exitCode !== 0) return { controles, ok: false, tmuxNaam };
     tmuxSocket = tmux("display-message", "-p", "-t", "lead", "#{socket_path}").stdout.trim();
@@ -175,7 +200,7 @@ export async function draaiCodexDemo(): Promise<Demo> {
     schrijfRecord(staat, { ...nieuwRecord("id-lead-e2e", { LAB_AGENT_NAAM: "lead-e2e", LAB_LEAD_NAAM: "" }, "/wegwerp/lead-e2e", nu), vendor: "claude", host: "tui", socket: sockPad, inbound: { standaard: "accept" } } as Rec);
 
     // spawn.sh --vendor codex, binnen de wegwerp-tmux (spawn.sh eist $TMUX).
-    const cmd = `LAB_SPAWN_SCRIPT=${stub} LAB_SPAWN_WACHT=${WERKER_WACHT_S} bash ${SPAWN} --vendor codex --naam cx-e2e --opdracht ${opdracht} --lead lead-e2e --map ${wd} --model nep > ${spawnUit} 2>&1; echo "exit $?" >> ${spawnUit}`;
+    const cmd = `LAB_SPAWN_SCRIPT=${shellQuote(stub)} LAB_SPAWN_WACHT=${WERKER_WACHT_S} bash ${shellQuote(SPAWN)} --vendor codex --naam cx-e2e --opdracht ${shellQuote(opdracht)} --lead lead-e2e --map ${shellQuote(wd)} --model nep > ${shellQuote(spawnUit)} 2>&1; echo "exit $?" >> ${shellQuote(spawnUit)}`;
     tmux("set-environment", "-g", "CODEX_HOME", codexHome);
     tmux("set-environment", "-g", "LAB_LEAD_STAAT", staat);
     tmux("run-shell", "-b", cmd);
@@ -185,13 +210,18 @@ export async function draaiCodexDemo(): Promise<Demo> {
 
     // De werker voert de drie modelstappen uit; de hooks vullen het register.
     controle("het nep-model kreeg drie verzoeken (Bash, peers.send, eindbericht)", await totdat(() => nep!.verzoeken.filter((v) => v.pad.endsWith("/responses")).length >= 3, 60), `${nep.verzoeken.filter((v) => v.pad.endsWith("/responses")).length} verzoeken`);
-    const sendUitslag = nep.verzoeken.filter((v) => v.pad.endsWith("/responses")).map((v) => /afgeleverd[^"\\]*/.exec(v.body)?.[0]).find(Boolean) ?? "";
+    // Elk verzoek bevat de hele geschiedenis; het laatste verzoek met het toolresultaat is het volledigste.
+    const sendUitslag = nep.verzoeken.filter((v) => v.pad.endsWith("/responses")).map((v) => /afgeleverd[^"\\]*/.exec(v.body)?.[0]).filter(Boolean).at(-1) ?? "";
     controle("peers.send van de werker meldt: afgeleverd, wek: ja (socket)", /^afgeleverd .*wek: ja \(socket\)/.test(sendUitslag), sendUitslag);
-    controle("de socket van de lead kreeg precies één seintje van de werker", await totdat(() => regels(sockLog).length >= 1, 20) && regels(sockLog).length === 1, regels(sockLog).join(" | "));
+    // Pas tellen als het eindbericht er is (derde verzoek) en de eerste regel binnen is; dan een korte rust voor een eventueel tweede seintje.
+    const eerste = await totdat(() => regels(sockLog).length >= 1, 20);
+    // echte-klok: rust na het eindbericht, een tweede seintje zou van een ander proces komen
+    await Bun.sleep(1500);
+    controle("de socket van de lead kreeg precies één seintje van de werker", eerste && regels(sockLog).length === 1, regels(sockLog).join(" | "));
     const li = await cli("lead-e2e", "inbox");
     controle("de lead leest het rapport van cx-e2e", li.code === 0 && li.uit.includes("Bericht van cx-e2e") && li.uit.includes("klaar: rapport van de Codex-werker"), li.uit + li.fout);
     const lijst = await cli("lead-e2e", "list");
-    controle("list toont cx-e2e (codex) onder lead-e2e", /cx-e2e\tcodex/.test(lijst.uit) || /cx-e2e/.test(lijst.uit), lijst.uit + lijst.fout);
+    controle("list toont cx-e2e (codex) onder lead-e2e", /^cx-e2e\tcodex\/\S+\t.*lead lead-e2e/m.test(lijst.uit), lijst.uit + lijst.fout);
     const rec = (() => {
       try {
         for (const f of existsSync(join(staat, "register")) ? Bun.spawnSync(["ls", join(staat, "register")], { stdout: "pipe" }).stdout.toString().split("\n").filter(Boolean) : []) {
@@ -207,8 +237,7 @@ export async function draaiCodexDemo(): Promise<Demo> {
     controle("demo zonder uitzondering", false, e instanceof Error ? (e.stack ?? e.message) : String(e));
   } finally {
     opruimen();
-    process.off("SIGINT", onInt);
-    process.off("SIGTERM", onTerm);
+    for (const [sig, h] of handlers) process.off(sig, h);
   }
   return { controles, ok: controles.every((c) => c.ok), tmuxNaam };
 }
