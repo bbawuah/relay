@@ -286,8 +286,9 @@ describe("echteRun: tijdsgrens", () => {
 
   test("een kleinkind dat de pipes openhoudt, houdt een afgesloten kind niet op", async () => {
     const t0 = Date.now();
-    const r = await echteRun(maak("klein", "sleep 4 &\nexit 0"), [], o(300));
-    expect(Date.now() - t0).toBeLessThan(2_000);
+    const r = await echteRun(maak("klein", "sleep 4 &\necho uit\nexit 0"), [], o(5_000));
+    expect(Date.now() - t0).toBeLessThan(1_500); // niet de 5 s tijdsgrens afwachten
+    expect(r.stdout).toBe("uit\n");
     expect(r.code).toBe(0);
     expect(r.timeout).toBe(false);
   });

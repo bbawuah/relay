@@ -15,6 +15,8 @@ export type Run = (cmd: string, args: string[], opties: { env: Omgeving; timeout
 /** Schrijft één regel naar een unix-socket en sluit; gooit bij een fout of na `timeoutMs`. */
 export type SocketSchrijf = (pad: string, regel: string, timeoutMs: number) => Promise<void>;
 
+/** Na het einde van het kind wachten we hoogstens zo lang op het sluiten van de pipes. */
+export const NAGRACE_MS = 100;
 export const SOCKET_TIJDSGRENS_MS = 2_000;
 export const CODEX_TIJDSGRENS_MS = 5_000;
 /** Eén budget voor `t3 thread show` en `t3 thread send` samen. */
@@ -33,6 +35,7 @@ export const echteRun: Run = (cmd, args, { env, timeoutMs }) =>
     let code: number | null = null;
     let exited = false;
     let gedaan = false;
+    let nagraceTimer: ReturnType<typeof setTimeout> | undefined;
     const groep = (sig: NodeJS.Signals) => {
       try {
         if (p.pid) process.kill(-p.pid, sig);
@@ -42,6 +45,7 @@ export const echteRun: Run = (cmd, args, { env, timeoutMs }) =>
       if (gedaan) return;
       gedaan = true;
       clearTimeout(timer);
+      clearTimeout(nagraceTimer);
       p.stdout?.destroy();
       p.stderr?.destroy();
       klaar({ code, stdout, stderr, timeout });
@@ -63,6 +67,8 @@ export const echteRun: Run = (cmd, args, { env, timeoutMs }) =>
     p.once("exit", (c) => {
       exited = true;
       code = c;
+      // Het kind is klaar; een helper die de pipes openhoudt mag de aanroep niet ophouden. Hoogstens NAGRACE_MS op de laatste uitvoer wachten.
+      nagraceTimer = setTimeout(() => einde(false), NAGRACE_MS);
     });
     p.once("close", () => einde(false));
   });
@@ -153,6 +159,7 @@ export function maakWekker(opties: { env: Omgeving; run?: Run; socketSchrijf?: S
 
   async function viaSocket(doel: WekDoel, aantal: number): Promise<WekUitslag> {
     if (!doel.socket) return mislukt("socket", "geen socket in het register");
+    // TOCTOU: tussen lstat in controleerSocket en connect kan het pad nog wisselen. Aanvaard: /tmp/cc-socks is 0700 van de eigen gebruiker.
     const c = controleerSocket(doel.socket, env);
     if ("reden" in c) return mislukt("socket", c.reden);
     const regel = `${JSON.stringify({ type: "user", message: { role: "user", content: seintje(aantal) } })}\n`;
