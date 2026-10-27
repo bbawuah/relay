@@ -3,8 +3,10 @@
 # Gebruik: scripts/lead/spawn.sh --naam <n> --opdracht <bestand> [--model sonnet|opus]
 #          [--map <pad>] [--lead <unieke naam>] [--sublead [--workflow <JJJJ-MM-DD>]] [--vervolg <tak>] [--t3] [--droog]
 #          [--vendor claude|codex]
-#          --vendor codex: een Codex-sessie (`codex -C <map>`; --model is dan een Codex-model); standaard claude. LAB_AGENT_ROL staat
-#          altijd in de omgeving: in tmux via env, in T3 via <staat>/identiteit (codex-wrap.sh zet het in de hookomgeving).
+#          --vendor codex: een Codex-sessie (`codex -C <map>`; --model is dan een Codex-model); standaard claude. Eist een eigen
+#          worktree als --map (nooit de hoofdcheckout) en een Codex-config met de grenzen-hook (grenzen.sh, vertrouwd door
+#          codex-installeer.ts); anders weigert spawn. De rol staat in de pane-omgeving (tmux) en altijd in
+#          <staat>/identiteit/<hash van de checkout>.json (codex-wrap.sh zet die in de omgeving van elke hook, ook in T3).
 #          --t3: start de sessie als thread in T3 Code (server op deze machine) in plaats van in tmux; --map moet dan
 #          een eigen worktree zijn. Laatste regel van de uitvoer: t3:<thread-id>.
 #        scripts/lead/spawn.sh --meerdere <lijst> [--model ..] [--map ..] [--lead ..] [--droog]
@@ -23,6 +25,10 @@ WACHT_VERTROUWEN="${WACHT_VERTROUWEN:-600}"  # seconden wachten tot Brian de map
 CLAUDE_JSON="${LAB_CLAUDE_JSON:-$HOME/.claude.json}"  # alleen gelezen
 
 fout() { echo "spawn: $*" >&2; exit 1; }
+# Een identiteitsbestand dat deze aanroep schreef, maar waarvan de sessie niet startte, mag niet blijven staan
+# (anders blokkeert het de volgende spawn in die checkout en krijgt een latere sessie de rol).
+ID_GESCHREVEN=""
+fout_ruim() { [ -z "$ID_GESCHREVEN" ] || rm -f "$ID_GESCHREVEN"; fout "$@"; }
 
 for v in WACHT POLS BEWIJS ENTER; do
   [[ ${!v} =~ ^[0-9]+$ ]] || fout "LAB_SPAWN_$v moet een geheel getal zijn, niet '${!v}'"
@@ -198,6 +204,17 @@ identiteit_vrij() {
   bestaand=$(jq -r '.naam // ""' "$inst" 2>/dev/null || true)
   [ -z "$bestaand" ] || [ "$bestaand" = "$naam" ] ||
     fout "$map draagt al de identiteit van sessie '$bestaand' ($inst); één Codex-sessie per checkout. Is die klaar, haal dan dat bestand weg (of wacht tot hij na 12 u verloopt)"
+  # Dezelfde naam mag opnieuw (een herstart), maar niet zolang de vorige spawn nog leeft in het register.
+  local oud_id r
+  oud_id=$(jq -r '.spawn_id // ""' "$inst" 2>/dev/null || true)
+  if [ -n "$oud_id" ] && [ -d "$STAAT/register" ]; then
+    for r in "$STAAT"/register/*.json; do
+      [ -f "$r" ] || continue
+      if jq -e --arg s "$oud_id" '.spawn_id == $s and .soort != "subagent" and .toestand != "weg"' "$r" >/dev/null 2>&1; then
+        fout "sessie '$naam' draait nog (spawn $oud_id, register $(basename "$r")) in $map; wacht tot hij klaar is (SessionEnd), of haal $inst weg als hij dood is"
+      fi
+    done
+  fi
 }
 
 # Schrijft <staat>/identiteit/<hash>.json (0600 in een map 0700). ts in ms: de identiteit verloopt na 12 u (register.ts).
@@ -210,6 +227,18 @@ schrijf_identiteit() {
     '{naam: $n, rol: $r, lead: $l, opdracht: $o, spawn_id: $s, ts: $ts}' >"$tmp" || { rm -f "$tmp"; fout "kon $inst niet schrijven"; }
   chmod 600 "$tmp"
   mv "$tmp" "$inst"
+  ID_GESCHREVEN=$inst
+}
+
+# Voorwaarden voor een Codex-werker, vóór alles wat iets schrijft of start:
+#  1. --map is een eigen (linked) worktree (git-dir != git-common-dir): de identiteit is per checkout en de hoofdcheckout
+#     is van iedereen; zonder identiteit zou de werker zonder rol draaien en dan past grenzen.sh de rolregels niet toe.
+#  2. De Codex-config heeft de grenzen-hook (grenzen.sh) mét een geldige trusted_hash; zonder draait hij stil niet.
+codex_controles() {
+  local cfg="${CODEX_HOME:-$HOME/.codex}/config.toml" uit
+  eigen_worktree || fout "--vendor codex eist een eigen worktree als --map (git worktree add), niet de hoofdcheckout of een map zonder eigen worktree: $map"
+  command -v "$BUN" >/dev/null 2>&1 || fout "--vendor codex heeft bun nodig om de grenzen-hook in $cfg te controleren"
+  uit=$("$BUN" "$HIER/hooks/codex-controle.ts" "$cfg" 2>&1) || fout "Codex-config niet in orde, de grenzen zouden niet gelden: $uit"
 }
 
 t3_controleer_map() {
@@ -278,13 +307,13 @@ t3_start() {
   fi
 
   if ! (cd "$map" && "$bin" thread list >/dev/null 2>&1); then
-    uit=$("$bin" project add --title "$naam" "$map" 2>&1) || fout "--t3: project toevoegen mislukte (draait de T3-server?): $uit"
+    uit=$("$bin" project add --title "$naam" "$map" 2>&1) || fout_ruim "--t3: project toevoegen mislukte (draait de T3-server?): $uit"
   fi
   uit=$(printf '%s\n' "$zin" | "$bin" thread start --title "$naam" --provider "$provider" --model "$model_slug" "$map" - 2>&1) ||
-    fout "--t3: thread starten mislukte: $uit"
+    fout_ruim "--t3: thread starten mislukte: $uit"
   # t3 drukt het id af (in een terminal met "Thread " ervoor): de laatste niet-lege regel
   id=$(printf '%s\n' "$uit" | sed -e 's/^Thread //' -e '/^[[:space:]]*$/d' | tail -n 1)
-  [[ $id =~ ^[A-Za-z0-9:._%-]+$ ]] || fout "--t3: geen thread-id in de uitvoer van t3: $uit"
+  [[ $id =~ ^[A-Za-z0-9:._%-]+$ ]] || fout_ruim "--t3: geen thread-id in de uitvoer van t3: $uit"
   if [ "$vendor" = codex ]; then
     # het thread-id is de wekroute (t3 thread send) en LAB_T3_THREAD voor de hooks; de thread draait al, dus het kan pas nu
     tmp=$(mktemp "$inst.XXXXXX")
@@ -309,6 +338,8 @@ t3_start() {
   done
   fout "--t3: thread $id is gestart, maar toonde geen werk binnen ${BEWIJS}s; kijk zelf in T3 Code"
 }
+
+[ "$vendor" != codex ] || codex_controles
 
 rol=agent
 [ "$sublead" = 0 ] || rol=sublead
@@ -373,8 +404,8 @@ if [ "$droog" = 1 ]; then
   echo "droog: $SPAWN window $map \"$cmd\""
   echo "droog: tmux set -p -t <pane> @agent_rol $rol; tmux set -p -t <pane> @agent_naam $naam"
   if [ "$vendor" = codex ]; then
-    if eigen_worktree; then echo "droog: schrijf de identiteit (naam=$naam rol=$rol) naar $(identiteit_pad) (0600 in een map 0700); codex-wrap.sh zet die in elke hook"
-    else echo "droog: $map is de hoofdcheckout: geen identiteitsbestand (hooks zien alleen LAB_AGENT_ROL uit de omgeving van de pane)"; fi
+    echo "droog: schrijf de identiteit (naam=$naam rol=$rol) naar $(identiteit_pad) (0600 in een map 0700); codex-wrap.sh zet die in elke hook"
+    echo "droog: gecontroleerd: $map is een eigen worktree en ${CODEX_HOME:-$HOME/.codex}/config.toml heeft de vertrouwde grenzen-hook"
   fi
   echo "droog: wacht (max ${WACHT}s) tot de pane '$KLAAR_TEKST' of de promptregel toont"
   echo "droog: toont de pane de vertrouwensvraag ('$VERTROUWEN_TEKST'), dan melding aan Brian (tmux display-message + stderr) en wachten (max ${WACHT_VERTROUWEN}s, WACHT_VERTROUWEN) tot de vraag weg is; nooit zelf antwoorden; bij time-out fout met pane en startzin"
@@ -398,16 +429,12 @@ fi
 [ "$vertrouwd" = 1 ] || echo "spawn: let op: $map is nog niet vertrouwd in Claude Code; de sessie $naam wacht straks op Brians antwoord op de vertrouwensvraag" >&2
 
 if [ "$vendor" = codex ]; then
-  if eigen_worktree; then
-    identiteit_vrij
-    schrijf_identiteit
-  else
-    echo "spawn: waarschuwing: $map is de hoofdcheckout; geen identiteitsbestand voor Codex-hooks (die erven dan de omgeving van de app-server-daemon)" >&2
-  fi
+  identiteit_vrij
+  schrijf_identiteit
 fi
 
-pane=$(bash "$SPAWN" window "$map" "$cmd" | tail -n 1)
-[[ $pane =~ ^%[0-9]+$ ]] || fout "kreeg geen pane-id terug van het spawn-script: '$pane'"
+pane=$(bash "$SPAWN" window "$map" "$cmd" | tail -n 1) || pane=""   # pipefail: een falend spawn-script moet de foutmelding en de opruiming krijgen
+[[ $pane =~ ^%[0-9]+$ ]] || fout_ruim "kreeg geen pane-id terug van het spawn-script: '$pane'"
 
 tmux set -p -t "$pane" @agent_rol "$rol" 2>/dev/null || true
 tmux set -p -t "$pane" @agent_naam "$naam" 2>/dev/null || true

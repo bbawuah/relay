@@ -13,6 +13,36 @@ export type Bron = "claude" | "codex";
 
 export const PEERS_SEND = "mcp__peers__send";
 
+/**
+ * Is een peers.send gelukt? De server antwoordt `afgeleverd <id>`, `dubbel <id>` (al eerder afgeleverd) of `vastgehouden <id>`
+ * (nog niet in de inbox), en bij een fout met isError en "niet verstuurd (reden): melding". Alleen een mislukte of vastgehouden
+ * send telt niet als rapport. `tool_response` is bij Codex een string, bij Claude een object ({content:[{text}], isError});
+ * de MCP-vorm bij Codex is niet gemeten. Ontbreekt de response of herkennen we de vorm niet, dan telt de send: de gate mag
+ * een werker niet vastzetten op een onbekend formaat (hij laat na MAX_BLOKKADES toch door).
+ */
+export function sendAfgeleverd(response: unknown): boolean {
+  if (response === undefined || response === null) return true;
+  let obj: unknown = response;
+  if (typeof obj === "string") {
+    try {
+      obj = JSON.parse(obj);
+    } catch {
+      // gewone tekst
+    }
+  }
+  if (obj && typeof obj === "object" && (obj as { isError?: unknown }).isError === true) return false;
+  let tekst = "";
+  if (typeof obj === "string") tekst = obj;
+  else if (obj && typeof obj === "object") {
+    const o = obj as { content?: unknown; text?: unknown };
+    if (Array.isArray(o.content)) tekst = o.content.map((d) => (d && typeof (d as { text?: unknown }).text === "string" ? (d as { text: string }).text : "")).join("\n");
+    else if (typeof o.text === "string") tekst = o.text;
+  }
+  const t = tekst.trim();
+  if (/^(niet verstuurd|vastgehouden)\b/.test(t)) return false;
+  return true;
+}
+
 /** Lees `--bron codex` uit de argumenten van hook.ts; geeft de bron en de overige argumenten. */
 export function leesBron(args: string[]): { bron: Bron; rest: string[] } {
   const rest: string[] = [];

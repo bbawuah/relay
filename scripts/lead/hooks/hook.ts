@@ -21,8 +21,8 @@
 // last_assistant_message, transcripts. Geen netwerk, geen git, geen gh.
 
 import type { Bus } from "../peers/types";
-import { type Bron, PEERS_SEND, herkomstNa, leesBron, peerVelden } from "./codex-adapter";
-import { type Omgeving, type Rec, type Toestand, dubbeleLeads, eigenLeadNaam, inboxGrootte, inboxMelding, leesOfMaak, leesRecord, lopendeSubagents, isKindProces, meldAdres, nieuwRecord, pakOngelezen, regelsTekst, schrijfRecord, staatMap, tmuxPanes, voorgangerInPane, wisExternMarkering, wisIdentiteit, zetToestand } from "./register";
+import { type Bron, PEERS_SEND, herkomstNa, leesBron, peerVelden, sendAfgeleverd } from "./codex-adapter";
+import { type Omgeving, type Rec, type Toestand, dubbeleLeads, eigenLeadNaam, inboxGrootte, inboxMelding, leesOfMaak, leesRecord, lopendeSubagents, isKindProces, meldAdres, nieuwRecord, pakOngelezen, regelsTekst, schrijfRecord, staatMap, tmuxPanes, voorgangerInPane, ververseIdentiteit, wisExternMarkering, wisIdentiteit, zetToestand } from "./register";
 
 export type Uitslag = { code: number; stdout: string; stderr: string };
 export type Opties = {
@@ -83,11 +83,12 @@ export function wachtTot(bericht: string, t: number): number | null {
   return null;
 }
 
-export function gateReden(lead: string): string {
+export function gateReden(lead: string, bron: Bron = "claude"): string {
+  const stuur = bron === "codex" ? `mcp__peers__send(naar: ${lead}, tekst: …)` : `SendMessage(to: ${lead})`;
   return (
-    `Je stopt zonder rapport aan ${lead}. Stuur eerst SendMessage(to: ${lead}) met PR, sha, uitslag en open punten. ` +
+    `Je stopt zonder rapport aan ${lead}. Stuur eerst ${stuur} met PR, sha, uitslag en open punten. ` +
     "Het is ook een geldig antwoord om in één zin te zeggen waarop je wacht (bijvoorbeeld een vraag aan Brian): " +
-    `stuur die zin als SendMessage aan ${lead}, of zeg hem in je antwoord en stop dan opnieuw; de tweede stop wordt doorgelaten.`
+    `stuur die zin met ${bron === "codex" ? "mcp__peers__send" : "SendMessage"} aan ${lead}, of zeg hem in je antwoord en stop dan opnieuw; de tweede stop wordt doorgelaten.`
   );
 }
 
@@ -167,10 +168,15 @@ export async function verwerk(event: string, invoer: Invoer, env: Omgeving, opti
     case "SessionStart": {
       // H1
       const oud = laad();
+      // De bus markeert een sessie die externe inhoud las met <staat>/peers/extern/<naam>. Alleen een verse start of /clear is weer
+      // schoon; bij resume (en compact) staat de oude context er nog en blijft de herkomst `extern`.
+      const bronStart = tekst(invoer.source);
+      const schoon = bronStart === "startup" || bronStart === "clear" || bronStart === "";
       const vers = nieuwRecord(sessieId, env, cwd, t);
       // naam en lead uit het bestaande record (resume na hernoem.ts); env alleen de eerste keer
       // Peer-velden worden bij elke start ververst (een socket of thread kan veranderen); `inbound` is een keuze van Brian en blijft.
-      const r: Rec = { ...vers, ...peerVelden(bron, env, sessieId), ...(oud.inbound ? { inbound: oud.inbound } : {}), start: oud.start, blokkades: oud.blokkades, naam: rec0 ? oud.naam : vers.naam, lead: rec0 ? oud.lead : vers.lead };
+      const velden = peerVelden(bron, env, sessieId);
+      const r: Rec = { ...vers, ...velden, ...(schoon ? {} : { herkomst: oud.herkomst ?? velden.herkomst }), ...(oud.inbound ? { inbound: oud.inbound } : {}), start: oud.start, blokkades: oud.blokkades, naam: rec0 ? oud.naam : vers.naam, lead: rec0 ? oud.lead : vers.lead };
       if (!rec0) {
         const vg = voorgangerInPane(staat, vers.pane, isLead, sessieId, t);
         if (vg) {
@@ -180,8 +186,7 @@ export async function verwerk(event: string, invoer: Invoer, env: Omgeving, opti
         }
       }
       schrijfRecord(staat, r);
-      // De bus markeert een sessie die externe inhoud las met <staat>/peers/extern/<naam>; een nieuwe start (ook /clear) is weer schoon.
-      wisExternMarkering(staat, r.naam);
+      if (schoon) wisExternMarkering(staat, r.naam);
       if (isLead) {
         const dubbel = dubbeleLeads(staat, r.naam, r.id, (opties.panes ?? tmuxPanes)());
         // Het register kent de naam, Claude Code pas na `-n` of `/rename`. Een model kan geen /rename uitvoeren: de lead
@@ -202,6 +207,7 @@ export async function verwerk(event: string, invoer: Invoer, env: Omgeving, opti
     }
     case "UserPromptSubmit": {
       // H2
+      ververseIdentiteit(staat, cwd, env.LAB_SPAWN_ID || "", t);
       const r = laad();
       zetToestand(r, "bezig", t);
       r.tools_in_beurt = 0;
@@ -251,7 +257,8 @@ export async function verwerk(event: string, invoer: Invoer, env: Omgeving, opti
       const extern = herkomstNa(tool, undefined) === "extern";
       // H4: een bericht aan de eigen lead: SendMessage (to) of peers.send (naar); niets van de tekst zelf, alleen of "vrij" erin staat.
       const inv = (invoer.tool_input && typeof invoer.tool_input === "object" ? invoer.tool_input : {}) as Invoer;
-      const aanLead = !isLead && !!lead && (tool === "SendMessage" ? tekst(inv.to) === lead : tool === PEERS_SEND && tekst(inv.naar) === lead);
+      // Een peers.send telt alleen als hij gelukt is (een geweigerde of vastgehouden send is geen rapport); SendMessage meldt geen mislukking aan de hook.
+      const aanLead = !isLead && !!lead && (tool === "SendMessage" ? tekst(inv.to) === lead : tool === PEERS_SEND && tekst(inv.naar) === lead && sendAfgeleverd(invoer.tool_response));
       if (!extern && !aanLead) return LEEG;
       const r = laad();
       if (extern) r.herkomst = "extern";
@@ -280,7 +287,8 @@ export async function verwerk(event: string, invoer: Invoer, env: Omgeving, opti
       return LEEG;
     }
     case "Stop":
-      return stop(staat, laad(), invoer, isLead, lead, naamVan, t, peers);
+      ververseIdentiteit(staat, cwd, env.LAB_SPAWN_ID || "", t);
+      return stop(staat, laad(), invoer, isLead, lead, naamVan, t, peers, bron);
     case "StopFailure": {
       // H8
       const r = laad();
@@ -329,7 +337,7 @@ function leesSub(staat: string, agentId: string, ouder: string, env: Omgeving, i
   return { ...oud, soort: "subagent", rol: "subagent", ouder, agent_type: tekst(invoer.agent_type) || oud.agent_type, naam: env.LAB_AGENT_NAAM || oud.naam, lead: ouderRec?.lead || oud.lead };
 }
 
-async function stop(staat: string, r: Rec, invoer: Invoer, isLead: boolean, lead: string, naamVan: (r: Rec) => string, t: number, peers: Peers | null): Promise<Uitslag> {
+async function stop(staat: string, r: Rec, invoer: Invoer, isLead: boolean, lead: string, naamVan: (r: Rec) => string, t: number, peers: Peers | null, bron: Bron): Promise<Uitslag> {
   const bus = peers?.bus ?? null;
   const actief = invoer.stop_hook_active === true;
   // Peerbus: één keer blokkeren met het seintje (nooit de inhoud); de tweede stop (stop_hook_active) gaat door.
@@ -364,7 +372,7 @@ async function stop(staat: string, r: Rec, invoer: Invoer, isLead: boolean, lead
     if (r.blokkades < MAX_BLOKKADES) {
       r.blokkades += 1;
       schrijfRecord(staat, r);
-      return { code: 0, stdout: JSON.stringify({ decision: "block", reason: `${gateReden(lead)}${seintjeTekst}` }), stderr: "" };
+      return { code: 0, stdout: JSON.stringify({ decision: "block", reason: `${gateReden(lead, bron)}${seintjeTekst}` }), stderr: "" };
     }
     inboxMelding(staat, lead, naam, `${naam} stopte ${MAX_BLOKKADES}× zonder rapport`, t);
     stopte3 = true;

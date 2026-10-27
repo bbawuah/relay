@@ -13,28 +13,38 @@
 // hookdefinitie (hooks/list geeft key, currentHash en trustStatus: untrusted | trusted | modified | managed). Zonder dat
 // draaien hooks stil niet; `-c hooks…` op de opdrachtregel werkt niet; `--dangerously-bypass-hook-trust` gebruiken we niet.
 // De installer schrijft daarom (1) het blok met hooks tussen markeringen, en (2) vraagt `codex app-server` de hashes te
-// berekenen (hooks/list) en ze vast te leggen (config/value/write op hooks.state). Elke run is idempotent: een
-// ongewijzigd blok en bestaand vertrouwen geven geen schrijfactie. Voor de eerste schrijfactie komt een backup
-// `config.toml.voor-peerbus` (een bestaande backup, de oorspronkelijke, blijft staan). Wijzigt het commando (nieuw pad),
-// dan wordt de hash `modified` en zet een volgende run hem weer op vertrouwd.
+// berekenen (hooks/list) en ze vast te leggen (config/value/write op hooks.state). Een tweede run met ongewijzigde
+// bronbestanden schrijft het blok niet opnieuw en vraagt geen nieuw vertrouwen; de bestanden onder --doel worden wel
+// elke run opnieuw gekopieerd. Voor de eerste schrijfactie komt een backup `config.toml.voor-peerbus` (een bestaande
+// backup, de oorspronkelijke, blijft staan). Wijzigt het commando (nieuw pad) of past iemand het blok met de hand aan,
+// dan wordt de hash `modified`: draai de installer opnieuw om hem weer te vertrouwen.
+//
+// Twee PreToolUse-groepen: groep 0 (`.*`) draait hook.sh (register, rapport-gate), groep 1 (`Bash|apply_patch`) draait
+// grenzen.sh (spoor E: de rolregels, bijvoorbeeld geen schrijven in de hoofdcheckout). Beide via codex-wrap.sh, dat de
+// identiteit van de sessie in hun omgeving zet. `spawn.sh --vendor codex` weigert te starten zonder de grenzen-groep én
+// zijn trusted_hash (hooks/codex-controle.ts): zonder die hook zouden de rolregels stil niet gelden.
 
 import { chmodSync, copyFileSync, existsSync, mkdirSync, readFileSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { type AppServer, type HookInfo, startAppServer } from "./codex-appserver";
+import { kiesBun } from "../installeer-hooks";
 import { peersKopieen } from "./peers-kopie";
 
 export const START = "# >>> lab-peerbus hooks (beheerd door codex-installeer.ts; niet met de hand wijzigen) >>>";
 export const EINDE = "# <<< lab-peerbus hooks <<<";
 export const MERK = "lab-lead-hooks/codex-wrap.sh";
-export const BESTANDEN = ["hook.sh", "hook.ts", "register.ts", "codex-adapter.ts", "codex-wrap.sh", "codex-wrap.ts"];
+export const BESTANDEN = ["hook.sh", "hook.ts", "register.ts", "codex-adapter.ts", "codex-wrap.sh", "codex-wrap.ts", "grenzen.sh"];
+export const GRENZEN_MERK = "lab-lead-hooks/grenzen.sh";
+export const GRENZEN_MATCHER = "Bash|apply_patch";
 const TOOLS = "WebFetch|WebSearch|mcp__.*|Bash|apply_patch";
 
-type EventSpec = { event: string; matcher?: string; timeout: number };
+type EventSpec = { event: string; matcher?: string; timeout: number; script?: string };
 export const EVENTS: EventSpec[] = [
   { event: "SessionStart", timeout: 5 },
   { event: "UserPromptSubmit", timeout: 5 },
   { event: "PreToolUse", matcher: ".*", timeout: 5 },
+  { event: "PreToolUse", matcher: GRENZEN_MATCHER, timeout: 10, script: "grenzen.sh" },
   { event: "PostToolUse", matcher: TOOLS, timeout: 5 },
   { event: "Stop", timeout: 5 },
   { event: "SessionEnd", timeout: 2 },
@@ -46,8 +56,9 @@ export type Deps = { start?: (codex: string, home: string, cwd: string) => Promi
 
 const shq = (s: string) => (/^[A-Za-z0-9_/.:@+=-]+$/.test(s) ? s : `'${s.replaceAll("'", `'\\''`)}'`);
 
-export function commando(doel: string, bun: string): string {
-  return `env LAB_LEAD_BUN=${shq(bun)} ${shq(join(doel, "codex-wrap.sh"))} ${shq(join(doel, "hook.sh"))} --bron codex`;
+export function commando(doel: string, bun: string, script = "hook.sh"): string {
+  const args = script === "hook.sh" ? " --bron codex" : "";
+  return `env LAB_LEAD_BUN=${shq(bun)} ${shq(join(doel, "codex-wrap.sh"))} ${shq(join(doel, script))}${args}`;
 }
 
 export function maakBlok(o: Pick<Opties, "doel" | "bun">): string {
@@ -55,7 +66,7 @@ export function maakBlok(o: Pick<Opties, "doel" | "bun">): string {
   for (const e of EVENTS) {
     regels.push(`[[hooks.${e.event}]]`);
     if (e.matcher) regels.push(`matcher = ${JSON.stringify(e.matcher)}`);
-    regels.push(`[[hooks.${e.event}.hooks]]`, 'type = "command"', `command = ${JSON.stringify(commando(o.doel, o.bun))}`, `timeout = ${e.timeout}`, "");
+    regels.push(`[[hooks.${e.event}.hooks]]`, 'type = "command"', `command = ${JSON.stringify(commando(o.doel, o.bun, e.script))}`, `timeout = ${e.timeout}`, "");
   }
   regels.push(EINDE);
   return regels.join("\n");
@@ -189,7 +200,7 @@ export async function installeer(o: Opties, deps: Deps = {}): Promise<Uitslag> {
 
 export function leesArgs(argv: string[], env: { [k: string]: string | undefined }, bron: string): Opties | string {
   const home = env.HOME || homedir();
-  const o: Opties = { droog: false, verwijder: false, codexHome: env.CODEX_HOME || join(home, ".codex"), doel: "", bun: process.execPath, codex: "codex", bron };
+  const o: Opties = { droog: false, verwijder: false, codexHome: env.CODEX_HOME || join(home, ".codex"), doel: "", bun: kiesBun(), codex: "codex", bron };
   let doel = "";
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];

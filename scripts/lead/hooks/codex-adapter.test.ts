@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { herkomstNa, hostVan, leesBron, maaktExtern, peerVelden } from "./codex-adapter";
+import { herkomstNa, hostVan, leesBron, maaktExtern, peerVelden, sendAfgeleverd } from "./codex-adapter";
 import { type Opties, verwerk } from "./hook";
 import { externMarkering, leesIdentiteit, leesRecord, schrijfIdentiteit } from "./register";
 
@@ -44,6 +44,22 @@ describe("codex-adapter (pure)", () => {
     expect(peerVelden("claude", { CLAUDE_CODE_MESSAGING_SOCKET: "/tmp/cc-socks/1.sock" }, "s")).toEqual({ vendor: "claude", host: "tui", herkomst: "schoon", socket: "/tmp/cc-socks/1.sock" });
     expect(peerVelden("codex", { LAB_T3_THREAD: "mcp:abc" }, "t1")).toMatchObject({ host: "t3", t3_thread: "mcp:abc" });
     expect(hostVan({})).toBe("tui");
+  });
+  test("Z4 sendAfgeleverd: afgeleverd en dubbel tellen; geweigerd, vastgehouden of isError niet; geen response of een onbekende vorm telt (fail-open)", () => {
+    const mcp = (t: string, isError = false) => ({ content: [{ type: "text", text: t }], ...(isError ? { isError: true } : {}) });
+    expect(sendAfgeleverd(mcp("afgeleverd m-1, wek: ja (tmux)"))).toBe(true);
+    expect(sendAfgeleverd(mcp("dubbel m-1"))).toBe(true);
+    expect(sendAfgeleverd("afgeleverd m-1")).toBe(true);
+    expect(sendAfgeleverd(JSON.stringify(mcp("afgeleverd m-1")))).toBe(true);
+    expect(sendAfgeleverd(mcp("niet verstuurd (onbekend): geen sessie met die naam", true))).toBe(false);
+    expect(sendAfgeleverd(mcp("niet verstuurd (vol): inbox vol"))).toBe(false);
+    expect(sendAfgeleverd("niet verstuurd (onbekend): x")).toBe(false);
+    expect(sendAfgeleverd(JSON.stringify(mcp("niet verstuurd (x): y", true)))).toBe(false);
+    expect(sendAfgeleverd(mcp("vastgehouden m-2"))).toBe(false);
+    expect(sendAfgeleverd(undefined)).toBe(true);
+    expect(sendAfgeleverd(null)).toBe(true);
+    expect(sendAfgeleverd({ iets: "anders" })).toBe(true);
+    expect(sendAfgeleverd("")).toBe(true);
   });
   test("maaktExtern: web-tools en MCP buiten peers", () => {
     expect(maaktExtern("WebFetch")).toBe(true);
@@ -107,6 +123,64 @@ describe("hook.ts met Codex-invoer (echte fixtures uit de spike)", () => {
     const ruw = readFileSync(join(staat, "register", `${SID}.json`), "utf8");
     expect(ruw).not.toContain("GEHEIME-INHOUD");
     expect(JSON.parse(ruw).toestand).toBe("vrij");
+  });
+
+  test("Z4: een mislukte of vastgehouden peers.send naar de lead is geen rapport (de Stop-gate blokkeert), een afgeleverde wel", async () => {
+    const e = env();
+    await verwerk("SessionStart", fixture("SessionStart"), e, opt());
+    await verwerk("PreToolUse", fixture("PreToolUse-Bash"), e, opt());
+    const send = (tool_response: unknown) => ({ ...fixture("PostToolUse-Bash"), tool_name: "mcp__peers__send", tool_input: { naar: "lead", tekst: "rapport\nvrij" }, tool_response });
+    for (const mis of ["niet verstuurd (onbekend): geen sessie met die naam", { content: [{ type: "text", text: "niet verstuurd (vol): x" }], isError: true }, "vastgehouden m-9"]) {
+      await verwerk("PostToolUse", send(mis), e, opt());
+      expect(leesRecord(staat, SID)?.rapport_in_beurt).toBe(false);
+      expect(leesRecord(staat, SID)?.vrij).toBe(false);
+    }
+    const geblokt = await verwerk("Stop", fixture("Stop"), e, opt());
+    expect(JSON.parse(geblokt.stdout).decision).toBe("block");
+    await verwerk("PostToolUse", send("afgeleverd m-10"), e, opt());
+    expect(leesRecord(staat, SID)).toMatchObject({ rapport_in_beurt: true, vrij: true });
+  });
+
+  test("K2: de Stop-gate noemt voor Codex mcp__peers__send, voor Claude SendMessage", async () => {
+    await verwerk("SessionStart", fixture("SessionStart"), env(), opt());
+    await verwerk("PreToolUse", fixture("PreToolUse-Bash"), env(), opt());
+    const codex = JSON.parse((await verwerk("Stop", fixture("Stop"), env(), opt())).stdout);
+    expect(codex.reason).toContain("mcp__peers__send(naar: lead");
+    expect(codex.reason).not.toContain("SendMessage");
+    const o: Opties = { nu: () => klok };
+    await verwerk("SessionStart", { session_id: "c2", cwd: "/w" }, env(), o);
+    await verwerk("PreToolUse", { session_id: "c2", cwd: "/w", tool_name: "Bash", tool_input: {} }, env(), o);
+    const claude = JSON.parse((await verwerk("Stop", { session_id: "c2", cwd: "/w" }, env(), o)).stdout);
+    expect(claude.reason).toContain("SendMessage(to: lead)");
+  });
+
+  test("Z3: bij resume blijft de herkomst extern (en de markering van de bus staan); startup en clear maken schoon", async () => {
+    const e = env();
+    const m = externMarkering(staat, "cx1");
+    await verwerk("SessionStart", fixture("SessionStart"), e, opt());
+    await verwerk("PostToolUse", { ...fixture("PostToolUse-Bash"), tool_name: "WebFetch", tool_input: {} }, e, opt());
+    mkdirSync(join(staat, "peers", "extern"), { recursive: true });
+    writeFileSync(m, "");
+    await verwerk("SessionStart", { ...fixture("SessionStart"), source: "resume" }, e, opt());
+    expect(leesRecord(staat, SID)?.herkomst).toBe("extern");
+    expect(existsSync(m)).toBe(true);
+    await verwerk("SessionStart", { ...fixture("SessionStart"), source: "clear" }, e, opt());
+    expect(leesRecord(staat, SID)?.herkomst).toBe("schoon");
+    expect(existsSync(m)).toBe(false);
+  });
+
+  test("Z1: UserPromptSubmit en Stop verversen de identiteit van een lange sessie (ts = nu), alleen die van deze spawn", async () => {
+    const cwd = String(fixture("SessionStart").cwd);
+    const oud = klok - 11 * 3600_000;
+    schrijfIdentiteit(staat, cwd, { naam: "cx1", rol: "agent", lead: "lead", opdracht: "", spawn_id: "sp-1", ts: oud });
+    await verwerk("SessionStart", fixture("SessionStart"), env({ LAB_SPAWN_ID: "sp-1" }), opt());
+    await verwerk("UserPromptSubmit", fixture("UserPromptSubmit"), env({ LAB_SPAWN_ID: "sp-0" }), opt());
+    expect(leesIdentiteit(staat, cwd, klok)?.ts).toBe(oud);
+    await verwerk("UserPromptSubmit", fixture("UserPromptSubmit"), env({ LAB_SPAWN_ID: "sp-1" }), opt());
+    expect(leesIdentiteit(staat, cwd, klok)?.ts).toBe(klok);
+    klok += 5 * 3600_000;
+    await verwerk("Stop", fixture("Stop"), env({ LAB_SPAWN_ID: "sp-1" }), opt());
+    expect(leesIdentiteit(staat, cwd, klok)?.ts).toBe(klok);
   });
 
   test("een lead telt zijn eigen peers.send niet als rapport", async () => {
