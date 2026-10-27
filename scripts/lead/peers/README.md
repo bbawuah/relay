@@ -160,11 +160,11 @@ Een interne fout geeft het model altijd dezelfde vaste tekst (geen paden); de de
 Config-voorbeelden (niets zelf installeren; pas het pad aan):
 
 ```sh
-# Claude
-claude mcp add peers --scope local -- bun /pad/naar/repo/scripts/lead/peers/server.ts
-# of per sessie: claude --mcp-config peers.json  met
-#   {"mcpServers":{"peers":{"command":"bun","args":["/pad/naar/repo/scripts/lead/peers/server.ts"]}}}
-# Claude geeft zijn omgeving door; LAB_AGENT_NAAM en LAB_LEAD_STAAT moeten in de sessie gezet zijn.
+# Claude: alleen per sessie, nooit globaal (besluit Brian 27 okt). spawn.sh geeft elke Claude-werker in tmux
+#   --mcp-config '{"mcpServers":{"peers":{"command":"/pad/naar/bun","args":["/pad/naar/repo/scripts/lead/peers/server.ts"],
+#                  "env":{"LAB_AGENT_NAAM":"naam","LAB_LEAD_NAAM":"lead","LAB_LEAD_STAAT":"/pad/naar/staat"}}}}' --allowedTools=mcp__peers
+# en de lead-functie in ~/.zshrc geeft de lead hetzelfde. Gebruik de =-vorm: --allowedTools neemt anders ook de volgende
+# argumenten (zoals een prompt) mee. Niet gedekt: een Claude-thread in T3 (geen --mcp-config per thread).
 
 # Codex (per run, niets in ~/.codex): spawn.sh --vendor codex doet dit zelf
 codex \

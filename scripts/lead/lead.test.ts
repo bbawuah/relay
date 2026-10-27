@@ -660,6 +660,35 @@ describe("spawn.sh", () => {
     expect(log("tmux.log")).toBe("");
   });
 
+  test("de peers-MCP gaat per Claude-spawn mee als --mcp-config met naam, lead en staat, nooit globaal", () => {
+    const server = join(dir, "server.ts");
+    writeFileSync(server, "// nep\n");
+    const staat = join(dir, "staat");
+    const r = draai(SPAWN, ["--naam", "w1", "--opdracht", opdracht(), "--lead", "lead-x", "--droog"], basis({ LAB_PEERS_SERVER: server, LAB_LEAD_STAAT: staat }));
+    expect(r.code).toBe(0);
+    const m = r.uit.match(/--mcp-config '([^']+)' --allowedTools=mcp__peers/);
+    expect(m).not.toBeNull();
+    const cfg = JSON.parse(m![1]);
+    expect(cfg.mcpServers.peers.args).toEqual([server]);
+    expect(cfg.mcpServers.peers.command).toMatch(/bun$/);
+    expect(cfg.mcpServers.peers.env).toEqual({ LAB_AGENT_NAAM: "w1", LAB_LEAD_NAAM: "lead-x", LAB_LEAD_STAAT: staat });
+    const zonder = draai(SPAWN, ["--naam", "w1", "--opdracht", opdracht(), "--lead", "lead-x", "--droog"], basis({ LAB_PEERS_SERVER: join(dir, "bestaat-niet.ts") }));
+    expect(zonder.code).toBe(0);
+    expect(zonder.fout).toMatch(/peers-MCP .* ontbreekt/);
+    expect(zonder.uit).not.toContain("--mcp-config");
+    // Het hele commando blijft één geldige shellregel (tmux draait het met sh -c).
+    const cmd = r.uit.match(/ window \S+ "(.*)"$/m)![1];
+    expect(Bun.spawnSync(["sh", "-n", "-c", cmd]).exitCode).toBe(0);
+    // Zonder LAB_LEAD_STAAT geen sleutel; een quote in het serverpad geeft geen vlag (nooit uit de quotes breken).
+    const geenStaat = draai(SPAWN, ["--naam", "w1", "--opdracht", opdracht(), "--lead", "lead-x", "--droog"], basis({ LAB_PEERS_SERVER: server, LAB_LEAD_STAAT: "" }));
+    expect(JSON.parse(geenStaat.uit.match(/--mcp-config '([^']+)'/)![1]).mcpServers.peers.env).toEqual({ LAB_AGENT_NAAM: "w1", LAB_LEAD_NAAM: "lead-x" });
+    const quote = join(dir, "q'uote.ts");
+    writeFileSync(quote, "// nep\n");
+    const metQuote = draai(SPAWN, ["--naam", "w1", "--opdracht", opdracht(), "--lead", "lead-x", "--droog"], basis({ LAB_PEERS_SERVER: quote }));
+    expect(metQuote.fout).toMatch(/quote of backslash/);
+    expect(metQuote.uit).not.toContain("--mcp-config");
+  });
+
   const leadRecord = (id: string, naam: string, pane: string, toestand = "bezig") => {
     mkdirSync(join(dir, "staat", "register"), { recursive: true });
     const r = { id, soort: "sessie", naam, rol: "lead", lead: "", pane, toestand, sinds: 1, start: 1 };
@@ -733,15 +762,15 @@ describe("spawn.sh", () => {
     const zonderId = (t: string) => t.replace(/ LAB_SPAWN_ID=[\w-]+/, "");
     const voor = (rol: string) => `env LAB_AGENT_NAAM=w1 LAB_AGENT_ROL=${rol} LAB_LEAD_NAAM=lead-x LAB_OPDRACHT=${o} claude -n w1`;
     const a = draai(SPAWN, ["--naam", "w1", "--opdracht", o, "--lead", "lead-x", "--droog"], basis());
-    expect(zonderId(a.uit)).toContain(`"${voor("agent")}"`);
+    expect(zonderId(a.uit)).toContain(`"${voor("agent")}`);
     expect(a.uit).toContain("@agent_rol agent");
     expect(a.uit).toContain("@agent_naam w1");
     const s = draai(SPAWN, ["--naam", "w1", "--opdracht", o, "--lead", "lead-x", "--sublead", "--droog"], basis());
-    expect(zonderId(s.uit)).toContain(`"${voor("sublead")}"`);
+    expect(zonderId(s.uit)).toContain(`"${voor("sublead")}`);
     const v = draai(SPAWN, ["--naam", "w1", "--opdracht", o, "--lead", "lead-x", "--vervolg", "lead/test-tak", "--map", repo, "--droog"], basis());
-    expect(zonderId(v.uit)).toContain(`"${voor("vervolg")}"`);
+    expect(zonderId(v.uit)).toContain(`"${voor("vervolg")}`);
     const m = draai(SPAWN, ["--naam", "w1", "--opdracht", o, "--lead", "lead-x", "--model", "opus", "--droog"], basis());
-    expect(zonderId(m.uit)).toContain(`${voor("agent")} --model opus"`);
+    expect(zonderId(m.uit)).toContain(`${voor("agent")} --model opus`);
   });
 
   test("een opdrachtpad met spatie staat in het voorvoegsel tussen enkele quotes", () => {
@@ -1167,6 +1196,7 @@ exit 1
     expect(r.uit).toContain(`-c 'mcp_servers.peers.args=["${server}"]'`);
     expect(r.uit).toContain(`-c 'mcp_servers.peers.env={LAB_AGENT_NAAM="cx1",LAB_LEAD_NAAM="lead-x",LAB_LEAD_STAAT="${staat}"}'`);
     expect(r.uit).not.toContain("env_vars");
+    expect(r.uit).not.toContain("--mcp-config"); // de Claude-vorm nooit voor Codex
     const zonder = codex(["--map", wt, "--droog"], { LAB_PEERS_SERVER: join(dir, "bestaat-niet.ts") });
     expect(zonder.fout).toMatch(/peers-MCP .* ontbreekt/);
     expect(zonder.uit).not.toContain("mcp_servers.peers");
