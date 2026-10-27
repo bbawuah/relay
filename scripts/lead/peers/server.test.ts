@@ -1,10 +1,10 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { type Rec, nieuwRecord, schrijfRecord } from "../hooks/register";
+import { type Rec, nieuwRecord, schrijfIdentiteit, schrijfRecord } from "../hooks/register";
 import { maakBus } from "./bus";
-import { verwerk } from "./server";
+import { metIdentiteit, verwerk } from "./server";
 import { toon } from "./types";
 
 // Echte serverprocessen op een tijdelijke staatmap; de echte ~/.local/state/lab-lead blijft ongemoeid.
@@ -20,12 +20,12 @@ function sessie(naam: string, lead = ""): void {
 }
 
 /** Start een echt proces, stuurt de regels en wacht tot stdin dicht is; geeft de antwoorden als objecten. */
-async function draaiProces(naam: string | undefined, regels: unknown[]): Promise<any[]> {
+async function draaiProces(naam: string | undefined, regels: unknown[], cwd?: string): Promise<any[]> {
   const env: Record<string, string> = {};
   for (const [k, v] of Object.entries(process.env)) if (v !== undefined && !k.startsWith("GIT_") && k !== "LAB_AGENT_NAAM") env[k] = v;
   env.LAB_LEAD_STAAT = staat;
   if (naam) env.LAB_AGENT_NAAM = naam;
-  const p = Bun.spawn(["bun", SERVER], { env, stdin: "pipe", stdout: "pipe", stderr: "pipe" });
+  const p = Bun.spawn(["bun", SERVER], { env, stdin: "pipe", stdout: "pipe", stderr: "pipe", ...(cwd ? { cwd } : {}) });
   p.stdin.write(regels.map((r) => (typeof r === "string" ? r : JSON.stringify(r))).join("\n") + "\n");
   await p.stdin.end();
   const uit = await new Response(p.stdout).text();
@@ -195,4 +195,37 @@ describe("verwerk", () => {
     expect(bus().inbox("b")).toEqual([]);
   });
 
+});
+
+describe("identiteit zonder LAB_AGENT_NAAM (Codex-thread in T3)", () => {
+  const ident = (naam: string, ts = T0) => ({ naam, rol: "agent", lead: "lead-x", opdracht: "/o", spawn_id: "sp-1", ts });
+  let wt: string;
+  beforeEach(() => {
+    wt = join(dir, "eigen-worktree");
+    mkdirSync(join(wt, "sub"), { recursive: true });
+    schrijfIdentiteit(staat, realpathSync(wt), ident("a"));
+  });
+
+  test("metIdentiteit: de omgeving gaat voor; anders de identiteit van de checkout (ook vanuit een submap)", () => {
+    const env = { LAB_LEAD_STAAT: staat };
+    expect(metIdentiteit({ ...env, LAB_AGENT_NAAM: "x" }, wt, T0).LAB_AGENT_NAAM).toBe("x");
+    expect(metIdentiteit(env, wt, T0)).toMatchObject({ LAB_AGENT_NAAM: "a", LAB_LEAD_NAAM: "lead-x" });
+    expect(metIdentiteit(env, join(wt, "sub"), T0).LAB_AGENT_NAAM).toBe("a");
+  });
+
+  test("een andere checkout, de hoofdcheckout of een verlopen identiteit krijgt geen naam", () => {
+    const env = { LAB_LEAD_STAAT: staat };
+    expect(metIdentiteit(env, dir, T0).LAB_AGENT_NAAM).toBeUndefined();
+    mkdirSync(join(dir, "andere-worktree"));
+    expect(metIdentiteit(env, join(dir, "andere-worktree"), T0).LAB_AGENT_NAAM).toBeUndefined();
+    expect(metIdentiteit(env, wt, T0 + 13 * 3600_000).LAB_AGENT_NAAM).toBeUndefined();
+  });
+
+  test("echt proces: in de checkout met identiteit werkt list; in een andere map blijft het 'LAB_AGENT_NAAM ontbreekt'", async () => {
+    schrijfIdentiteit(staat, realpathSync(wt), ident("a", Date.now())); // het proces gebruikt de echte klok
+    const [, goed] = await draaiProces(undefined, [{ jsonrpc: "2.0", id: 0, method: "initialize", params: {} }, roep(1, "list")], wt);
+    expect(tekstVan(goed)).not.toContain("LAB_AGENT_NAAM ontbreekt");
+    const [, fout] = await draaiProces(undefined, [{ jsonrpc: "2.0", id: 0, method: "initialize", params: {} }, roep(1, "list")], dir);
+    expect(tekstVan(fout)).toContain("LAB_AGENT_NAAM ontbreekt");
+  });
 });

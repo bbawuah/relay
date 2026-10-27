@@ -2,7 +2,10 @@
 // MCP-server van de peerbus (stdio, JSON-regels, eigen JSON-RPC): dunne schil om de Bus, dezelfde werkwoorden als de CLI.
 // Tools: send, inbox, list, notify_when_idle. Afzender = env LAB_AGENT_NAAM; staatmap = env LAB_LEAD_STAAT.
 // vrijgeven en vasthouden bestaan hier bewust niet: dat is voor Brian of de lead (CLI).
+// Zonder LAB_AGENT_NAAM (een Codex-thread in T3 krijgt geen omgeving per thread) komt de identiteit uit
+// <staat>/identiteit/<hash>.json van de checkout waarin de server draait (zie metIdentiteit).
 
+import { identiteitEnv } from "../hooks/codex-wrap";
 import type { Omgeving } from "../hooks/register";
 import { standaardBus } from "./standaard";
 import { type Bus, toon } from "./types";
@@ -80,6 +83,17 @@ async function roepAan(bus: Bus, ikzelf: string, naam: string, a: Record<string,
   }
 }
 
+/**
+ * De omgeving met de identiteit van de sessie. LAB_AGENT_NAAM uit de omgeving gaat voor (tmux-spawn, Claude);
+ * ontbreekt hij, dan zoekt dit het identiteitsbestand van de checkout van `cwd` (alleen een eigen worktree heeft er een).
+ * Iedereen met dezelfde cwd krijgt die identiteit: het is een routering, geen authenticatie (zie types.ts, "Bekende grens").
+ */
+export function metIdentiteit(env: Omgeving, cwd: string, nu = Date.now()): Omgeving {
+  if (env.LAB_AGENT_NAAM) return env;
+  const i = identiteitEnv(env, cwd, nu);
+  return i.LAB_AGENT_NAAM ? { ...env, LAB_AGENT_NAAM: i.LAB_AGENT_NAAM, ...(env.LAB_LEAD_NAAM ? {} : { LAB_LEAD_NAAM: i.LAB_LEAD_NAAM }) } : env;
+}
+
 const PROTOCOLLEN = ["2024-11-05", "2025-03-26", "2025-06-18"];
 /** Details van een fout gaan naar stderr (kort, zonder stack); het model krijgt altijd dezelfde tekst, zonder paden. */
 const logFout = (wat: string, e: unknown): void => void process.stderr.write(`peers-mcp: ${wat}: ${e instanceof Error ? e.message : String(e)}\n`);
@@ -124,7 +138,8 @@ export async function verwerk(m: Rpc, bus: Bus, env: Omgeving): Promise<Verwerkt
 
 if (import.meta.main) {
   const { createInterface } = await import("node:readline");
-  const bus = standaardBus(process.env);
+  const omgeving = metIdentiteit(process.env, process.cwd());
+  const bus = standaardBus(omgeving);
   let keten: Promise<void> = Promise.resolve();
   // true alleen als de regel echt naar stdout is geschreven; een dichte lezer (EPIPE) geeft false.
   const schrijf = (o: unknown) => new Promise<boolean>((klaar) => process.stdout.write(`${JSON.stringify(o)}\n`, (err) => klaar(!err)));
@@ -137,7 +152,7 @@ if (import.meta.main) {
       if (regel.trim()) await schrijf({ jsonrpc: "2.0", id: null, error: { code: -32700, message: "geen geldige JSON" } });
       return;
     }
-    const v = await verwerk(m, bus, process.env);
+    const v = await verwerk(m, bus, omgeving);
     const geschreven = v.antwoord ? await schrijf(v.antwoord) : true;
     if (!geschreven) return logFout("antwoord niet geschreven", "stdout dicht; bijwerkingen overgeslagen");
     try {
