@@ -8,6 +8,7 @@ import { homedir } from "node:os";
 import path from "node:path";
 import { amsterdam, inStiltevenster, vanAmsterdam } from "../stiltevenster.ts";
 import { schoneEnv } from "../test-integriteit.ts";
+import { gitHard } from "./git-hard.ts";
 
 /** Workflownaam van de CI: één bron in lead.conf (ook door merge.sh gelezen); override met env LAB_MERGE_CI_WORKFLOW. */
 export function ciWorkflow(env: Record<string, string | undefined> = process.env, conf = path.join(import.meta.dir, "lead.conf")): string {
@@ -254,6 +255,9 @@ export function leesOpties(args: string[]): Opties | string {
   return o;
 }
 
+/** Git in `cwd` (de wachtrij-worktree bevat samengevoegde PR-inhoud van werkers): altijd via de geharde helper, zie git-hard.ts. */
+const git = (args: string[], cwd?: string, hooks = false) => gitHard(cwd, args, { env: wachtrijEnv(), hooks });
+
 const run = (cmd: string[], cwd?: string) => {
   const r = Bun.spawnSync(cmd, { cwd, env: wachtrijEnv(), stdout: "pipe", stderr: "pipe" });
   return { code: r.exitCode, uit: r.stdout.toString().trim(), fout: r.stderr.toString().trim() };
@@ -310,11 +314,11 @@ function ruimTakken(o: Opties, root: string): never {
   if (!info.headRefName.startsWith("wachtrij/")) return klaar(1, `wachtrij: PR ${pr} is geen integratie-PR (tak ${info.headRefName})`);
   const onderliggend = leesMarker(info.body);
   if (!onderliggend.length) return klaar(1, `wachtrij: PR ${pr} bevat geen geldige "${MARKER}"-regel`);
-  const f = run(["git", "fetch", "origin", "main"], root);
+  const f = git(["fetch", "origin", "main"], root);
   if (f.code !== 0) return klaar(1, `wachtrij: git fetch mislukt: ${f.fout}`);
   let fouten = 0;
   for (const d of onderliggend) {
-    const anc = run(["git", "merge-base", "--is-ancestor", d.sha, "origin/main"], root);
+    const anc = git(["merge-base", "--is-ancestor", d.sha, "origin/main"], root);
     if (anc.code !== 0) {
       console.error(`wachtrij: #${d.nummer} (${d.tak}): head ${d.sha.slice(0, 7)} staat niet in origin/main, tak blijft staan`);
       fouten++;
@@ -329,7 +333,7 @@ function ruimTakken(o: Opties, root: string): never {
       continue;
     }
     const ref = `refs/heads/${d.tak}`;
-    const staat = run(["git", "ls-remote", "origin", ref], root).uit;
+    const staat = git(["ls-remote", "origin", ref], root).uit;
     const [staatSha, staatRef] = staat.split(/\s+/);
     if (!staat) {
       console.log(`wachtrij: #${d.nummer}: remote tak ${d.tak} bestond al niet meer`);
@@ -351,7 +355,7 @@ function ruimTakken(o: Opties, root: string): never {
       continue;
     }
     // met lease: een commit die tussen controle en verwijderen is gepusht, blokkeert het verwijderen
-    const del = run(["git", "push", `--force-with-lease=${ref}:${d.sha}`, "origin", `:${ref}`], root);
+    const del = git(["push", `--force-with-lease=${ref}:${d.sha}`, "origin", `:${ref}`], root, true);
     if (del.code !== 0) {
       console.error(`wachtrij: verwijderen van ${d.tak} mislukt: ${del.fout}`);
       fouten++;
@@ -370,7 +374,7 @@ function hoofd(args: string[]): never {
   } catch (e) {
     return klaar(1, `wachtrij: ${(e as Error).message}`);
   }
-  const root = run(["git", "rev-parse", "--show-toplevel"]).uit;
+  const root = git(["rev-parse", "--show-toplevel"]).uit;
   if (!root) return klaar(1, "wachtrij: draai dit in een git-clone van de repo");
   if (o.ruim) return ruimTakken(o, root);
 
@@ -418,24 +422,24 @@ function hoofd(args: string[]): never {
 
   if (inStiltevenster(nu)) return klaar(1, "wachtrij: stiltevenster 05:00–07:15, geen zware poort; draai na 07:15 opnieuw");
   if (existsSync(map)) return klaar(1, `wachtrij: ${map} bestaat al; kies een andere --map of ruim hem eerst op`);
-  const f = run(["git", "fetch", "origin"], root);
+  const f = git(["fetch", "origin"], root);
   if (f.code !== 0) return klaar(1, `wachtrij: git fetch mislukt: ${f.fout}`);
-  const w = run(["git", "worktree", "add", "-b", tak, map, o.basis], root);
+  const w = git(["worktree", "add", "-b", tak, map, o.basis], root);
   if (w.code !== 0) return klaar(1, `wachtrij: worktree maken mislukt: ${w.fout}`);
 
   const gemerged: Pr[] = [];
   const eruit: Afgevallen[] = [...afgevallen];
   for (const p of gekozen) {
-    const h = run(["git", "fetch", "origin", p.headRefName], map);
-    const sha = h.code === 0 ? run(["git", "rev-parse", "FETCH_HEAD"], map).uit : "";
+    const h = git(["fetch", "origin", p.headRefName], map);
+    const sha = h.code === 0 ? git(["rev-parse", "FETCH_HEAD"], map).uit : "";
     if (sha !== p.headRefOid) {
       eruit.push({ nummer: p.number, reden: h.code === 0 ? `tak is verschoven na het akkoord (${sha.slice(0, 7)})` : "tak niet op te halen" });
       console.error(`wachtrij: #${p.number} eruit: ${eruit[eruit.length - 1].reden}`);
       continue;
     }
-    const m = run(["git", "merge", "--no-ff", "-m", `Merge PR #${p.number} (${p.headRefName}) in ${tak}`, p.headRefOid], map);
+    const m = git(["merge", "--no-ff", "-m", `Merge PR #${p.number} (${p.headRefName}) in ${tak}`, p.headRefOid], map);
     if (m.code !== 0) {
-      run(["git", "merge", "--abort"], map);
+      git(["merge", "--abort"], map);
       eruit.push({ nummer: p.number, reden: "mergeconflict met de wachtrij" });
       console.error(`wachtrij: #${p.number} eruit: mergeconflict`);
       continue;
@@ -444,8 +448,8 @@ function hoofd(args: string[]): never {
     console.log(`wachtrij: #${p.number} samengevoegd`);
   }
   if (!gemerged.length) {
-    run(["git", "worktree", "remove", map], root);
-    run(["git", "branch", "-d", tak], root);
+    git(["worktree", "remove", map], root);
+    git(["branch", "-d", tak], root);
     return klaar(1, "wachtrij: geen enkele PR bleef over; worktree en tak opgeruimd");
   }
 
@@ -454,10 +458,10 @@ function hoofd(args: string[]): never {
   if (poort.exitCode !== 0) {
     return klaar(1, `wachtrij: poort rood (exit ${poort.exitCode}); geen push, geen PR.${resten(map, tak, false)}`);
   }
-  const vies = run(["git", "status", "--porcelain"], map).uit;
+  const vies = git(["status", "--porcelain"], map).uit;
   if (vies) return klaar(1, `wachtrij: de poort liet gewijzigde bestanden achter (de gepushte commit is dan niet wat de poort zag); geen push, geen PR:\n${vies}${resten(map, tak, false)}`);
-  const head = run(["git", "rev-parse", "HEAD"], map).uit;
-  const push = run(["git", "push", "-u", "origin", tak], map);
+  const head = git(["rev-parse", "HEAD"], map).uit;
+  const push = git(["push", "-u", "origin", tak], map, true);
   if (push.code !== 0) return klaar(1, `wachtrij: push mislukt: ${push.fout}${resten(map, tak, false)}`);
   const body = bouwBody({ gemerged, afgevallen: eruit, head, poortCmd: o.poortCmd, basis: o.basis, vasteLijst: !!o.prs });
   const titel = `wachtrij: ${gemerged.map((p) => `#${p.number}`).join(" ")}`;
