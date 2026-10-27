@@ -1,5 +1,5 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { schoneEnv } from "../../test-integriteit";
@@ -886,4 +886,208 @@ describe("grenzen.sh: geen schrijvende commando's in de hoofdcheckout", () => {
     expect(m).toContain("eigen worktree of clone");
     expect(m).toContain("absoluut pad");
   }, RUIM);
+});
+
+describe("grenzen.sh: apply_patch van Codex", () => {
+  const BASIS = realpathSync(mkdtempSync(join(tmpdir(), "grenzen-patch-")));
+  const HOME = join(BASIS, "home");
+  const VAULT = join(HOME, "vault-b-status");
+  const HOOFD = join(BASIS, "hoofd");
+  const WORKTREE = join(BASIS, "eigen-worktree");
+  const WERK = join(BASIS, "werk");
+  mkdirSync(join(VAULT, "archief"), { recursive: true });
+  mkdirSync(WERK, { recursive: true });
+  mkdirSync(HOOFD, { recursive: true });
+  const git = (cwd: string, ...args: string[]) => {
+    const env = { ...schoneEnv(), GIT_AUTHOR_NAME: "t", GIT_AUTHOR_EMAIL: "t@t", GIT_COMMITTER_NAME: "t", GIT_COMMITTER_EMAIL: "t@t" };
+    const p = Bun.spawnSync(["git", "-C", cwd, ...args], { env, stdout: "pipe", stderr: "pipe" });
+    if (p.exitCode !== 0) throw new Error(`git ${args.join(" ")}: ${p.stderr.toString()}`);
+  };
+  git(HOOFD, "init", "-q", "-b", "main");
+  writeFileSync(join(HOOFD, "a.txt"), "a\n");
+  git(HOOFD, "add", ".");
+  git(HOOFD, "commit", "-q", "-m", "init");
+  git(HOOFD, "worktree", "add", "-q", "-b", "eigen", WORKTREE);
+  afterAll(() => rmSync(BASIS, { recursive: true, force: true }));
+  const GROOT = "x".repeat(50 * 1024);
+
+  // rol: LAB_AGENT_ROL (null = niet gezet); extra: invoervelden (agent_id) en omgeving via env
+  const run = (patch: unknown, cwd = WERK, rol: string | null = null, extra: Record<string, unknown> = {}, env: Record<string, string> = {}) => {
+    const e = { ...schoneEnv(), HOME, LAB_GRENS_MERGE: "", LAB_AGENT_ROL: rol ?? "", LAB_HOOFDCHECKOUT: HOOFD, ...env };
+    const invoer = { tool_name: "apply_patch", tool_input: { command: patch }, cwd, ...extra };
+    const p = Bun.spawnSync(["bash", HOOK], { stdin: new TextEncoder().encode(JSON.stringify(invoer)), env: e, stdout: "pipe", stderr: "pipe" });
+    return { code: p.exitCode, stderr: p.stderr.toString() };
+  };
+  const wrap = (...delen: string[]) => `*** Begin Patch\n${delen.join("\n")}\n*** End Patch`;
+  const add = (pad: string, tekst = "hi") => `*** Add File: ${pad}\n${tekst.split("\n").map((l) => `+${l}`).join("\n")}`;
+  const upd = (pad: string, hunk = "@@\n-a\n+b") => `*** Update File: ${pad}\n${hunk}`;
+  const del = (pad: string) => `*** Delete File: ${pad}`;
+
+  test("de echte Codex-fixture (Add File y.txt) mag", () => {
+    const fx = JSON.parse(readFileSync(join(import.meta.dir, "fixtures", "codex-PreToolUse-apply_patch.json"), "utf8"));
+    const e = { ...schoneEnv(), HOME, LAB_AGENT_ROL: "", LAB_GRENS_MERGE: "" };
+    const p = Bun.spawnSync(["bash", HOOK], { stdin: new TextEncoder().encode(JSON.stringify({ ...fx, cwd: WERK })), env: e, stdout: "pipe", stderr: "pipe" });
+    expect(p.exitCode).toBe(0);
+  });
+  test("gewone patches (Add, Update, Delete, Move to, meerdere bestanden) mogen", () => {
+    expect(run(wrap(add("nieuw.txt"))).code).toBe(0);
+    expect(run(wrap(upd("a.txt"))).code).toBe(0);
+    expect(run(wrap(del("a.txt"))).code).toBe(0);
+    expect(run(wrap(`*** Update File: a.txt\n*** Move to: b.txt\n@@\n-a\n+b`)).code).toBe(0);
+    expect(run(wrap(add("x.txt"), upd("y.txt"), del("z.txt"))).code).toBe(0);
+    expect(run(wrap(add("config.properties.example"), add(".env.example"))).code).toBe(0);
+  });
+
+  describe("sleutelbestanden", () => {
+    const PADEN = ["config.properties", "sub/config.json", ".env", "apps/x/.env.local", ".config/klaarover/token", ".config/douane/x", ".config/agentwerkbank/x"];
+    for (const pad of PADEN) {
+      for (const [soort, maak] of [["Add", add], ["Update", upd], ["Delete", del]] as const) {
+        test(`${soort} ${pad} wordt geweigerd`, () => {
+          const r = run(wrap(maak(pad)));
+          expect(r.code).toBe(2);
+          expect(r.stderr).toContain("sleutelbestand");
+        });
+      }
+    }
+    test("Move to naar een sleutelbestand, en een Move vanaf een sleutelbestand, wordt geweigerd", () => {
+      expect(run(wrap(`*** Update File: a.txt\n*** Move to: config.json\n@@\n-a\n+b`)).code).toBe(2);
+      expect(run(wrap(`*** Update File: .env\n*** Move to: kopie.txt\n@@\n-a\n+b`)).code).toBe(2);
+    });
+    test("~/.claude en ~/.codex (ook relatief aan cwd of met ~) worden geweigerd", () => {
+      expect(run(wrap(add(`${HOME}/.claude/settings.json`))).code).toBe(2);
+      expect(run(wrap(add("~/.codex/config.toml"))).code).toBe(2);
+      expect(run(wrap(upd("../home/.codex/hooks.json"))).code).toBe(2);
+      expect(run(wrap(add("x.txt")), join(HOME, ".claude")).code).toBe(2);
+    });
+    test("een sleutelbestand verderop in een patch met meer bestanden weigert de hele patch", () => {
+      expect(run(wrap(add("ok.txt"), upd("b.txt"), add("sub/.env"))).code).toBe(2);
+    });
+    test("een padstuk als .envrc of config.jsonl is geen sleutelbestand", () => {
+      expect(run(wrap(add(".envrc"), add("config.jsonl"), add("env.txt"))).code).toBe(0);
+    });
+    test("een symlink naar een sleutelbestand wordt geweigerd", () => {
+      symlinkSync(join(HOME, ".claude"), join(WERK, "schakel"));
+      expect(run(wrap(add("schakel/settings.json"))).code).toBe(2);
+    });
+  });
+
+  describe("vault-grootte", () => {
+    const groot = (pad: string) => wrap(add(pad, GROOT));
+    test("een nieuw te groot bestand wordt geweigerd, met grootte en oplossing", () => {
+      const r = run(groot(join(VAULT, "PLAN-nieuw.md")));
+      expect(r.code).toBe(2);
+      expect(r.stderr).toContain("limiet voor een vaultnotitie is 40 KB");
+      expect(r.stderr).toContain("splits per spoor");
+    });
+    test("paden relatief aan cwd tellen mee", () => {
+      expect(run(groot("PLAN-rel.md"), VAULT).code).toBe(2);
+      expect(run(groot("../home/vault-b-status/PLAN-rel.md"), WERK).code).toBe(2);
+    });
+    test("klein mag, precies op de grens mag, 1 byte erboven niet", () => {
+      expect(run(wrap(add(join(VAULT, "klein.md"), "y".repeat(1000)))).code).toBe(0);
+      // de patch telt een afsluitende nieuwe regel mee
+      expect(run(wrap(add(join(VAULT, "g.md"), "z".repeat(40959)))).code).toBe(0);
+      expect(run(wrap(add(join(VAULT, "g.md"), "z".repeat(40960)))).code).toBe(2);
+    });
+    test("een Update die een bestaande notitie boven de grens laat groeien wordt geweigerd; krimpen of gelijk mag", () => {
+      writeFileSync(join(VAULT, "groei.md"), "a\n" + "q\n".repeat(20000));
+      const voor = readFileSync(join(VAULT, "groei.md"), "utf8").length;
+      expect(voor).toBeLessThan(40960);
+      expect(run(wrap(upd(join(VAULT, "groei.md"), `@@\n a\n+${"w".repeat(2000)}`))).code).toBe(2);
+      writeFileSync(join(VAULT, "al-groot.md"), "a\n" + "q\n".repeat(30000));
+      expect(run(wrap(upd(join(VAULT, "al-groot.md"), "@@\n-a\n+b"))).code).toBe(0);
+      expect(run(wrap(upd(join(VAULT, "al-groot.md"), "@@\n-q\n-q\n+q"))).code).toBe(0);
+      expect(run(wrap(upd(join(VAULT, "al-groot.md"), `@@\n a\n+${"w".repeat(2000)}`))).code).toBe(2);
+    });
+    test("een Update waarvan de context niet in het bestand staat telt + en - regels", () => {
+      writeFileSync(join(VAULT, "schat.md"), "x\n".repeat(20000));
+      expect(run(wrap(upd(join(VAULT, "schat.md"), `@@\n-bestaat niet\n+${"w".repeat(30000)}`))).code).toBe(2);
+      expect(run(wrap(upd(join(VAULT, "schat.md"), "@@\n-bestaat niet\n+kort"))).code).toBe(0);
+    });
+    test("Move to naar een vaultnotitie telt de grootte van het resultaat", () => {
+      writeFileSync(join(WERK, "bron.md"), "a\n");
+      const patch = wrap(`*** Update File: ${join(WERK, "bron.md")}\n*** Move to: ${join(VAULT, "verhuisd.md")}\n@@\n a\n+${"w".repeat(50000)}`);
+      expect(run(patch).code).toBe(2);
+    });
+    test("Delete in de vault mag; lead.md, archief/ en niet-.md mogen groot; spoor/lead.md niet", () => {
+      expect(run(wrap(del(join(VAULT, "groei.md")))).code).toBe(0);
+      expect(run(groot(join(VAULT, "lead.md"))).code).toBe(0);
+      expect(run(groot(join(VAULT, "archief", "oud.md"))).code).toBe(0);
+      expect(run(groot(join(VAULT, "data.json"))).code).toBe(0);
+      expect(run(groot(join(HOME, "elders", "plan.md"))).code).toBe(0);
+      expect(run(groot(join(VAULT, "spoor", "lead.md"))).code).toBe(2);
+      expect(run(groot(join(VAULT, "archief", "..", "groot2.md"))).code).toBe(2);
+    });
+    test("LAB_VAULT_MAX_KB wordt gevolgd", () => {
+      expect(run(groot(join(VAULT, "a.md")), WERK, null, {}, { LAB_VAULT_MAX_KB: "100" }).code).toBe(0);
+      expect(run(wrap(add(join(VAULT, "a.md"), "y".repeat(1024))), WERK, null, {}, { LAB_VAULT_MAX_KB: "0.5" }).code).toBe(2);
+    });
+  });
+
+  describe("hoofdcheckout", () => {
+    test("een agent mag geen bestand schrijven in de hoofdcheckout (Add, Update, Delete, Move, submap)", () => {
+      for (const rol of ["agent", "sublead", "vervolg"]) {
+        const r = run(wrap(add(join(HOOFD, "nieuw.txt"))), WERK, rol);
+        expect(r.code).toBe(2);
+        expect(r.stderr).toContain("gedeelde hoofdcheckout");
+      }
+      expect(run(wrap(upd(join(HOOFD, "a.txt"))), WERK, "agent").code).toBe(2);
+      expect(run(wrap(del(join(HOOFD, "a.txt"))), WERK, "agent").code).toBe(2);
+      expect(run(wrap(`*** Update File: ${join(WERK, "a.txt")}\n*** Move to: ${join(HOOFD, "b.txt")}\n@@\n-a\n+b`), WERK, "agent").code).toBe(2);
+      expect(run(wrap(add(join(HOOFD, "nieuwe-map", "diep", "x.txt"))), WERK, "agent").code).toBe(2);
+    });
+    test("relatief aan een cwd in de hoofdcheckout telt ook", () => {
+      expect(run(wrap(add("nieuw.txt")), HOOFD, "agent").code).toBe(2);
+    });
+    test("een eigen worktree en een map buiten een repo mogen", () => {
+      expect(run(wrap(add("nieuw.txt")), WORKTREE, "agent").code).toBe(0);
+      expect(run(wrap(add(join(WORKTREE, "x.txt"))), HOOFD, "agent").code).toBe(0);
+      expect(run(wrap(add("nieuw.txt")), WERK, "agent").code).toBe(0);
+    });
+    test("de lead en Brian (zonder rol, zonder subagent-velden) mogen in de hoofdcheckout", () => {
+      expect(run(wrap(add(join(HOOFD, "x.txt"))), HOOFD, "lead").code).toBe(0);
+      expect(run(wrap(add(join(HOOFD, "x.txt"))), HOOFD, null).code).toBe(0);
+    });
+    test("een subagent wordt geweigerd, ook met rol lead of zonder rol", () => {
+      expect(run(wrap(add(join(HOOFD, "x.txt"))), HOOFD, "lead", { agent_id: "a1" }).code).toBe(2);
+      expect(run(wrap(add(join(HOOFD, "x.txt"))), HOOFD, null, { agent_type: "worker" }).code).toBe(2);
+      expect(run(wrap(add(join(WORKTREE, "x.txt"))), WORKTREE, "lead", { agent_id: "a1" }).code).toBe(0);
+    });
+  });
+
+  describe("een patch die niet te lezen is wordt geweigerd, met uitleg", () => {
+    const SLECHT: Array<[string, unknown]> = [
+      ["zonder Begin Patch", "*** Add File: x.txt\n+hi\n*** End Patch"],
+      ["zonder End Patch", "*** Begin Patch\n*** Add File: x.txt\n+hi"],
+      ["leeg", ""],
+      ["alleen Begin en End", "*** Begin Patch\n*** End Patch"],
+      ["geen tekst maar een lijst", ["*** Begin Patch"]],
+      ["onbekende kop", wrap("*** Rename File: x.txt")],
+      ["regel buiten een bestand", wrap("+hi")],
+      ["Add met een regel zonder plus", wrap("*** Add File: x.txt\nhi")],
+      ["regel zonder + - of spatie", wrap("*** Update File: x.txt\n@@\nfout")],
+      ["Move to zonder Update", wrap("*** Add File: x.txt\n*** Move to: y.txt")],
+      ["Delete met inhoud", wrap("*** Delete File: x.txt\n-a")],
+      ["leeg pad", wrap("*** Add File: \n+hi")],
+    ];
+    for (const [naam, patch] of SLECHT) {
+      test(naam, () => {
+        const r = run(patch);
+        expect(r.code).toBe(2);
+        expect(r.stderr).toContain("apply_patch niet te lezen");
+        expect(r.stderr).toContain("*** Begin Patch");
+      });
+    }
+    test("zonder command-veld", () => {
+      const e = { ...schoneEnv(), HOME, LAB_AGENT_ROL: "", LAB_GRENS_MERGE: "" };
+      const p = Bun.spawnSync(["bash", HOOK], { stdin: new TextEncoder().encode(JSON.stringify({ tool_name: "apply_patch", tool_input: {}, cwd: WERK })), env: e, stdout: "pipe", stderr: "pipe" });
+      expect(p.exitCode).toBe(2);
+    });
+  });
+
+  test("een tool die niet apply_patch heet wordt niet als patch gelezen", () => {
+    const e = { ...schoneEnv(), HOME, LAB_AGENT_ROL: "", LAB_GRENS_MERGE: "" };
+    const p = Bun.spawnSync(["bash", HOOK], { stdin: new TextEncoder().encode(JSON.stringify({ tool_name: "mcp__x__y", tool_input: { command: "onzin" }, cwd: WERK })), env: e, stdout: "pipe", stderr: "pipe" });
+    expect(p.exitCode).toBe(0);
+  });
 });
