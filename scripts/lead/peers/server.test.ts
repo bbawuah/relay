@@ -180,6 +180,13 @@ describe("verwerk", () => {
     expect(t).not.toContain("/geheim");
   });
 
+  test("een tools/call zonder id (notificatie) heeft geen bijwerking: inbox ackt niet", async () => {
+    await bus().send("a", "b", "hoi");
+    const v = await verwerk({ jsonrpc: "2.0", method: "tools/call", params: { name: "inbox", arguments: {} } }, bus(), { LAB_AGENT_NAAM: "b" });
+    expect(v).toEqual({ antwoord: null });
+    expect(bus().inbox("b")).toHaveLength(1);
+  });
+
   test("inbox ackt pas na `daarna`, niet bij het antwoord zelf", async () => {
     await bus().send("a", "b", "hoi");
     const v = await verwerk(roep(1, "inbox") as any, bus(), { LAB_AGENT_NAAM: "b" });

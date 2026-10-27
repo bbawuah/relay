@@ -103,6 +103,7 @@ export async function verwerk(m: Rpc, bus: Bus, env: Omgeving): Promise<Verwerkt
     case "tools/list":
       return goed({ tools: TOOLS });
     case "tools/call": {
+      if (!heeftId) return { antwoord: null }; // een notificatie krijgt geen antwoord, dus ook geen bijwerking (geen ack)
       const naam = m.params?.name;
       const args = m.params?.arguments;
       if (typeof naam !== "string") return fout(-32602, "name ontbreekt");
