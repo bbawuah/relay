@@ -59,6 +59,7 @@ export const RETENTIE_MS = 24 * 3600_000;
 const IDLE_TOESTANDEN = new Set(["idle", "klaar", "vrij", "weg"]);
 const SLOT_MAX_MS = 5_000;
 const SLOT_VEROUDERD_MS = 10_000;
+export const KLAAR_MAX_MS = 15_000;
 const NAAM = /^[A-Za-z0-9_-][A-Za-z0-9._-]{0,99}$/;
 const INBOUND = new Set<string>(["accept", "hold", "refuse"]);
 
@@ -152,7 +153,7 @@ export function maakBus(opties: BusOpties): BusMetKlaar {
   function ruimTmp(dir: string): void {
     try {
       for (const n of readdirSync(dir)) {
-        if (!n.endsWith(".tmp") && !n.includes(".dood.")) continue;
+        if (!n.endsWith(".tmp") && !/\.lock\.dood\./.test(n)) continue;
         try {
           if (Date.now() - statSync(join(dir, n)).mtimeMs > 60_000) rmSync(join(dir, n), { force: true });
         } catch {
@@ -340,7 +341,7 @@ export function maakBus(opties: BusOpties): BusMetKlaar {
   type WekStaat = { ts?: number; open?: { tot: number; pid?: number } };
 
   /** Een wachter is levend zolang zijn proces leeft en het venster niet ruim voorbij is. */
-  const wachterLeeft = (open: NonNullable<WekStaat["open"]>, n: number) => n < open.tot + WEK_VENSTER_MS && (open.pid === undefined || pidLeeft(open.pid));
+  const wachterLeeft = (open: NonNullable<WekStaat["open"]>, n: number) => n < open.tot + WEK_VENSTER_MS && open.tot <= n + WEK_VENSTER_MS && (open.pid === undefined || pidLeeft(open.pid));
 
   /**
    * Beslist of en wanneer `naam` gewekt wordt. Alleen aanroepen met het slot `post/<naam>`.
@@ -353,14 +354,15 @@ export function maakBus(opties: BusOpties): BusMetKlaar {
     const st = leesJson<WekStaat>(p, {});
     const ts = st.ts ?? 0;
     const n = nu();
-    if (n - ts >= WEK_VENSTER_MS) {
+    // `ts` in de toekomst (klok teruggezet, corrupt bestand) telt als verouderd: wek nu in plaats van tot een uur te wachten.
+    if (n - ts >= WEK_VENSTER_MS || ts > n) {
       schrijfAtomair(p, JSON.stringify({ ts: n }));
       return { actie: "nu", aantal: ongelezen(naam).length };
     }
     if (st.open && wachterLeeft(st.open, n)) return null;
     const tot = ts + WEK_VENSTER_MS;
     schrijfAtomair(p, JSON.stringify({ ts, open: { tot, pid: process.pid } }));
-    return { actie: "wacht", ms: tot - n, tot };
+    return { actie: "wacht", ms: Math.min(Math.max(tot - n, 0), WEK_VENSTER_MS), tot };
   }
 
   async function wek(doel: WekDoel, aantal: number): Promise<WekUitslag> {
@@ -521,7 +523,7 @@ export function maakBus(opties: BusOpties): BusMetKlaar {
     },
 
     inbox(naam) {
-      if (!geldigeNaam(naam)) return [];
+      if (!geldigeNaam(naam) || heeftTweeling(naam, levende())) return [];
       const lijst = metSlot("post", naam, () => ongelezen(naam).slice(0, MAX_WACHTRIJ));
       // Wie externe inhoud ziet, is zelf extern, ook zonder ack (inbox --niet-acken).
       if (lijst.some((e) => e.herkomst === "extern")) markeerExtern(opties.staat, naam);
@@ -529,7 +531,7 @@ export function maakBus(opties: BusOpties): BusMetKlaar {
     },
 
     ack(naam, ids) {
-      if (!geldigeNaam(naam)) return;
+      if (!geldigeNaam(naam) || heeftTweeling(naam, levende())) return;
       const extern = metSlot("post", naam, () => {
         const gelezen = leesGelezen(naam);
         const bekend = new Map(alleEnvelops(naam).map((e) => [e.id, e]));
@@ -543,7 +545,11 @@ export function maakBus(opties: BusOpties): BusMetKlaar {
     },
 
     async klaar() {
-      while (achtergrond.size > 0) await Promise.all([...achtergrond]);
+      // Harde bovengrens: een wekker die hangt mag de aanroeper (CLI, hook) niet blijven vasthouden.
+      const lopend = (async () => {
+        while (achtergrond.size > 0) await Promise.all([...achtergrond]);
+      })();
+      await Promise.race([lopend, wacht(KLAAR_MAX_MS)]);
     },
 
     list() {
@@ -609,12 +615,12 @@ export function maakBus(opties: BusOpties): BusMetKlaar {
     },
 
     vastgehouden(naam) {
-      if (!geldigeNaam(naam)) return [];
+      if (!geldigeNaam(naam) || heeftTweeling(naam, levende())) return [];
       return metSlot("post", naam, () => houdVast(naam));
     },
 
     async vrijgeven(naam, ids) {
-      if (!geldigeNaam(naam)) return 0;
+      if (!geldigeNaam(naam) || heeftTweeling(naam, levende())) return 0;
       // Verplaatsen verandert ongelezen + vastgehouden niet, dus MAX_WACHTRIJ blijft gehaald.
       const uit = metSlot("post", naam, (): { n: number; wek: WekAanvraag | null } => {
         const vast = houdVast(naam);
