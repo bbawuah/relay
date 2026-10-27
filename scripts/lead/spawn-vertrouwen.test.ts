@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, setDefaultTimeout, test } from "bun:test";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
+import { schoneEnv } from "../test-integriteit";
 import { join } from "node:path";
 
 // Echte tmux, maar alleen een wegwerpserver: elke aanroep van spawn.sh gaat via een `tmux`-wrapper die
@@ -50,7 +51,7 @@ beforeEach(() => {
   maak("nep-agent-spawn.sh", `#!/usr/bin/env bash\ntmux new-window -d -P -F '#{pane_id}' "${join(bin, "pane.sh")}"\n`);
   // Wegwerp-repo voor de actualiteitscontrole van spawn.sh (origin/main = HEAD, geen remote: geen netwerk, geen waarschuwing)
   mkdirSync(join(dir, "repo"));
-  const g = (...a: string[]) => Bun.spawnSync(["git", "-c", "user.name=t", "-c", "user.email=t@t", ...a], { cwd: join(dir, "repo"), env: { ...schoon(), GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_SYSTEM: "/dev/null" } });
+  const g = (...a: string[]) => Bun.spawnSync(["git", "-c", "user.name=t", "-c", "user.email=t@t", ...a], { cwd: join(dir, "repo"), env: { ...schoneEnv(), GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_SYSTEM: "/dev/null" } });
   g("init", "-q", "-b", "main");
   g("commit", "-q", "--allow-empty", "-m", "begin");
   g("update-ref", "refs/remotes/origin/main", "HEAD");
