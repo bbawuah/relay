@@ -1,0 +1,32 @@
+{
+  "_meta": {
+    "callId": "call_1",
+    "x-codex-turn-metadata": {
+      "session_id": "01a17ebe-4fe1-79b1-807b-0e8515a20120",
+      "thread_id": "01a17ebe-4fe1-79b1-807b-0e8515a20120",
+      "model": "nep",
+      "turn_id": "01a17ebe-87e3-7be0-92cd-4479efc500c2",
+      "turn_started_at_unix_ms": 1793127778277,
+      "thread_source": "user",
+      "turn_trigger": "user",
+      "sandbox": "seatbelt",
+      "sandbox_mode": "workspace-write",
+      "auto_review_enabled": false,
+      "node_repl_auto_review_required": false,
+      "node_repl_disabled": false,
+      "workspaces": {
+        "/tmp/codex-meting/wd": {
+          "has_changes": false
+        }
+      },
+      "codex_version": "0.164.0"
+    },
+    "threadId": "01a17ebe-4fe1-79b1-807b-0e8515a20120",
+    "sessionId": "01a17ebe-4fe1-79b1-807b-0e8515a20120",
+    "windowId": "01a17ebe-4fe1-79b1-807b-0e8515a20120:0",
+    "itemId": "fc_1",
+    "progressToken": 1
+  },
+  "name": "ping",
+  "arguments": {}
+}

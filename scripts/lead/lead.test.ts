@@ -1268,6 +1268,7 @@ exit 1
     expect(existsSync(join(gem, "hooks", "x"))).toBe(false);
   }, 120_000);
 
+  // spawn.sh draait meerdere keren; 5 s standaard is te krap onder belasting (27 okt, load 13)
   test("hosted web search: tmux zet hem uit met -c (ook zonder MCP, ook als de config hem aanzet); T3 weigert als de config hem aanzet", () => {
     writeFileSync(join(dir, "pane.txt"), "Ask Codex\n• Ran ls\n");
     const UIT = `-c 'web_search="disabled"'`;
@@ -1309,7 +1310,7 @@ exit 1
     expect(codex(["--map", wt, "--droog"]).uit).toContain(UIT); // tmux: -c wint
     writeFileSync(join(wt, ".codex", "config.toml"), 'web_search = "disabled"\n');
     expect(codex(["--map", wt, "--t3", "--droog"]).code).toBe(0);
-  });
+  }, 60_000);
 
   test("tmux: spawn zet de upstream van de werkertak vooraf (.git/config is read-only in de sandbox); een bestaande eigen upstream blijft", () => {
     writeFileSync(join(dir, "pane.txt"), "Ask Codex\n");

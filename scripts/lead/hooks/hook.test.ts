@@ -717,3 +717,32 @@ describe("leadnamen: het register is de bron, env alleen de beginwaarde", () => 
     expect(leesRecord(staat, "LB3")?.naam).toBe("lead-b");
   });
 });
+
+describe("Codex-subagent (fixture codex-UserPromptSubmit-subagent.json)", () => {
+  const fixture = JSON.parse(readFileSync(join(import.meta.dir, "codex-fixtures", "codex-UserPromptSubmit-subagent.json"), "utf8")) as Record<string, unknown>;
+  const codex: Opties = { nu, bron: "codex" };
+
+  test("een UserPromptSubmit met agent_id (met het session_id van de hoofdsessie) telt niet als een nieuwe beurt van de hoofdsessie", async () => {
+    const sid = String(fixture.session_id);
+    const hoofd = { session_id: sid, cwd: "/w/w2" };
+    await verwerk("SessionStart", { ...hoofd, source: "startup" }, omgeving(), codex);
+    // de hoofdsessie is klaar met haar beurt: idle, rapport gedaan, drie tools
+    const r = leesRecord(staat, sid) as Rec;
+    schrijfRecord(staat, { ...r, toestand: "idle", sinds: T0, rapport_in_beurt: true, tools_in_beurt: 3, vrij: true, einde: T0 });
+    klok = T0 + 5000;
+    const u = await verwerk("UserPromptSubmit", fixture as Record<string, unknown>, omgeving(), codex);
+    expect(u.stdout).toBe("");
+    expect(leesRecord(staat, sid)).toMatchObject({ toestand: "idle", sinds: T0, rapport_in_beurt: true, tools_in_beurt: 3, vrij: true, einde: T0 });
+    // zonder agent_id is het wel een nieuwe beurt
+    const { agent_id: _a, agent_type: _t, ...gewoon } = fixture;
+    await verwerk("UserPromptSubmit", gewoon, omgeving(), codex);
+    expect(leesRecord(staat, sid)).toMatchObject({ toestand: "bezig", rapport_in_beurt: false, tools_in_beurt: 0 });
+  });
+
+  test("een Stop met agent_id valt nog gewoon onder de rapport-gate (alleen UserPromptSubmit wordt gefilterd)", async () => {
+    const env = omgeving({ LAB_AGENT_ROL: "agent" });
+    await stuurTool(env);
+    const u = await verwerk("Stop", inv({ stop_hook_active: false, agent_id: "sub-1", agent_type: "default" }), env, opt);
+    expect(JSON.parse(u.stdout).decision).toBe("block");
+  });
+});

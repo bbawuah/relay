@@ -2,7 +2,7 @@
 // hook.ts verwerkt beide. Dit bestand bevat alleen wat verschilt: de velden die het register erbij krijgt (PeerVelden),
 // het toolnaam-verschil en de herkomst.
 //
-// Verschillen met Claude (spike 27 okt, Codex 0.164.0): geen agent_id; shelltool heet `Bash`; bestanden wijzigen is
+// Verschillen met Claude (spike 27 okt, Codex 0.164.0): agent_id alleen bij subagents (UserPromptSubmit, SubagentStop); shelltool heet `Bash`; bestanden wijzigen is
 // `apply_patch` (tool_input.command = patchtekst); PostToolUse heeft tool_response als string; MCP-tools heten
 // `mcp__<server>__<tool>` (ook bij Claude). Geen SendMessage: het rapport aan de lead is `mcp__peers__send`.
 
