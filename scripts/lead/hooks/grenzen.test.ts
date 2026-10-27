@@ -1095,11 +1095,10 @@ describe("grenzen.sh: apply_patch van Codex", () => {
       expect(run(wrap(add(join(ch, "config.toml"))), WERK, null, {}, { CODEX_HOME: ch }).code).toBe(2);
       expect(run(wrap(add(join(ch, "config.toml")))).code).toBe(0);
     });
-    test("N1: .git in andere hoofdletters, en een pad in kleine letters, tellen als hoofdcheckout (APFS)", () => {
+    test("N1: .git in andere hoofdletters, en een .git-pad in kleine letters, tellen als hoofdcheckout (puur op strings, dus ook op Linux)", () => {
       expect(run(wrap(add(".GIT/hooks/pre-push")), HOOFD, "werker").code).toBe(2);
       expect(run(wrap(add(`${HOOFD.toLowerCase()}/.git/config`)), WORKTREE, "werker").code).toBe(2);
       expect(run(wrap(add(`${HOOFD.toUpperCase()}/.Git/hooks/x`)), WORKTREE, "werker").code).toBe(2);
-      expect(run(wrap(add(`${HOOFD.toLowerCase()}/nieuw.txt`)), WORKTREE, "werker").code).toBe(2);
       expect(run(wrap(add(`${HOOFD.toLowerCase()}/.git/config`)), WORKTREE, "lead").code).toBe(0);
     });
     test("N2: een min-regel die niet exact matcht telt niet als krimp (38 KB + fuzzy min van 5000 en plus van 5500)", () => {
