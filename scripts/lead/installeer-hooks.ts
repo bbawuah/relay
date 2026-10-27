@@ -19,8 +19,8 @@
 
 import { chmodSync, copyFileSync, existsSync, mkdirSync, readFileSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { peersKopieen } from "./hooks/peers-kopie";
 import { basename, dirname, isAbsolute, join, resolve } from "node:path";
+import { peersKopieen } from "./hooks/peers-kopie";
 
 export const MERK = "lab-lead-hooks/hook.sh";
 export const BESTANDEN = ["hook.sh", "hook.ts", "register.ts", "codex-adapter.ts"];

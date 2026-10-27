@@ -7,6 +7,10 @@
 #          worktree als --map (nooit de hoofdcheckout) en een Codex-config met de grenzen-hook (grenzen.sh, vertrouwd door
 #          codex-installeer.ts); anders weigert spawn. De rol staat in de pane-omgeving (tmux) en altijd in
 #          <staat>/identiteit/<hash van de checkout>.json (codex-wrap.sh zet die in de omgeving van elke hook, ook in T3).
+#          Sandbox (tmux): de werker draait met een permissieprofiel (workspace-write-achtig, netwerk aan): schrijven alleen in de
+#          worktree, /tmp, TMPDIR, de bun-cache, <common>/objects, refs, logs en worktrees/<naam>; hooks, config, commondir en
+#          gitdir blijven read-only; sleutelmappen zijn onleesbaar; geen escalatieverzoeken (-a never). Een T3-thread krijgt
+#          geen -c en dus geen sandbox: --t3 met --vendor codex weigert tenzij --zonder-sandbox.
 #          --t3: start de sessie als thread in T3 Code (server op deze machine) in plaats van in tmux; --map moet dan
 #          een eigen worktree zijn. Laatste regel van de uitvoer: t3:<thread-id>.
 #        scripts/lead/spawn.sh --meerdere <lijst> [--model ..] [--map ..] [--lead ..] [--droog]
@@ -35,7 +39,7 @@ for v in WACHT POLS BEWIJS ENTER; do
 done
 [[ $WACHT_VERTROUWEN =~ ^[0-9]+$ ]] || fout "WACHT_VERTROUWEN moet een geheel getal zijn, niet '$WACHT_VERTROUWEN'"
 
-naam="" opdracht="" model="" map="$PWD" lead="" droog=0 sublead=0 vervolg="" workflow="" meerdere="" t3=0 vendor=claude
+naam="" opdracht="" model="" map="$PWD" lead="" droog=0 sublead=0 vervolg="" workflow="" meerdere="" t3=0 vendor=claude zonder_sandbox=0
 waarde() { [ "$#" -ge 2 ] || fout "optie $1 heeft een waarde nodig"; }
 while [ $# -gt 0 ]; do
   case $1 in
@@ -50,6 +54,7 @@ while [ $# -gt 0 ]; do
     --droog) droog=1; shift ;;
     --meerdere) waarde "$@"; meerdere=$2; shift 2 ;;
     --t3) t3=1; shift ;;
+    --zonder-sandbox) zonder_sandbox=1; shift ;;
     --vendor) waarde "$@"; vendor=$2; shift 2 ;;
     -h|--help) sed -n '2,15p' "$0"; exit 0 ;;
     *) fout "onbekende optie: $1" ;;
@@ -90,6 +95,7 @@ if [ -n "$meerdere" ]; then
     [ -z "$lead" ] || args+=(--lead "$lead")
     [ "$droog" = 0 ] || args+=(--droog)
     [ "$t3" = 0 ] || args+=(--t3)
+    [ "$zonder_sandbox" = 0 ] || args+=(--zonder-sandbox)
     [ "$vendor" = claude ] || args+=(--vendor "$vendor")
     bash "$zelf" "${args[@]}" >"$uitmap/${namen[$i]}.uit" 2>"$uitmap/${namen[$i]}.fout" &
     pids+=($!)
@@ -199,7 +205,31 @@ eigen_worktree() {
   eigen=$(git_schoon -C "$map" rev-parse --absolute-git-dir 2>/dev/null) || return 1
   [ -n "$eigen" ] || return 1
   eigen=$(cd "$eigen" 2>/dev/null && pwd -P) || return 1
+  GEMEEN_DIR=$gemeen EIGEN_DIR=$eigen
   [ -n "$gemeen" ] && [ -n "$eigen" ] && [ "$eigen" != "$gemeen" ]
+}
+
+# De sandbox van een Codex-werker in tmux, als -c-argumenten (een permissieprofiel; zie de kop). Gemeten op codex-cli 0.164.0:
+# `sandbox_workspace_write.writable_roots` kan de gedeelde .git niet fijn genoeg opendoen (worktrees/<naam> bevat commondir en
+# gitdir, die een git in die worktree naar een andere common dir sturen), een profiel met `read` op die bestanden wel.
+# Weigert (nooit half): een pad met ' " \ of een regeleinde kan niet veilig in de TOML.
+codex_sandbox() {
+  local c e h t b rest m
+  c=$GEMEEN_DIR e=$EIGEN_DIR h=${HOME:-}
+  m=$(cd "$map" && pwd -P) || fout "--vendor codex: $map is niet te openen"
+  [ -n "$h" ] && [ -d "$h" ] || fout "--vendor codex: HOME ontbreekt, de sandbox kan niet gebouwd worden"
+  h=$(cd "$h" && pwd -P)
+  t=$(cd /tmp && pwd -P)
+  for rest in "$m" "$c" "$e" "$h" "$t" "${TMPDIR:-}"; do
+    case $rest in *\'*|*\"*|*\\*|*$'\n'*) fout "--vendor codex: een pad bevat ', \" of \\ en kan niet in de sandbox-config: $rest" ;; esac
+  done
+  b="$h/.bun/install/cache"
+  SANDBOX_FS="\"/\"=\"read\",\"$m\"=\"write\",\"$c/objects\"=\"write\",\"$c/refs\"=\"write\",\"$c/logs\"=\"write\""
+  SANDBOX_FS="$SANDBOX_FS,\"$e\"=\"write\",\"$e/commondir\"=\"read\",\"$e/gitdir\"=\"read\",\"$e/config.worktree\"=\"read\""
+  SANDBOX_FS="$SANDBOX_FS,\"$t\"=\"write\",\"$b\"=\"write\""
+  if [ -n "${TMPDIR:-}" ] && [ -d "$TMPDIR" ]; then SANDBOX_FS="$SANDBOX_FS,\"$(cd "$TMPDIR" && pwd -P)\"=\"write\""; fi
+  # Sleutelmappen onleesbaar (dezelfde lijst als grenzen.sh), want een write_stdin gaat langs die hook.
+  SANDBOX_FS="$SANDBOX_FS,\"$h/.config/klaarover\"=\"none\",\"$h/.config/douane\"=\"none\",\"$h/.config/agentwerkbank\"=\"none\",\"$h/.codex/auth.json\"=\"none\""
 }
 
 # Een andere sessie in dezelfde checkout? Dan weigeren (de identiteit is per checkout, niet per sessie).
@@ -247,6 +277,11 @@ codex_controles() {
   local cfg="$CODEX_HOME_GEKOZEN/config.toml" uit
   eigen_worktree || fout "--vendor codex eist een eigen worktree als --map (git worktree add), niet de hoofdcheckout of een map zonder eigen worktree: $map"
   command -v "$BUN" >/dev/null 2>&1 || fout "--vendor codex heeft bun nodig om de grenzen-hook in $cfg te controleren"
+  if [ "$t3" = 1 ]; then
+    [ "$zonder_sandbox" = 1 ] || fout "--t3 met --vendor codex weigert: een T3-thread krijgt geen -c per thread en dus niet de sandbox van de tmux-werker (schrijven alleen in de worktree, hooks en config read-only). Start in tmux, of accepteer dat de thread zonder die sandbox draait met --zonder-sandbox"
+  else
+    codex_sandbox
+  fi
   # In T3 kan hosted web search niet per thread uit (geen -c); dan moet de config het zelf niet aanzetten (--web-search).
   uit=$("$BUN" "$HIER/hooks/codex-controle.ts" "$cfg" $([ "$t3" != 1 ] || echo --web-search) 2>&1) || fout "Codex-config niet in orde, de grenzen zouden niet gelden: $uit"
 }
@@ -375,6 +410,9 @@ if [ "$vendor" = codex ]; then
   # Hosted web search uit voor werkers (de uitkomst loopt langs geen hook); --search nooit meegeven. In T3 kan dit niet per
   # thread: codex_controles weigert daar als de config het aanzet. Het -c zet de TUI in embedded mode (zoals de MCP-c's).
   [ "$t3" = 1 ] || cmd="$cmd -c 'web_search=\"disabled\"'"
+  # Sandbox: een permissieprofiel (zie codex_sandbox) met netwerk, en nooit een escalatieverzoek (-a never): zonder mens in de
+  # pane zou een verzoek om buiten de sandbox te draaien blijven hangen, en een goedkeuring zou de sandbox ophouden te zijn.
+  [ "$t3" = 1 ] || cmd="$cmd -a never -c 'default_permissions=\"lab-werker\"' -c 'permissions.lab-werker.filesystem={$SANDBOX_FS}' -c 'permissions.lab-werker.network={enabled=true}'"
   # De peers-MCP alleen voor deze sessie (-c), nooit globaal in ~/.codex.
   server="${LAB_PEERS_SERVER:-$HIER/peers/server.ts}"
   bun_abs=$(command -v "$BUN" 2>/dev/null || true)

@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, readlinkSync, renameSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { PEERS_BESTANDEN } from "./hooks/peers-kopie";
 import { EVENTS, MERK, type Opties, installeer, kiesBun, leesArgs } from "./installeer-hooks";
 
@@ -106,6 +106,25 @@ describe("installeer-hooks", () => {
     const p = hook(env("w1", "agent", "lead-x"), { hook_event_name: "UserPromptSubmit", session_id: "s-w1", cwd: "/w/w1" });
     expect(p.stdout.toString()).toContain("1 peer-bericht in je brievenbus");
     expect(p.stdout.toString()).not.toContain("geheime inhoud");
+  });
+
+  test("een vreemde peers-map naast de installatiemap wint nooit van de eigen kopie (./peers gaat voor ../peers)", async () => {
+    installeer(opties({ bun: process.execPath }));
+    const vreemd = join(dirname(doel), "peers");
+    mkdirSync(vreemd, { recursive: true });
+    writeFileSync(join(vreemd, "types.ts"), 'export const seintje = () => "VREEMD";\n');
+    writeFileSync(join(vreemd, "standaard.ts"), 'export const standaardBus = () => ({ list: () => [{ naam: "w1", ongelezen: 7 }], idleGemeld: async () => {} });\n');
+    const staat = join(dir, "staat");
+    const env = (naam: string, rol: string, lead: string) => ({ PATH: process.env.PATH ?? "", HOME: dir, LAB_LEAD_BUN: process.execPath, LAB_LEAD_STAAT: staat, LAB_AGENT_NAAM: naam, LAB_AGENT_ROL: rol, LAB_LEAD_NAAM: lead });
+    const hook = (e: Record<string, string>, invoer: object) => Bun.spawnSync(["/bin/sh", join(doel, "hook.sh")], { env: e, stdin: new TextEncoder().encode(JSON.stringify(invoer)), stdout: "pipe", stderr: "pipe" });
+    hook(env("w1", "agent", "lead-x"), { hook_event_name: "SessionStart", session_id: "s-w1", cwd: "/w/w1", source: "startup" });
+    hook(env("lead-x", "lead", ""), { hook_event_name: "SessionStart", session_id: "s-lead", cwd: "/w/lead", source: "startup" });
+    const { maakBus, geenWekker } = await import("./peers/bus");
+    expect(await maakBus({ staat, wekker: geenWekker }).send("lead-x", "w1", "x")).toMatchObject({ ok: true });
+    const p = hook(env("w1", "agent", "lead-x"), { hook_event_name: "UserPromptSubmit", session_id: "s-w1", cwd: "/w/w1" });
+    // een vreemde bus zou "VREEMD" (7 ongelezen) geven; de eigen kopie telt het ene echte bericht
+    expect(p.stdout.toString()).toContain("1 peer-bericht in je brievenbus");
+    expect(p.stdout.toString()).not.toContain("VREEMD");
   });
 
   test("twee keer installeren geeft hetzelfde resultaat en schrijft de tweede keer niets", () => {

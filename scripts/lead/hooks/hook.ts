@@ -16,6 +16,10 @@
 // Codex: hook.sh --bron codex <event>; de invoer is bijna gelijk (codex-adapter.ts). Het record krijgt vendor, host,
 // thread_id en codex_home (Codex) of socket (Claude), en herkomst (`extern` na WebFetch/WebSearch/MCP buiten peers).
 //
+// Peerbus: UserPromptSubmit geeft het seintje (aantal ongelezen peer-berichten, nooit de inhoud), Stop blokt één keer met het
+// seintje en Stop/SessionEnd melden de toestand aan de bus (idleGemeld). De bus wordt dynamisch geladen (laadPeers) en
+// ontbreekt hij, dan doen de hooks alleen het werk hierboven.
+//
 // Alleen H6, H7 en H11 mogen blokkeren/wekken; alles faalt open (exit 0, geen uitvoer).
 // Nooit opgeslagen: prompt, tool_input (behalve SendMessage.to en een boolean "vrij"),
 // last_assistant_message, transcripts. Geen netwerk, geen git, geen gh.
@@ -95,12 +99,13 @@ export function gateReden(lead: string, bron: Bron = "claude"): string {
 type Peers = { bus: Bus; seintje: (aantal: number) => string };
 
 /**
- * De peerbus voor deze staatmap, met het seintje uit het contract (types.ts). In de repo ligt hij op ../peers, in de
- * geïnstalleerde map op ./peers (installeer-hooks.ts kopieert hem erheen). Dynamisch geladen: ontbreekt hij of faalt het laden,
+ * De peerbus voor deze staatmap, met het seintje uit het contract (types.ts). In de geïnstalleerde map ligt hij op ./peers
+ * (installeer-hooks.ts kopieert hem erheen), in de repo op ../peers. ./peers gaat voor: een vreemde `peers`-map naast de
+ * installatiemap (../peers) wint dus nooit van de eigen kopie. Dynamisch geladen: ontbreekt hij of faalt het laden,
  * dan is er geen bus en doen de hooks alleen het oude werk (faalt open).
  */
 async function laadPeers(env: Omgeving, opties: Opties): Promise<Peers | null> {
-  for (const map of ["../peers", "./peers"]) {
+  for (const map of ["./peers", "../peers"]) {
     try {
       const t = (await import(`${map}/types`)) as { seintje: (n: number) => string };
       if (opties.bus !== undefined) return opties.bus ? { bus: opties.bus, seintje: t.seintje } : null;
