@@ -18,12 +18,13 @@ SPAWN="${LAB_SPAWN_SCRIPT:-$HOME/.claude/tmux/agent-spawn.sh}"
 WACHT="${LAB_SPAWN_WACHT:-60}"     # seconden wachten tot de sessie invoer aanneemt
 POLS="${LAB_SPAWN_POLS:-1}"        # seconden tussen twee controles
 BEWIJS="${LAB_SPAWN_BEWIJS:-30}"   # seconden wachten op de eerste tool-aanroep
+ENTER="${LAB_SPAWN_ENTER:-1}"      # seconden tussen de startzin en Enter bij Codex (snel typen + Enter telt als plakken: Enter wordt dan een nieuwe regel)
 WACHT_VERTROUWEN="${WACHT_VERTROUWEN:-600}"  # seconden wachten tot Brian de map vertrouwt
 CLAUDE_JSON="${LAB_CLAUDE_JSON:-$HOME/.claude.json}"  # alleen gelezen
 
 fout() { echo "spawn: $*" >&2; exit 1; }
 
-for v in WACHT POLS BEWIJS; do
+for v in WACHT POLS BEWIJS ENTER; do
   [[ ${!v} =~ ^[0-9]+$ ]] || fout "LAB_SPAWN_$v moet een geheel getal zijn, niet '${!v}'"
 done
 [[ $WACHT_VERTROUWEN =~ ^[0-9]+$ ]] || fout "WACHT_VERTROUWEN moet een geheel getal zijn, niet '$WACHT_VERTROUWEN'"
@@ -443,6 +444,7 @@ done
 [ "$klaar" = 1 ] || fout "sessie $naam (pane $pane) werd niet klaar voor invoer binnen ${WACHT}s; niets getypt"
 
 tmux send-keys -t "$pane" -l "$zin"
+if [ "$vendor" = codex ] && [ "$ENTER" -gt 0 ]; then sleep "$ENTER"; fi
 tmux send-keys -t "$pane" Enter
 
 verstreken=0

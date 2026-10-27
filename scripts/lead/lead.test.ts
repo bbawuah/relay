@@ -1059,6 +1059,7 @@ describe("spawn.sh --vendor codex", () => {
     LAB_SPAWN_POLS: "0",
     LAB_SPAWN_WACHT: "0",
     LAB_SPAWN_BEWIJS: "0",
+    LAB_SPAWN_ENTER: "0",
     LAB_LEAD_NAAM: "",
     LAB_CLAUDE_JSON: join(dir, "bestaat-niet.json"),
     LAB_T3: join(bin, "t3"),
