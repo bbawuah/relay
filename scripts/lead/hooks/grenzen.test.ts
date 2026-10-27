@@ -1,5 +1,5 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { schoneEnv } from "../../test-integriteit";
@@ -1160,5 +1160,90 @@ describe("grenzen.sh: apply_patch van Codex", () => {
     const e = { ...schoneEnv(), HOME, LAB_AGENT_ROL: "", LAB_GRENS_MERGE: "" };
     const p = Bun.spawnSync(["bash", HOOK], { stdin: new TextEncoder().encode(JSON.stringify({ tool_name: "mcp__x__y", tool_input: { command: "onzin" }, cwd: WERK })), env: e, stdout: "pipe", stderr: "pipe" });
     expect(p.exitCode).toBe(0);
+  });
+});
+
+describe("python draait geïsoleerd (-I): de procesmap telt niet", () => {
+  // Een onleesbare cwd liet elke import in python met PermissionError falen (de hook weigerde dan ALLES), en een json.py in de cwd
+  // werd als hook-code geïmporteerd. De invoer-cwd (d["cwd"]) is wat de logica gebruikt.
+  const alsRoot = process.getuid?.() === 0;
+  const invoer = JSON.stringify({ tool_name: "Bash", tool_input: { command: "echo hallo" }, cwd: EIGEN_TAK });
+  const hookEnv = { ...schoneEnv(), HOME: "/nonexistent-grenzen-test", LAB_GRENS_MERGE: "", LAB_AGENT_ROL: "" };
+  /** Draait de hook met `procmap` als procesmap; bij `dicht` wordt die map ONDER het proces onleesbaar (chmod 000, zoals in de Mirku21-sessie). */
+  function inMap(hook: string, procmap: string, dicht: boolean) {
+    const p = Bun.spawnSync(["bash", "-c", `cd "$PROCMAP" && { [ "$DICHT" = 1 ] && chmod 000 . || true; } && exec bash "$HOOK"`], {
+      stdin: new TextEncoder().encode(invoer),
+      env: { ...hookEnv, PROCMAP: procmap, DICHT: dicht ? "1" : "0", HOOK: hook },
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+    if (dicht) chmodSync(procmap, 0o755);
+    return { code: p.exitCode, stderr: p.stderr.toString() };
+  }
+  const tijdelijk = () => mkdtempSync(join(tmpdir(), "grenzen-pymap-"));
+
+  test("een onleesbare procesmap: een onschuldige Bash-aanroep gaat door (rc 0; als root niet te maken)", () => {
+    if (alsRoot) return; // root leest elke map
+    const map = tijdelijk();
+    try {
+      const r = inMap(HOOK, map, true);
+      expect(r.stderr).not.toContain("Geweigerd"); // bash zelf meldt wel een getwd-waarschuwing; de hook mag niet weigeren
+      expect(r.code).toBe(0);
+    } finally {
+      chmodSync(map, 0o755);
+      rmSync(map, { recursive: true, force: true });
+    }
+  });
+
+  test("een json.py in de procesmap wordt niet geïmporteerd (geen markeerbestand)", () => {
+    const map = tijdelijk();
+    const merk = join(map, "MARK-JSON");
+    try {
+      writeFileSync(join(map, "json.py"), `open(${JSON.stringify(merk)}, "w").write("gedraaid")\nraise ImportError("nep")\n`);
+      const r = inMap(HOOK, map, false);
+      expect(existsSync(merk)).toBe(false);
+      expect(r.code).toBe(0);
+    } finally {
+      rmSync(map, { recursive: true, force: true });
+    }
+  });
+
+  /** Een kopie van de hook zonder `-I`, in een eigen tijdelijke map. */
+  const zonderI = () => {
+    const hooktekst = readFileSync(HOOK, "utf8");
+    expect(hooktekst).toContain("/usr/bin/python3 -I -c");
+    const map = tijdelijk();
+    const kopie = join(map, "grenzen-zonder-I.sh");
+    writeFileSync(kopie, hooktekst.replace("/usr/bin/python3 -I -c", "/usr/bin/python3 -c"));
+    return { map, kopie };
+  };
+
+  test("mutatie: zonder -I importeert python de json.py uit de procesmap wel", () => {
+    const { map, kopie } = zonderI();
+    const werk = tijdelijk();
+    const merk = join(werk, "MARK-JSON");
+    try {
+      writeFileSync(join(werk, "json.py"), `open(${JSON.stringify(merk)}, "w").write("gedraaid")\nraise ImportError("nep")\n`);
+      inMap(kopie, werk, false);
+      expect(existsSync(merk)).toBe(true);
+    } finally {
+      rmSync(map, { recursive: true, force: true });
+      rmSync(werk, { recursive: true, force: true });
+    }
+  });
+
+  test("mutatie (alleen macOS): zonder -I faalt de hook bij een onleesbare procesmap", () => {
+    // Alleen op macOS: daar geeft python met `''` op sys.path een PermissionError bij een onleesbare cwd. Op Linux (CI) blijft
+    // die import werken (de map wordt alleen niet gelezen), dus daar is deze mutatie niet rood te krijgen.
+    if (process.platform !== "darwin" || alsRoot) return;
+    const { map, kopie } = zonderI();
+    const dicht = tijdelijk();
+    try {
+      expect(inMap(kopie, dicht, true).code).toBe(2);
+    } finally {
+      chmodSync(dicht, 0o755);
+      rmSync(dicht, { recursive: true, force: true });
+      rmSync(map, { recursive: true, force: true });
+    }
   });
 });
