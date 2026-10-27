@@ -202,6 +202,20 @@ lead ──notify_when_idle──▶ bus ◀──idleGemeld── werker klaar 
 
 Controles: `codex queue` krijgt exact `--thread=<id> --message <seintje>` met de `CODEX_HOME` van het doel; `t3` doet `thread show` en daarna `thread send` met alleen het seintje; de socket krijgt één regel met alleen het seintje; de inbox toont de kop van `toon()` en is na de ack leeg; het rapport van de werker komt aan en wekt de lead; `notify_when_idle` levert één idle-bericht en een seintje; `list` toont de werker als `klaar`. De CLI en de MCP-server draaien als echte processen. Niet gedekt (spoor F2): een echte Codex- of Claude-sessie, de hooks (`UserPromptSubmit`, `Stop`) en `status.sh`.
 
+### End-to-end met een echte Codex-werker (F2)
+
+`e2e/codex-demo.ts` doet hetzelfde met een ECHTE Codex-proces dat `spawn.sh --vendor codex` start, tegen een nep-Responses-server (`e2e/nep-responses.ts`): geen netwerk, geen inlog.
+
+```sh
+bun scripts/lead/peers/e2e/codex-demo.ts     # ~30 s; eindigt met "codex-e2e: groen" (exit 0) of "codex-e2e: rood" (exit 1)
+```
+
+Eist `codex` (0.164.x), `tmux` en `bun` in `PATH`. Draait niet in de poort (te traag, eist codex); de onderdelen zonder codex staan in `e2e/codex-demo.test.ts`.
+
+De omgeving: een eigen tmux (`-L peerbus-codex-e2e-<pid>`, daarna `kill-server`), een tijdelijke `LAB_LEAD_STAAT`, een tijdelijke `CODEX_HOME` met het nep-model en de lead-hooks (`codex-installeer.ts --codex-home`, vertrouwd via `codex app-server`), een tijdelijke repo met een linked worktree, en een stand-in-socket als lead. Niets in `~/.codex` of `~/.claude`. Eén uitzondering op "alleen tijdelijke paden": de wekker laat alleen sockets toe onder `/tmp/cc-socks` of `$TMPDIR/cc-socks`, en Codex geeft de MCP-server geen `TMPDIR` mee; de stand-in staat daarom als `/tmp/cc-socks/<pid van de demo>.sock`. Alleen dat ene bestand wordt aangemaakt en weer verwijderd.
+
+Het nep-model doet drie stappen: Bash `ls`, `peers.send` naar de lead, het eindbericht met de slotregel `vrij`. Controles: `spawn --vendor codex` slaagt; het model kreeg drie verzoeken; `peers.send` meldt `afgeleverd, wek: ja (socket)`; de socket kreeg precies één seintje zonder inhoud; de lead leest het rapport met kop; `list` toont de werker; het register heeft een Codex-sessie met een laatste tool-aanroep (dus de hooks draaiden). Het draaiboek voor de echte machine staat in `~/vault-b-status/peerbus/F-echte-demo.md`.
+
 ## Afgeleide naam voor Codex-sessies zonder identiteit
 
 Brians eigen Codex-sessies hebben geen `LAB_AGENT_NAAM`, geen identiteitsbestand en geen rol. De peers-server leidt dan per MCP-aanroep de afzender af uit `_meta.threadId` (anders `_meta.sessionId`): `codex-<laatste 12 hexcijfers van de id, zonder streepjes>`. De hook-kant (`hookOmgeving` in `codex-wrap.ts`) leidt dezelfde naam af uit `session_id` van de hookinvoer. Gemeten (Codex 0.164.0): beide id's zijn gelijk, in embedded modus en in daemon-modus; ouder-pid en `TMUX_PANE` zijn in daemon-modus gedeeld tussen sessies en dus geen sleutel. De MCP-server krijgt geen omgeving van de sessie, alleen wat in `env` van de MCP-config staat.
