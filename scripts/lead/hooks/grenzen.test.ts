@@ -1182,7 +1182,8 @@ describe("python draait geïsoleerd (-I): de procesmap telt niet", () => {
   }
   const tijdelijk = () => mkdtempSync(join(tmpdir(), "grenzen-pymap-"));
 
-  test.skipIf(alsRoot)("een onleesbare procesmap: een onschuldige Bash-aanroep gaat door (rc 0)", () => {
+  test("een onleesbare procesmap: een onschuldige Bash-aanroep gaat door (rc 0; als root niet te maken)", () => {
+    if (alsRoot) return; // root leest elke map
     const map = tijdelijk();
     try {
       const r = inMap(HOOK, map, true);
