@@ -503,7 +503,7 @@ if [ "$vendor" = claude ] && [ "$t3" = 0 ]; then
     [ -z "${LAB_LEAD_STAAT:-}" ] || [[ $LAB_LEAD_STAAT == *"'"* || $LAB_LEAD_STAAT == *'"'* || $LAB_LEAD_STAAT == *\\* ]] || mcp_env="$mcp_env,\"LAB_LEAD_STAAT\":\"$LAB_LEAD_STAAT\""
     cmd="$cmd --mcp-config '{\"mcpServers\":{\"peers\":{\"command\":\"$bun_abs\",\"args\":[\"$server\"],\"env\":{$mcp_env}}}}' --allowedTools=mcp__peers"
   else
-    echo "spawn: waarschuwing: peers-MCP ($server) of bun ontbreekt; de sessie start zonder de tools van peers" >&2
+    echo "spawn: waarschuwing: peers-MCP ($server) of bun ontbreekt, of het pad bevat een quote of backslash; de sessie start zonder de tools van peers" >&2
   fi
 fi
 if [ "$vendor" = codex ]; then
