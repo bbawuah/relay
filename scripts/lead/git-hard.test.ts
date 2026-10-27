@@ -3,7 +3,8 @@ import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSyn
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { schoneEnv } from "../test-integriteit";
-import { GIT_HARD_OPTIES, gitArgs, gitHard } from "./git-hard";
+import { GIT_HARD_OPTIES, gitArgs, gitHard, gitInWorktree, vertrouwdeWorktrees } from "./git-hard";
+import { gitHardZonder } from "./git-hard.testhulp";
 import { gitInfo } from "./hooks/status";
 
 // Een wegwerprepo met de aanval uit de review van #679: in de worktree van een werker staat `sub/.git` (een bestand met
@@ -15,6 +16,8 @@ let wt: string;
 let evil: string;
 let markFsmonitor: string;
 let markHook: string;
+let markFilter: string;
+let hoofd: string;
 
 const AUTEUR = { GIT_AUTHOR_NAME: "t", GIT_AUTHOR_EMAIL: "t@t", GIT_COMMITTER_NAME: "t", GIT_COMMITTER_EMAIL: "t@t" };
 const env = (): Record<string, string> => ({ ...schoneEnv(), ...AUTEUR });
@@ -35,7 +38,8 @@ beforeEach(() => {
   dir = mkdtempSync(path.join(tmpdir(), "git-hard-"));
   markFsmonitor = path.join(dir, "MARK-FSMONITOR");
   markHook = path.join(dir, "MARK-HOOK");
-  const hoofd = path.join(dir, "hoofd");
+  markFilter = path.join(dir, "MARK-FILTER");
+  hoofd = path.join(dir, "hoofd");
   wt = path.join(dir, "wt");
   evil = path.join(dir, "evil");
 
@@ -56,8 +60,15 @@ beforeEach(() => {
   const fsm = path.join(dir, "fsmonitor.sh");
   schrijfUitvoerbaar(fsm, `#!/bin/sh\necho gedraaid >> "${markFsmonitor}"\nexit 0\n`);
   rauw(evil, "config", "core.fsmonitor", fsm);
+  // Het filter-pad: een clean-filter in de config van sub, `* filter=k` in sub/.gitattributes en een gewijzigd bestand in sub.
+  const filter = path.join(dir, "filter.sh");
+  schrijfUitvoerbaar(filter, `#!/bin/sh\necho gedraaid >> "${markFilter}"\ncat\n`);
+  rauw(evil, "config", "filter.k.clean", filter);
+  rauw(evil, "config", "filter.k.process", filter);
   mkdirSync(path.join(wt, "sub"));
   writeFileSync(path.join(wt, "sub", ".git"), `gitdir: ${path.join(evil, ".git")}\n`);
+  writeFileSync(path.join(wt, "sub", ".gitattributes"), "* filter=k\n");
+  writeFileSync(path.join(wt, "sub", "x"), "y\n"); // even lang als "x\n": git moet hashen (dus het filter draaien) om het verschil te zien
   rauw(wt, "update-index", "--add", "--cacheinfo", `160000,${rauw(evil, "rev-parse", "HEAD")},sub`);
   // De hook van de werker, relatief aan zijn worktree.
   schrijfUitvoerbaar(path.join(wt, ".githooks", "pre-commit"), `#!/bin/sh\necho gedraaid >> "${markHook}"\nexit 0\n`);
@@ -74,11 +85,28 @@ describe("de aanval uit de review (voorwaarde)", () => {
     rauw(wt, "commit", "-q", "--allow-empty", "-m", "x");
     expect(gemerkt(markHook)).toBe(true);
   });
+
+  // De filter-route: diff, commit -a en diff-index kijken in sub en voeren daar het clean-filter uit.
+  for (const [naam, args] of [
+    ["diff --stat", ["diff", "--stat"]],
+    ["diff --quiet", ["diff", "--quiet"]],
+    ["commit -a", ["commit", "-a", "-q", "--allow-empty", "-m", "x"]],
+    ["diff-index HEAD", ["diff-index", "HEAD"]],
+  ] as const) {
+    test(`een gewone git ${naam} voert het clean-filter van sub uit`, () => {
+      try {
+        rauw(wt, ...args);
+      } catch {
+        // diff --quiet en diff-index mogen met exit 1 eindigen; het gaat om het markeerbestand
+      }
+      expect(gemerkt(markFilter)).toBe(true);
+    });
+  }
 });
 
 describe("gitHard", () => {
   test("status, rev-parse, merge-base, diff en log in de worktree laten geen markeerbestand achter", () => {
-    const hoofd = rauw(wt, "rev-parse", "HEAD");
+    const kop = rauw(wt, "rev-parse", "HEAD");
     rmSync(markFsmonitor, { force: true });
     const uitslagen = [
       gitHard(wt, ["status", "--porcelain"]),
@@ -88,16 +116,29 @@ describe("gitHard", () => {
       gitHard(wt, ["log", "-1", "--format=%H"]),
     ];
     expect(uitslagen.map((u) => u.code)).toEqual([0, 0, 0, 0, 0]);
-    expect(uitslagen[4]?.uit).toBe(hoofd);
+    expect(uitslagen[4]?.uit).toBe(kop);
+    expect(gemerkt(markFsmonitor)).toBe(false);
+    expect(gemerkt(markHook)).toBe(false);
+    expect(gemerkt(markFilter)).toBe(false);
+  });
+
+  test("diff --stat, diff --quiet, commit -a en diff-index HEAD voeren het filter en de fsmonitor van sub niet uit", () => {
+    gitHard(wt, ["diff", "--stat"]);
+    gitHard(wt, ["diff", "--quiet"]);
+    gitHard(wt, ["diff-index", "HEAD"]);
+    const c = gitHard(wt, ["commit", "-a", "-q", "--allow-empty", "-m", "x"], { env: env() });
+    expect(c.code).toBe(0);
+    expect(gemerkt(markFilter)).toBe(false);
     expect(gemerkt(markFsmonitor)).toBe(false);
     expect(gemerkt(markHook)).toBe(false);
   });
 
-  test("status krijgt --ignore-submodules=all en de gitlink verschijnt niet als wijziging", () => {
+  test("status en plumbing krijgen --ignore-submodules=all; andere subcommando's niet", () => {
     expect(gitArgs(["status", "--porcelain"]).slice(-3)).toEqual(["status", "--ignore-submodules=all", "--porcelain"]);
+    expect(gitArgs(["diff-index", "HEAD"]).slice(-3)).toEqual(["diff-index", "--ignore-submodules=all", "HEAD"]);
+    expect(gitArgs(["diff-files"])).toContain("--ignore-submodules=all");
     expect(gitArgs(["log", "-1"])).not.toContain("--ignore-submodules=all");
-    const u = gitHard(wt, ["status", "--porcelain"]);
-    expect(u.uit).not.toContain("sub");
+    expect(gitHard(wt, ["status", "--porcelain"]).uit).not.toContain("sub");
   });
 
   test("een commit via de helper draait de hook van de werker niet; met hooks: true wel", () => {
@@ -110,20 +151,8 @@ describe("gitHard", () => {
     expect(gemerkt(markFsmonitor)).toBe(false); // ook met hooks aan blijft de fsmonitor uit
   });
 
-  test("worktree remove van een werker-worktree via de helper voert niets uit", () => {
-    const hoofd = rauw(wt, "rev-parse", "--git-common-dir");
-    const r = gitHard(path.dirname(hoofd), ["worktree", "remove", wt]);
-    expect(typeof r.code).toBe("number"); // mag falen (vies); het gaat om wat er NIET draait
-    expect(gemerkt(markFsmonitor)).toBe(false);
-    expect(gemerkt(markHook)).toBe(false);
-  });
-
-  test("gitInfo van lead status (hooks/status.ts) voert de fsmonitor niet uit", () => {
-    const g = gitInfo(wt);
-    expect(g.bestaat).toBe(true);
-    expect(g.tak).toBe("werker");
-    expect(gemerkt(markFsmonitor)).toBe(false);
-  });
+  // test-weg: "worktree remove van een werker-worktree via de helper" bewees niets; git weigert dat altijd zelf
+  // ("working trees containing submodules cannot be moved or removed"), dus er draaide nooit iets, met of zonder helper.
 
   test("GIT_*-variabelen van de aanroeper komen niet in het kind", () => {
     const oud = process.env.GIT_DIR;
@@ -137,75 +166,205 @@ describe("gitHard", () => {
   });
 });
 
-describe("mutatietest: de test is rood als de helper een optie mist", () => {
+describe("gitdir vastpinnen: een herschreven wt/.git telt niet", () => {
+  // De werker herschrijft wt/.git naar een eigen gitdir (een kloon van hoofd) met een clean-filter, een diff.external en
+  // een gpg.program in de config, en zet `* filter=k` in wt/.gitattributes. Geen -c-optie van de helper dekt die sleutels.
+  let ev2: string;
+  let markExtern: string;
+  beforeEach(() => {
+    ev2 = path.join(dir, "ev2");
+    markExtern = path.join(dir, "MARK-EXTERN");
+    rauw(dir, "clone", "-q", hoofd, ev2);
+    const filter = path.join(dir, "filter2.sh");
+    schrijfUitvoerbaar(filter, `#!/bin/sh\necho gedraaid >> "${markFilter}"\ncat\n`);
+    const extern = path.join(dir, "extern.sh");
+    schrijfUitvoerbaar(extern, `#!/bin/sh\necho gedraaid >> "${markExtern}"\nexit 0\n`);
+    rauw(ev2, "config", "filter.k.clean", filter);
+    rauw(ev2, "config", "diff.external", extern);
+    writeFileSync(path.join(wt, ".git"), `gitdir: ${path.join(ev2, ".git")}\n`);
+    writeFileSync(path.join(wt, ".gitattributes"), "* filter=k\n");
+    writeFileSync(path.join(wt, "a.txt"), "b\n"); // even lang als "a\n": git moet hashen
+  });
+
+  test("voorwaarde: de helper zonder pin voert het filter en diff.external van de herschreven gitdir wel uit", () => {
+    gitHard(wt, ["status", "--porcelain"]);
+    gitHard(wt, ["diff"]);
+    expect(gemerkt(markFilter)).toBe(true);
+    expect(gemerkt(markExtern)).toBe(true);
+  });
+
+  test("gitInWorktree: geen filter, geen diff.external, en hij leest nog steeds de echte gitdir van de worktree", () => {
+    const tak = gitInWorktree(hoofd, wt, ["rev-parse", "--abbrev-ref", "HEAD"]);
+    expect(tak).toMatchObject({ code: 0, uit: "werker" });
+    gitInWorktree(hoofd, wt, ["status", "--porcelain"]);
+    gitInWorktree(hoofd, wt, ["diff"]);
+    gitInWorktree(hoofd, wt, ["diff", "--stat"]);
+    gitInWorktree(hoofd, wt, ["diff-index", "HEAD"]);
+    gitInWorktree(hoofd, wt, ["commit", "-a", "-q", "--allow-empty", "-m", "x"], { env: env() });
+    expect(gemerkt(markFilter)).toBe(false);
+    expect(gemerkt(markExtern)).toBe(false);
+    expect(gemerkt(markHook)).toBe(false);
+    expect(gemerkt(markFsmonitor)).toBe(false);
+  });
+
+  test("gitInfo (lead status) gebruikt de pin: geen markeerbestand, en de echte tak", () => {
+    const g = gitInfo(wt, hoofd);
+    expect(g).toMatchObject({ bestaat: true, tak: "werker" });
+    expect(gemerkt(markFilter)).toBe(false);
+    expect(gemerkt(markExtern)).toBe(false);
+    expect(gemerkt(markFsmonitor)).toBe(false);
+  });
+
+  test("gitInfo weigert een cwd die niet in git worktree list van de lead staat", () => {
+    const vreemd = path.join(dir, "vreemd");
+    mkdirSync(vreemd);
+    rauw(vreemd, "init", "-q", "-b", "main");
+    expect(gitInfo(vreemd, hoofd)).toEqual({ bestaat: true, schoon: null, tak: null, in_main: null });
+  });
+
+  test("gitInWorktree weigert een pad buiten de lijst en een gitdir van een andere repo (code 126)", () => {
+    const vreemd = path.join(dir, "vreemd");
+    mkdirSync(vreemd);
+    rauw(vreemd, "init", "-q", "-b", "main");
+    expect(gitInWorktree(hoofd, vreemd, ["status"])).toMatchObject({ code: 126 });
+    expect(gitInWorktree(hoofd, path.join(dir, "bestaat-niet"), ["status"])).toMatchObject({ code: 126 });
+    // andere repo als root: wt hoort daar niet bij
+    expect(gitInWorktree(vreemd, wt, ["status"])).toMatchObject({ code: 126 });
+    expect(gemerkt(markFilter)).toBe(false);
+  });
+
+  test("vertrouwdeWorktrees: hoofd en wt, met de gitdir uit <common>/worktrees/<naam>", () => {
+    const lijst = vertrouwdeWorktrees(hoofd);
+    expect(lijst.map((v) => path.basename(v.wt)).sort()).toEqual(["hoofd", "wt"]);
+    const w = lijst.find((v) => path.basename(v.wt) === "wt")!;
+    expect(path.basename(path.dirname(w.gitdir))).toBe("worktrees");
+  });
+});
+
+describe("mutatietest: de test is rood als de helper een optie of de pin mist", () => {
   test("zonder -c core.fsmonitor= verschijnt het markeerbestand wel (diff, waar --ignore-submodules niet helpt)", () => {
-    gitHard(wt, ["diff", "--stat"], { zonder: ["core.fsmonitor="] });
+    gitHardZonder(wt, ["diff", "--stat"], ["core.fsmonitor=", "diff.ignoreSubmodules=all"]);
     expect(gemerkt(markFsmonitor)).toBe(true);
   });
 
   test("zonder --ignore-submodules=all én zonder -c core.fsmonitor= verschijnt het markeerbestand bij status", () => {
-    gitHard(wt, ["status", "--porcelain"], { zonder: ["core.fsmonitor=", "--ignore-submodules=all"] });
+    gitHardZonder(wt, ["status", "--porcelain"], ["core.fsmonitor=", "--ignore-submodules=all", "diff.ignoreSubmodules=all"]);
     expect(gemerkt(markFsmonitor)).toBe(true);
   });
 
   test("--ignore-submodules=all alleen houdt status al schoon (verdediging in de diepte)", () => {
-    gitHard(wt, ["status", "--porcelain"], { zonder: ["core.fsmonitor="] });
+    gitHardZonder(wt, ["status", "--porcelain"], ["core.fsmonitor="]);
     expect(gemerkt(markFsmonitor)).toBe(false);
   });
 
   test("zonder -c core.hooksPath=/dev/null draait de hook van de werker wel", () => {
-    gitHard(wt, ["commit", "-q", "--allow-empty", "-m", "x"], { env: env(), zonder: ["core.hooksPath=/dev/null"] });
+    gitHardZonder(wt, ["commit", "-q", "--allow-empty", "-m", "x"], ["core.hooksPath=/dev/null"], { env: env() });
     expect(gemerkt(markHook)).toBe(true);
   });
 
+  test("zonder -c diff.ignoreSubmodules=all draaien het filter (diff, commit -a) en de fsmonitor wel, ook als de fsmonitor-optie er is", () => {
+    gitHardZonder(wt, ["diff", "--stat"], ["diff.ignoreSubmodules=all"]);
+    expect(gemerkt(markFilter)).toBe(true);
+    rmSync(markFilter, { force: true });
+    gitHardZonder(wt, ["commit", "-a", "-q", "--allow-empty", "-m", "x"], ["diff.ignoreSubmodules=all"], { env: env() });
+    expect(gemerkt(markFilter)).toBe(true);
+  });
+
+  test("diff-index zonder --ignore-submodules=all draait het filter wel (de config-sleutel geldt niet voor plumbing)", () => {
+    gitHardZonder(wt, ["diff-index", "HEAD"], ["--ignore-submodules=all"]);
+    expect(gemerkt(markFilter)).toBe(true);
+  });
+
+  test("zonder de gitdir-pin (wt/.git herschreven naar een eigen gitdir) draait het filter van de werker wel", () => {
+    const ev2 = path.join(dir, "ev2");
+    rauw(dir, "clone", "-q", hoofd, ev2);
+    const filter = path.join(dir, "filter2.sh");
+    schrijfUitvoerbaar(filter, `#!/bin/sh\necho gedraaid >> "${markFilter}"\ncat\n`);
+    rauw(ev2, "config", "filter.k.clean", filter);
+    writeFileSync(path.join(wt, ".git"), `gitdir: ${path.join(ev2, ".git")}\n`);
+    writeFileSync(path.join(wt, ".gitattributes"), "* filter=k\n");
+    writeFileSync(path.join(wt, "a.txt"), "b\n"); // even lang als "a\n": git moet hashen
+    gitHardZonder(wt, ["status", "--porcelain"], []); // alle -c-opties aan, maar geen pin
+    expect(gemerkt(markFilter)).toBe(true);
+  });
+
   test("de opties staan allemaal in GIT_HARD_OPTIES", () => {
-    expect(GIT_HARD_OPTIES).toEqual(["-c", "core.fsmonitor=", "-c", "core.hooksPath=/dev/null", "-c", "core.untrackedCache=false"]);
+    expect(GIT_HARD_OPTIES).toEqual(["-c", "core.fsmonitor=", "-c", "core.hooksPath=/dev/null", "-c", "core.untrackedCache=false", "-c", "diff.ignoreSubmodules=all"]);
   });
 });
 
 describe("bronscan: git in de lead-tooling loopt via de helper", () => {
   const LEAD = import.meta.dir;
-  const bronnen = (map: string): string[] =>
+  const bronnen = (map: string, ext: RegExp): string[] =>
     readdirSync(map, { withFileTypes: true }).flatMap((e) => {
       const p = path.join(map, e.name);
-      if (e.isDirectory()) return e.name === "fixtures" || e.name === "codex-fixtures" || e.name === "commando" || e.name === "node_modules" ? [] : bronnen(p);
-      return /\.(ts|js)$/.test(e.name) && !/\.test\.ts$/.test(e.name) ? [p] : [];
+      if (e.isDirectory()) return e.name === "fixtures" || e.name === "codex-fixtures" || e.name === "node_modules" ? [] : bronnen(p, ext);
+      return ext.test(e.name) && !/\.test\.ts$/.test(e.name) ? [p] : [];
     });
   const regels = (pad: string) => readFileSync(pad, "utf8").split("\n").map((tekst, i) => ({ tekst, nr: i + 1 }));
+  const rel = (pad: string) => path.relative(LEAD, pad);
+  const OPTIES = ["core.fsmonitor=", "core.hooksPath=/dev/null", "core.untrackedCache=false", "diff.ignoreSubmodules=all"];
 
-  test("geen TS- of JS-bron start git zelf, behalve git-hard.ts; installeer-grens gebruikt gitArgs", () => {
+  /** Bewuste uitzonderingen, met reden: `bestand` (relatief aan scripts/lead) plus een deel van de regel (leeg = het hele bestand). */
+  const UITZONDERING: { bestand: string; bevat: string; reden: string }[] = [
+    { bestand: "push.sh", bevat: "", reden: "draait in de worktree van wie pusht en zet daar bewust de hooks (pre-push-poort) aan; lead en Brian draaien push.sh nooit in een worktree van een werker (AGENTS.md)" },
+    { bestand: "merge.sh", bevat: "git patch-id", reden: "leest een diff van stdin, geen repo of werkmap" },
+    { bestand: "git-hard.testhulp.ts", bevat: "", reden: "testhulp van deze test, bouwt zelf de argv met GIT_HARD_OPTIES" },
+    { bestand: "vaste-cyclus.js", bevat: "", reden: "tekst in een prompt voor een sessie, geen aanroep" },
+    { bestand: "status.sh", bevat: "", reden: "roept alleen status.ts aan; de tekst noemt git niet als commando" },
+    { bestand: "hooks/status.ts", bevat: 'kop.push("git")', reden: "kolomkop van de tabel, geen aanroep" },
+    { bestand: "installeer-grens.ts", bevat: "throw new Error(`git ${args", reden: "foutmelding met de argumenten van een aanroep die al via gitArgs liep" },
+    { bestand: "spawn.sh", bevat: "lees verder alleen git log", reden: "tekst in de opdrachtzin voor de sessie, geen aanroep" },
+  ];
+  /** Bestanden waar "git" als gegeven voorkomt (commandolijsten, meldingen): daar tellen alleen Python-aanroepen en een regel die met `git ` begint. */
+  const ALLEEN_AANROEPEN = ["hooks/grenzen.sh"];
+  const uitgezonderd = (pad: string, tekst: string) => UITZONDERING.some((u) => u.bestand === rel(pad) && tekst.includes(u.bevat));
+
+  const TS_GIT = /["'`]git(["'`\s]|$)|\$`\s*git\b/;
+  test("de TS-scan vangt de vormen die de eerste versie miste", () => {
+    for (const r of ['run(["git", "status"])', 'execSync("git status")', "await $`git status`", 'const cmd = ["git", "-C", x]; spawnSync(cmd)', '{ cmd: ["git", "diff"] }', "execSync(`git diff ${x}`)"]) expect(TS_GIT.test(r), r).toBe(true);
+    for (const r of ["const gitHard = 1", "// git status", "gitArgs(args)"]) expect(TS_GIT.test(r), r).toBe(false);
+  });
+
+  test("elke string 'git' in TS/JS-bron (spawn, run, exec, $`git`, cmd-arrays) staat in git-hard.ts of op een regel met gitArgs(", () => {
     const fout: string[] = [];
-    for (const pad of bronnen(LEAD)) {
+    for (const pad of bronnen(LEAD, /\.(ts|js)$/)) {
       if (path.basename(pad) === "git-hard.ts") continue;
       for (const { tekst, nr } of regels(pad)) {
-        if (/^\s*(\/\/|\*)/.test(tekst)) continue;
-        if (/(spawn|spawnSync|exec|execFile|execFileSync)\(\s*\[?\s*["'`]git["'`]/.test(tekst) && !tekst.includes("gitArgs(")) fout.push(`${path.relative(LEAD, pad)}:${nr}: ${tekst.trim()}`);
-        if (/["'`]git["'`]\s*,\s*\[?\s*["'`]-C["'`]/.test(tekst) && !tekst.includes("gitArgs(")) fout.push(`${path.relative(LEAD, pad)}:${nr}: ${tekst.trim()}`);
+        if (/^\s*(\/\/|\*|\/\*)/.test(tekst)) continue;
+        if (!TS_GIT.test(tekst)) continue;
+        if (tekst.includes("gitArgs(") || uitgezonderd(pad, tekst)) continue;
+        fout.push(`${rel(pad)}:${nr}: ${tekst.trim()}`);
       }
     }
     expect(fout).toEqual([]);
   });
 
-  test("grenzen.sh: elke git-aanroep in python draagt de drie opties", () => {
-    const aanroepen = regels(path.join(LEAD, "hooks", "grenzen.sh")).filter((r) => /subprocess\.run\(\["git",/.test(r.tekst));
-    expect(aanroepen.length).toBeGreaterThanOrEqual(2);
-    for (const r of aanroepen) {
-      expect(r.tekst).toContain('"core.fsmonitor="');
-      expect(r.tekst).toContain('"core.hooksPath=/dev/null"');
-      expect(r.tekst).toContain('"core.untrackedCache=false"');
+  test("elke git-aanroep in een .sh of .py in scripts/lead draagt de vier opties, of staat als uitzondering met reden in deze test", () => {
+    const fout: string[] = [];
+    let gezien = 0;
+    for (const pad of bronnen(LEAD, /\.(sh|py)$/)) {
+      for (const { tekst, nr } of regels(pad)) {
+        if (/^\s*#/.test(tekst)) continue;
+        const aanroep = /\b(check_output|check_call|Popen|os\.system|os\.popen)\b/.test(tekst) || /subprocess\.\w+\(/.test(tekst) || /^\s*git\s/.test(tekst);
+        if (ALLEEN_AANROEPEN.includes(rel(pad)) && !aanroep) continue;
+        const git = /(^|[\s|&;(`])git\s+(-C|-c|--|[a-z]|"\$@")/.test(tekst) || /["']git["']/.test(tekst) || /\b(check_output|check_call|Popen|os\.system|os\.popen)\b/.test(tekst) || /subprocess\.\w+\(/.test(tekst);
+        if (!git) continue;
+        if (uitgezonderd(pad, tekst)) continue;
+        // Een zin in een echo/fout-tekst of een gebruiksregel is geen aanroep.
+        if (/^\s*(echo|printf|fout|log|meld)\b/.test(tekst) || /\bfout\s+["']/.test(tekst)) continue;
+        gezien++;
+        if (!OPTIES.every((o) => tekst.includes(o))) fout.push(`${rel(pad)}:${nr}: ${tekst.trim()}`);
+      }
     }
+    expect(gezien).toBeGreaterThanOrEqual(5);
+    expect(fout).toEqual([]);
   });
 
-  test("spawn.sh: elke git met -C of -c draagt de drie opties (git_schoon voegt ze toe)", () => {
-    const aanroepen = regels(path.join(LEAD, "spawn.sh")).filter((r) => !/^\s*#/.test(r.tekst) && /(^|[\s(`;|&])git\s+(-C|-c)\b/.test(r.tekst));
-    expect(aanroepen.length).toBeGreaterThanOrEqual(3);
-    for (const r of aanroepen) {
-      expect(r.tekst, `spawn.sh:${r.nr}`).toContain("core.fsmonitor=");
-      expect(r.tekst, `spawn.sh:${r.nr}`).toContain("core.hooksPath=/dev/null");
-      expect(r.tekst, `spawn.sh:${r.nr}`).toContain("core.untrackedCache=false");
+  test("elke uitzondering in de bronscan wijst naar een bestaand bestand en heeft een reden", () => {
+    for (const u of UITZONDERING) {
+      expect(existsSync(path.join(LEAD, u.bestand)), u.bestand).toBe(true);
+      expect(u.reden.trim().length).toBeGreaterThan(10);
     }
-    expect(regels(path.join(LEAD, "spawn.sh")).filter((r) => /^\s*git_schoon -C/.test(r.tekst)).length).toBeGreaterThanOrEqual(1);
   });
-  // Bewust niet gehard (geen werker-map): push.sh (draait in de eigen worktree van wie pusht en zet zelf de hooks van die
-  // worktree aan) en merge.sh (`git patch-id` leest stdin, geen repo). Zie AGENTS.md.
 });

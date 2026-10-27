@@ -11,7 +11,8 @@
 // Records met toestand `weg` ouder dan 24 u worden hier opgeruimd.
 
 import { existsSync, rmSync } from "node:fs";
-import { gitHard } from "../git-hard";
+import path from "node:path";
+import { gitInWorktree } from "../git-hard";
 import { type Omgeving, type Rec, alleRecords, recordPad, staatMap, tijd } from "./register";
 
 export const BEZIG_MAX_MS = 20 * 60_000;
@@ -33,17 +34,17 @@ export function vastgelopen(r: Rec, kinderen: Rec[], nu: number): boolean {
   return false;
 }
 
-function git(cwd: string, args: string[]): { code: number; uit: string } {
-  const r = gitHard(cwd, args);
-  return { code: r.code, uit: r.uit };
-}
+/** De repo van de lead zelf (waar dit script in staat); alleen worktrees uit zijn `git worktree list` worden gelezen. */
+const LEAD_REPO = path.resolve(import.meta.dir, "..", "..", "..");
 
-export function gitInfo(cwd: string): GitInfo {
+/** `cwd` komt uit het register (hook-invoer, dus van een werker): git draait alleen in een worktree uit de vertrouwde lijst van `root`, met vastgepinde gitdir. */
+export function gitInfo(cwd: string, root: string = LEAD_REPO): GitInfo {
   if (!cwd || !existsSync(cwd)) return { bestaat: false, schoon: null, tak: null, in_main: null };
-  const s = git(cwd, ["status", "--porcelain"]);
+  const git = (args: string[]) => gitInWorktree(root, cwd, args);
+  const s = git(["status", "--porcelain"]);
   if (s.code !== 0) return { bestaat: true, schoon: null, tak: null, in_main: null };
-  const tak = git(cwd, ["rev-parse", "--abbrev-ref", "HEAD"]);
-  const anc = git(cwd, ["merge-base", "--is-ancestor", "HEAD", "origin/main"]);
+  const tak = git(["rev-parse", "--abbrev-ref", "HEAD"]);
+  const anc = git(["merge-base", "--is-ancestor", "HEAD", "origin/main"]);
   return { bestaat: true, schoon: s.uit === "", tak: tak.code === 0 ? tak.uit : null, in_main: anc.code === 0 ? true : anc.code === 1 ? false : null };
 }
 

@@ -120,7 +120,7 @@ def is_hoofd(pad):
     uit = False
     try:
         env = {k: v for k, v in os.environ.items() if not k.startswith("GIT_")}
-        r = subprocess.run(["git", "-c", "core.fsmonitor=", "-c", "core.hooksPath=/dev/null", "-c", "core.untrackedCache=false", "-C", pad, "rev-parse", "--git-dir", "--git-common-dir", "--show-toplevel"], capture_output=True, text=True, timeout=5, env=env)
+        r = subprocess.run(["git", "-c", "core.fsmonitor=", "-c", "core.hooksPath=/dev/null", "-c", "core.untrackedCache=false", "-c", "diff.ignoreSubmodules=all", "-C", pad, "rev-parse", "--git-dir", "--git-common-dir", "--show-toplevel"], capture_output=True, text=True, timeout=5, env=env)
         regels = r.stdout.split("\n")
         if r.returncode == 0 and len(regels) >= 3 and regels[0] and regels[1] and regels[2]:
             gd, cd, top = (os.path.realpath(os.path.join(pad, x)) for x in regels[:3])
@@ -504,7 +504,7 @@ if tool == "Bash":
         try:
             import subprocess
             env = {k: v for k, v in os.environ.items() if not k.startswith("GIT_")}
-            r = subprocess.run(["git", "-c", "core.fsmonitor=", "-c", "core.hooksPath=/dev/null", "-c", "core.untrackedCache=false", "-C", map_, "symbolic-ref", "--short", "-q", "HEAD"], capture_output=True, text=True, timeout=3, env=env)
+            r = subprocess.run(["git", "-c", "core.fsmonitor=", "-c", "core.hooksPath=/dev/null", "-c", "core.untrackedCache=false", "-c", "diff.ignoreSubmodules=all", "-C", map_, "symbolic-ref", "--short", "-q", "HEAD"], capture_output=True, text=True, timeout=3, env=env)
             return r.stdout.strip() if r.returncode == 0 else ""
         except Exception:
             return ""

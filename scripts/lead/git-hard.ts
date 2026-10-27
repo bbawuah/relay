@@ -1,14 +1,29 @@
 // Git in de lead-tooling, gehard voor mappen die van een werker kunnen zijn (een werker-worktree, een wachtrij-worktree
 // met samengevoegde PR-inhoud). Een werker kan in zijn worktree een `sub/.git` met `gitdir:` naar een eigen map aanmaken,
-// met een config met `core.fsmonitor`, plus een gitlink in de index: een gewone `git status` BUITEN de sandbox voert dat
-// commando dan uit als Brian of de lead. Een relatief `core.hooksPath` (`.githooks`) laat een commit, merge of push van
-// iemand anders in die worktree ook de hooks van de werker draaien. Daarom gaat elke git-aanroep in zulke mappen hierdoor.
-// Regel in AGENTS.md; afgedwongen door git-hard.test.ts (markeerbestanden, mutatietest en een bronscan).
+// met een config met `core.fsmonitor` of `filter.*.clean`, plus een gitlink in de index: een gewone `git status` of
+// `git diff` BUITEN de sandbox voert dat commando dan uit als Brian of de lead. Een relatief `core.hooksPath` (`.githooks`)
+// laat een commit, merge of push van iemand anders in die worktree ook de hooks van de werker draaien. Daarom gaat elke
+// git-aanroep in zulke mappen hierdoor. Kan de werker `wt/.git` herschrijven, dan helpt dat alles niet: daarom pint
+// `gitInWorktree` de gitdir via een vertrouwde `git worktree list` in de repo van de lead.
+// Regel in AGENTS.md; afgedwongen door git-hard.test.ts (markeerbestanden, mutatietests en een bronscan).
 
+import { existsSync, readFileSync, readdirSync, realpathSync } from "node:fs";
+import path from "node:path";
 import { schoneEnv } from "../test-integriteit.ts";
 
 /** Opties die elke geharde aanroep meekrijgt (vóór het subcommando). */
-export const GIT_HARD_OPTIES = ["-c", "core.fsmonitor=", "-c", "core.hooksPath=/dev/null", "-c", "core.untrackedCache=false"];
+export const GIT_HARD_OPTIES = [
+  "-c", "core.fsmonitor=",
+  "-c", "core.hooksPath=/dev/null",
+  "-c", "core.untrackedCache=false",
+  "-c", "diff.ignoreSubmodules=all",
+];
+
+/** Plumbing leest `diff.ignoreSubmodules` niet; die krijgt de vlag zelf. */
+const PLUMBING_MET_IGNORE = new Set(["diff-index", "diff-files", "diff-tree"]);
+/** Subcommando's waar `--ignore-submodules=all` zelf bij hoort (status kent de config-sleutel ook, dit is de tweede laag). */
+export const IGNORE_VLAG = "--ignore-submodules=all";
+export const heeftIgnoreVlag = (sub: string): boolean => sub === "status" || PLUMBING_MET_IGNORE.has(sub);
 
 export type GitUitslag = { code: number; uit: string; fout: string };
 export type GitOpties = {
@@ -18,22 +33,78 @@ export type GitOpties = {
   hooks?: boolean;
 };
 
-/** De argv voor `git`: opties, dan het subcommando; bij `status` ook `--ignore-submodules=all`. `args[0]` is het subcommando. */
-export function gitArgs(args: string[], opties: GitOpties & { zonder?: string[] } = {}): string[] {
+/** De argv voor `git`: opties, dan het subcommando (met `--ignore-submodules=all` waar dat past). `args[0]` is het subcommando. */
+export function gitArgs(args: string[], opties: GitOpties = {}): string[] {
   const hard: string[] = [];
   for (let i = 0; i < GIT_HARD_OPTIES.length; i += 2) {
-    const waarde = GIT_HARD_OPTIES[i + 1]!;
-    if (opties.hooks && waarde.startsWith("core.hooksPath=")) continue;
-    if (opties.zonder?.includes(waarde)) continue;
-    hard.push(GIT_HARD_OPTIES[i]!, waarde);
+    if (opties.hooks && GIT_HARD_OPTIES[i + 1]!.startsWith("core.hooksPath=")) continue;
+    hard.push(GIT_HARD_OPTIES[i]!, GIT_HARD_OPTIES[i + 1]!);
   }
   const [sub, ...rest] = args;
-  return [...hard, sub!, ...(sub === "status" && !opties.zonder?.includes("--ignore-submodules=all") ? ["--ignore-submodules=all"] : []), ...rest];
+  return [...hard, sub!, ...(heeftIgnoreVlag(sub!) ? [IGNORE_VLAG] : []), ...rest];
 }
 
-/** Draait `git -C <cwd> <args>` gehard. `cwd` mag ontbreken (dan de huidige map). Gooit niet. */
-export function gitHard(cwd: string | undefined, args: string[], opties: GitOpties & { zonder?: string[] } = {}): GitUitslag {
-  const argv = ["git", ...(cwd ? ["-C", cwd] : []), ...gitArgs(args, opties)];
-  const p = Bun.spawnSync(argv, { env: opties.env ?? schoneEnv(), stdout: "pipe", stderr: "pipe" });
+function draai(argv: string[], opties: GitOpties): GitUitslag {
+  const p = Bun.spawnSync(["git", ...argv], { env: opties.env ?? schoneEnv(), stdout: "pipe", stderr: "pipe" });
   return { code: p.exitCode ?? 1, uit: p.stdout.toString().trim(), fout: p.stderr.toString().trim() };
+}
+
+/** Draait `git -C <cwd> <args>` gehard. `cwd` mag ontbreken (dan de huidige map). Gooit niet. Voor mappen die NIET van een werker zijn (de repo van de lead zelf). */
+export function gitHard(cwd: string | undefined, args: string[], opties: GitOpties = {}): GitUitslag {
+  return draai([...(cwd ? ["-C", cwd] : []), ...gitArgs(args, opties)], opties);
+}
+
+export type Vertrouwd = { wt: string; gitdir: string; common: string };
+
+const echt = (p: string): string => {
+  try {
+    return realpathSync(p);
+  } catch {
+    return path.resolve(p);
+  }
+};
+
+/**
+ * De worktrees van de repo van de lead, met hun gitdir, uit `git worktree list --porcelain` en de `gitdir`-bestanden in
+ * `<common>/worktrees/*` (alles aan de kant van de lead, niet uit `wt/.git`). `root` is de eigen repo van de lead.
+ */
+export function vertrouwdeWorktrees(root: string, opties: GitOpties = {}): Vertrouwd[] {
+  const c = gitHard(root, ["rev-parse", "--git-common-dir"], opties);
+  if (c.code !== 0 || !c.uit) return [];
+  const common = echt(path.resolve(root, c.uit));
+  const l = gitHard(root, ["worktree", "list", "--porcelain"], opties);
+  if (l.code !== 0) return [];
+  const paden = l.uit.split("\n").filter((r) => r.startsWith("worktree ")).map((r) => echt(r.slice("worktree ".length)));
+  const gitdirs = new Map<string, string>();
+  const wmap = path.join(common, "worktrees");
+  if (existsSync(wmap)) {
+    for (const naam of readdirSync(wmap)) {
+      try {
+        const doel = readFileSync(path.join(wmap, naam, "gitdir"), "utf8").trim(); // <wt>/.git
+        gitdirs.set(echt(path.dirname(doel)), path.join(wmap, naam));
+      } catch {
+        // geen gitdir-bestand: niet vertrouwd
+      }
+    }
+  }
+  return paden.flatMap((wt) => {
+    const gitdir = wt === path.dirname(common) ? common : gitdirs.get(wt);
+    return gitdir ? [{ wt, gitdir, common }] : [];
+  });
+}
+
+/**
+ * Draait git in een worktree die van een werker kan zijn, met de gitdir vastgepind: `--git-dir=<gitdir> --work-tree=<wt>`,
+ * zodat `wt/.git` (dat een werker kan herschrijven) niet meer gelezen wordt. Weigert (code 126) een pad dat niet in de
+ * vertrouwde lijst van `root` staat, of waarvan `rev-parse --git-common-dir` niet de repo van `root` is. Gooit niet.
+ */
+export function gitInWorktree(root: string, wt: string, args: string[], opties: GitOpties = {}): GitUitslag {
+  const weiger = (fout: string): GitUitslag => ({ code: 126, uit: "", fout: `geweigerd: ${fout}` });
+  const pad = echt(wt);
+  const v = vertrouwdeWorktrees(root, opties).find((x) => x.wt === pad);
+  if (!v) return weiger(`${wt} staat niet in git worktree list van ${root}`);
+  const vast = ["-C", v.wt, `--git-dir=${v.gitdir}`, `--work-tree=${v.wt}`];
+  const gemeen = draai([...vast, ...gitArgs(["rev-parse", "--git-common-dir"])], opties);
+  if (gemeen.code !== 0 || echt(path.resolve(v.gitdir, gemeen.uit)) !== v.common) return weiger(`${wt} hoort niet bij de repo ${v.common}`);
+  return draai([...vast, ...gitArgs(args, opties)], opties);
 }

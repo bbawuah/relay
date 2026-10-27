@@ -8,7 +8,7 @@ import { homedir } from "node:os";
 import path from "node:path";
 import { amsterdam, inStiltevenster, vanAmsterdam } from "../stiltevenster.ts";
 import { schoneEnv } from "../test-integriteit.ts";
-import { gitHard } from "./git-hard.ts";
+import { gitHard, gitInWorktree } from "./git-hard.ts";
 
 /** Workflownaam van de CI: één bron in lead.conf (ook door merge.sh gelezen); override met env LAB_MERGE_CI_WORKFLOW. */
 export function ciWorkflow(env: Record<string, string | undefined> = process.env, conf = path.join(import.meta.dir, "lead.conf")): string {
@@ -256,7 +256,9 @@ export function leesOpties(args: string[]): Opties | string {
 }
 
 /** Git in `cwd` (de wachtrij-worktree bevat samengevoegde PR-inhoud van werkers): altijd via de geharde helper, zie git-hard.ts. */
-const git = (args: string[], cwd?: string, hooks = false) => gitHard(cwd, args, { env: wachtrijEnv(), hooks });
+let lijstRoot: string | undefined; // de eigen repo; een andere cwd (de wachtrij-worktree) gaat met vastgepinde gitdir, zie gitInWorktree
+const git = (args: string[], cwd?: string, hooks = false) =>
+  lijstRoot && cwd && cwd !== lijstRoot ? gitInWorktree(lijstRoot, cwd, args, { env: wachtrijEnv(), hooks }) : gitHard(cwd, args, { env: wachtrijEnv(), hooks });
 
 const run = (cmd: string[], cwd?: string) => {
   const r = Bun.spawnSync(cmd, { cwd, env: wachtrijEnv(), stdout: "pipe", stderr: "pipe" });
@@ -355,7 +357,7 @@ function ruimTakken(o: Opties, root: string): never {
       continue;
     }
     // met lease: een commit die tussen controle en verwijderen is gepusht, blokkeert het verwijderen
-    const del = git(["push", `--force-with-lease=${ref}:${d.sha}`, "origin", `:${ref}`], root, true);
+    const del = git(["push", `--force-with-lease=${ref}:${d.sha}`, "origin", `:${ref}`], root);
     if (del.code !== 0) {
       console.error(`wachtrij: verwijderen van ${d.tak} mislukt: ${del.fout}`);
       fouten++;
@@ -376,6 +378,7 @@ function hoofd(args: string[]): never {
   }
   const root = git(["rev-parse", "--show-toplevel"]).uit;
   if (!root) return klaar(1, "wachtrij: draai dit in een git-clone van de repo");
+  lijstRoot = root;
   if (o.ruim) return ruimTakken(o, root);
 
   const lijst = ghJson<Pr[]>([

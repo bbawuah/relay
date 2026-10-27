@@ -153,8 +153,8 @@ if [ -n "$vervolg" ]; then
   (
     while IFS= read -r v; do unset "$v"; done < <(compgen -e | grep '^GIT_' || true)
     # de map kan van een eerdere werker zijn: geen fsmonitor of hooks daarvan (zie scripts/lead/git-hard.ts)
-    git -c core.fsmonitor= -c core.hooksPath=/dev/null -c core.untrackedCache=false -C "$map" rev-parse --verify --quiet "refs/heads/$vervolg" >/dev/null ||
-      git -c core.fsmonitor= -c core.hooksPath=/dev/null -c core.untrackedCache=false -C "$map" rev-parse --verify --quiet "refs/remotes/origin/$vervolg" >/dev/null
+    git -c core.fsmonitor= -c core.hooksPath=/dev/null -c core.untrackedCache=false -c diff.ignoreSubmodules=all -C "$map" rev-parse --verify --quiet "refs/heads/$vervolg" >/dev/null ||
+      git -c core.fsmonitor= -c core.hooksPath=/dev/null -c core.untrackedCache=false -c diff.ignoreSubmodules=all -C "$map" rev-parse --verify --quiet "refs/remotes/origin/$vervolg" >/dev/null
   ) || fout "tak '$vervolg' bestaat niet (lokaal of op origin) in $map"
 fi
 [ "$droog" = 1 ] || [ "$t3" = 1 ] || [ -f "$SPAWN" ] || fout "spawn-script niet gevonden: $SPAWN"
@@ -170,7 +170,7 @@ git_schoon() (
   # GIT_*-variabelen (pre-push-hook) zouden git naar een andere repo leiden
   while IFS= read -r v; do unset "$v"; done < <(compgen -e | grep '^GIT_' || true)
   # de map kan van een werker zijn: geen fsmonitor of hooks daarvan (zie scripts/lead/git-hard.ts)
-  git -c core.fsmonitor= -c core.hooksPath=/dev/null -c core.untrackedCache=false "$@"
+  git -c core.fsmonitor= -c core.hooksPath=/dev/null -c core.untrackedCache=false -c diff.ignoreSubmodules=all "$@"
 )
 
 t3_bin() {
