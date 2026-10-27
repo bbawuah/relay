@@ -31,7 +31,7 @@ type Json = { [k: string]: unknown };
 
 type EventSpec = { event: string; matcher?: string; timeout: number };
 export const EVENTS: EventSpec[] = [
-  { event: "SessionStart", matcher: "startup|resume", timeout: 5 },
+  { event: "SessionStart", matcher: "startup|clear|resume", timeout: 5 },
   { event: "UserPromptSubmit", timeout: 5 },
   { event: "PreToolUse", matcher: "*", timeout: 5 },
   // SendMessage en peers.send zijn het rapport (H4); WebFetch, WebSearch en MCP-tools zetten de herkomst op extern.

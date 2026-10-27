@@ -8,7 +8,7 @@
 //
 // Er worden nooit prompttekst, tool-invoer, antwoorden of transcripts bewaard.
 
-import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
@@ -356,11 +356,27 @@ export function schrijfIdentiteit(staat: string, cwd: string, i: Identiteit): vo
   schrijfAtomair(identiteitPad(staat, cwd), `${JSON.stringify(i)}\n`);
 }
 
+/** Rollen die een gespawnde werker kan hebben; "lead" of iets anders in het bestand is nooit geldig (geen escalatie via het bestand). */
+const IDENTITEIT_ROLLEN = ["agent", "sublead", "vervolg"];
+
+/** Een gewoon bestand (geen symlink), van de eigen gebruiker, zonder rechten voor groep of anderen. */
+function eigenPrive(pad: string, map: boolean): boolean {
+  try {
+    const st = lstatSync(pad);
+    if (map ? !st.isDirectory() : !st.isFile()) return false;
+    if (typeof process.getuid === "function" && st.uid !== process.getuid()) return false;
+    return (st.mode & 0o077) === 0;
+  } catch {
+    return false;
+  }
+}
+
 function leesIdentiteitBestand(pad: string, nu: number): Identiteit | null {
   try {
+    if (!eigenPrive(dirname(pad), true) || !eigenPrive(pad, false)) return null;
     const o = JSON.parse(readFileSync(pad, "utf8"));
-    if (!o || typeof o !== "object" || typeof o.naam !== "string" || typeof o.rol !== "string" || !o.rol) return null;
-    if (typeof o.ts !== "number" || nu - o.ts > IDENTITEIT_MAX_MS) return null;
+    if (!o || typeof o !== "object" || typeof o.naam !== "string" || !o.naam || !IDENTITEIT_ROLLEN.includes(o.rol)) return null;
+    if (typeof o.ts !== "number" || o.ts > nu || nu - o.ts > IDENTITEIT_MAX_MS) return null;
     return { naam: o.naam, rol: o.rol, lead: String(o.lead ?? ""), opdracht: String(o.opdracht ?? ""), spawn_id: String(o.spawn_id ?? ""), ts: o.ts, ...(typeof o.t3_thread === "string" && o.t3_thread ? { t3_thread: o.t3_thread } : {}) };
   } catch {
     return null;
@@ -383,6 +399,13 @@ export function zoekIdentiteit(staat: string, cwd: string, nu = Date.now()): { p
     if (identiteit) return { pad, identiteit };
   }
   return null;
+}
+
+/** Houdt de identiteit van een levende sessie vers (ts = nu): hij verloopt alleen na IDENTITEIT_MAX_MS zonder activiteit. */
+export function ververseIdentiteit(staat: string, cwd: string, spawnId: string, nu = Date.now()): void {
+  if (!spawnId) return;
+  const g = zoekIdentiteit(staat, cwd, nu);
+  if (g && g.identiteit.spawn_id === spawnId && nu - g.identiteit.ts > 60_000) schrijfAtomair(g.pad, `${JSON.stringify({ ...g.identiteit, ts: nu })}\n`);
 }
 
 /** SessionEnd: haalt de identiteit weg als hij nog van deze spawn is (een nieuwe spawn in dezelfde checkout blijft staan). */

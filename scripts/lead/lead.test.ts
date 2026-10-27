@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { appendFileSync, chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -1054,7 +1054,20 @@ describe("spawn.sh --vendor codex", () => {
     writeFileSync(p, "doe iets\n");
     return p;
   };
+  let codexHome: string;
+  /** Een Codex-config zoals codex-installeer.ts hem achterlaat: hooks-blok + trust-tabel(len) in hooks.state. */
+  const schrijfConfig = (o: { grenzen?: boolean; vertrouwd?: boolean; matcher?: string } = {}) => {
+    const { grenzen = true, vertrouwd = true, matcher = "Bash|apply_patch" } = o;
+    mkdirSync(codexHome, { recursive: true });
+    const cfg = join(codexHome, "config.toml");
+    const groep = (m: string, cmd: string) => `[[hooks.PreToolUse]]\nmatcher = ${JSON.stringify(m)}\n[[hooks.PreToolUse.hooks]]\ntype = "command"\ncommand = ${JSON.stringify(cmd)}\ntimeout = 5\n`;
+    let t = groep(".*", "env LAB_LEAD_BUN=/x/bun /x/lab-lead-hooks/codex-wrap.sh /x/lab-lead-hooks/hook.sh --bron codex");
+    if (grenzen) t += `\n${groep(matcher, "env LAB_LEAD_BUN=/x/bun /x/lab-lead-hooks/codex-wrap.sh /x/lab-lead-hooks/grenzen.sh")}`;
+    writeFileSync(cfg, t);
+    if (vertrouwd) appendFileSync(cfg, `\n[hooks.state."${realpathSync(cfg)}:pre_tool_use:1:0"]\ntrusted_hash = "sha256:${"ab".repeat(32)}"\n`);
+  };
   const basis = (extra: Record<string, string> = {}) => ({
+    CODEX_HOME: codexHome,
     LAB_SPAWN_SCRIPT: join(bin, "nep-agent-spawn.sh"),
     LAB_SPAWN_POLS: "0",
     LAB_SPAWN_WACHT: "0",
@@ -1073,6 +1086,8 @@ describe("spawn.sh --vendor codex", () => {
 
   beforeEach(() => {
     staat = join(dir, "staat");
+    codexHome = join(dir, "codex-home");
+    schrijfConfig();
     wt = join(dir, "eigen-worktree");
     git(repo, "worktree", "add", "-q", "-b", "werk", wt);
     schrijfBin(
@@ -1093,7 +1108,7 @@ exit 1
     expect(draai(SPAWN, ["--naam", "w", "--opdracht", opdracht(), "--lead", "l", "--vendor", "gpt", "--droog"], basis()).fout).toMatch(/claude of codex/);
     expect(codex(["--sublead", "--droog"]).fout).toMatch(/--sublead vraagt Claude/);
     expect(codex(["--model", "a;b", "--droog"]).fout).toMatch(/mag alleen letters/);
-    expect(codex(["--model", "opus", "--droog"]).code).toBe(0); // een Codex-model is vrij, niet sonnet/opus
+    expect(codex(["--map", wt, "--model", "opus", "--droog"]).code).toBe(0); // een Codex-model is vrij, niet sonnet/opus
   });
 
   test("tmux: de opdrachtregel start codex met LAB_AGENT_ROL altijd in de omgeving en -C <map>", () => {
@@ -1140,11 +1155,75 @@ exit 1
     expect(identiteitEnv({ LAB_LEAD_STAAT: staat }, join(wt, "sub"))).toMatchObject({ LAB_AGENT_NAAM: "cx1", LAB_AGENT_ROL: "agent" });
   });
 
-  test("tmux in de hoofdcheckout: geen identiteitsbestand, wel een waarschuwing", () => {
+  test("M2: tmux weigert de hoofdcheckout en een map zonder eigen worktree (git-dir == git-common-dir), ook met --droog; er start niets", () => {
     writeFileSync(join(dir, "pane.txt"), "Ask Codex\n");
-    const r = codex(["--map", repo]);
-    expect(r.fout).toMatch(/hoofdcheckout; geen identiteitsbestand/);
+    const kaal = join(dir, "geen-git");
+    mkdirSync(kaal);
+    for (const map of [repo, kaal]) {
+      for (const extra of [[], ["--droog"]]) {
+        const r = codex(["--map", map, ...extra]);
+        expect(r.code).toBe(1);
+        expect(r.fout).toMatch(/eigen worktree als --map/);
+      }
+    }
     expect(idBestanden()).toEqual([]);
+    expect(log("spawn.log")).toBe("");
+  });
+
+  test("M1: zonder grenzen-hook in de Codex-config, of zonder geldige trusted_hash ervoor, start spawn niet (tmux, T3 en --droog)", () => {
+    writeFileSync(join(dir, "pane.txt"), "Ask Codex\n• Ran ls\n");
+    const gevallen: [Parameters<typeof schrijfConfig>[0], RegExp][] = [
+      [{ grenzen: false }, /grenzen-hook .* ontbreekt/],
+      [{ vertrouwd: false }, /niet vertrouwd/],
+      [{ matcher: "Bash" }, /niet vertrouwd .*apply_patch niet|matcher dekt Bash en apply_patch niet/],
+    ];
+    for (const [conf, re] of gevallen) {
+      schrijfConfig(conf);
+      for (const extra of [[], ["--droog"], ["--t3"]]) {
+        const r = codex(["--map", wt, ...extra]);
+        expect(r.code).toBe(1);
+        expect(r.fout).toMatch(/Codex-config niet in orde/);
+        expect(r.fout).toMatch(re);
+      }
+    }
+    expect(idBestanden()).toEqual([]);
+    expect(log("spawn.log")).toBe("");
+    expect(log("t3.log")).toBe("");
+    // de config ontbreekt helemaal
+    rmSync(join(codexHome, "config.toml"));
+    expect(codex(["--map", wt]).fout).toMatch(/bestaat niet/);
+    // en met de entry plus trust start hij wel
+    schrijfConfig();
+    expect(codex(["--map", wt]).code).toBe(0);
+    expect(idBestanden().length).toBe(1);
+  });
+
+  test("Z6: een mislukte start laat geen identiteitsbestand achter (tmux zonder pane-id, T3 zonder thread)", () => {
+    schrijfBin("kapot-spawn.sh", "#!/usr/bin/env bash\nexit 1\n");
+    const t = codex(["--map", wt], { LAB_SPAWN_SCRIPT: join(bin, "kapot-spawn.sh") });
+    expect(t.code).toBe(1);
+    expect(t.fout).toMatch(/geen pane-id/);
+    expect(idBestanden()).toEqual([]);
+    schrijfBin("t3", "#!/usr/bin/env bash\ncase \"$1 $2\" in\n  \"thread list\") exit 0 ;;\n  \"thread start\") cat >/dev/null; echo kapot; exit 1 ;;\nesac\nexit 1\n");
+    const r = codex(["--map", wt, "--t3"]);
+    expect(r.code).toBe(1);
+    expect(r.fout).toMatch(/thread starten mislukte/);
+    expect(idBestanden()).toEqual([]);
+  });
+
+  test("K5: dezelfde naam mag niet opnieuw zolang de vorige spawn nog in het register leeft; wel na SessionEnd (weg)", () => {
+    writeFileSync(join(dir, "pane.txt"), "Ask Codex\n• Ran ls\n");
+    expect(codex(["--map", wt]).code).toBe(0);
+    const spawnId = JSON.parse(readFileSync(join(idDir(), idBestanden()[0]), "utf8")).spawn_id;
+    mkdirSync(join(staat, "register"), { recursive: true });
+    const rec = (toestand: string) => writeFileSync(join(staat, "register", "s1.json"), JSON.stringify({ id: "s1", soort: "sessie", naam: "cx1", spawn_id: spawnId, toestand }));
+    rec("bezig");
+    const r = codex(["--map", wt]);
+    expect(r.code).toBe(1);
+    expect(r.fout).toMatch(/sessie 'cx1' draait nog/);
+    expect(JSON.parse(readFileSync(join(idDir(), idBestanden()[0]), "utf8")).spawn_id).toBe(spawnId); // het bestand is ongemoeid
+    rec("weg");
+    expect(codex(["--map", wt]).code).toBe(0);
   });
 
   test("een tweede sessie in dezelfde checkout wordt geweigerd; dezelfde naam mag opnieuw", () => {

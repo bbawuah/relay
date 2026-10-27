@@ -1,10 +1,12 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { createHash } from "node:crypto";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { AppServer, HookInfo } from "./codex-appserver";
-import { EINDE, EVENTS, START, blokIn, commando, installeer, leesArgs, maakBlok, zetBlok, type Opties } from "./codex-installeer";
+import { kiesBun } from "../installeer-hooks";
+import { controleerGrenzen } from "./codex-controle";
+import { BESTANDEN, EINDE, EVENTS, GRENZEN_MATCHER, START, blokIn, commando, installeer, leesArgs, maakBlok, zetBlok, type Opties } from "./codex-installeer";
 
 const BRON = import.meta.dir;
 let dir: string;
@@ -30,13 +32,19 @@ function nepServer(): { start: () => Promise<AppServer>; log: string[] } {
       const tekst = readFileSync(cfg, "utf8");
       const uit: HookInfo[] = [];
       let event = "";
+      const groepen: Record<string, number> = {}; // per event het aantal groepen tot nu toe: Codex telt de groep in de sleutel
+      let groep = 0;
       for (const regel of tekst.split("\n")) {
         const e = /^\[\[hooks\.([A-Za-z]+)\]\]$/.exec(regel);
-        if (e) event = e[1];
+        if (e) {
+          event = e[1];
+          groep = groepen[event] ?? 0;
+          groepen[event] = groep + 1;
+        }
         const c = /^command = (".*")$/.exec(regel);
         if (c && event) {
           const command = JSON.parse(c[1]) as string;
-          const key = `${cfg}:${snake(event)}:0:0`;
+          const key = `${realpathSync(cfg)}:${snake(event)}:${groep}:0`;
           const currentHash = `sha256:${createHash("sha256").update(`${event}\n${command}`).digest("hex")}`;
           const m = new RegExp(`\\[hooks\\.state\\."${key.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}"\\]\\ntrusted_hash = "([^"]+)"`).exec(tekst);
           uit.push({ key, eventName: snake(event), command, currentHash, trustStatus: m ? (m[1] === currentHash ? "trusted" : "modified") : "untrusted" });
@@ -69,6 +77,19 @@ describe("blok en zetBlok", () => {
     expect(b).toContain("--bron codex");
     expect(commando("/d/lab-lead-hooks", "/b/bun")).toBe("env LAB_LEAD_BUN=/b/bun /d/lab-lead-hooks/codex-wrap.sh /d/lab-lead-hooks/hook.sh --bron codex");
     expect(commando("/mijn map/lab-lead-hooks", "/b/bun")).toContain("'/mijn map/lab-lead-hooks/codex-wrap.sh'");
+  });
+
+  test("M1: een tweede PreToolUse-groep draait grenzen.sh via de wrapper, met een matcher die Bash en apply_patch dekt", () => {
+    const b = maakBlok(opties());
+    const groepen = b.split("[[hooks.PostToolUse]]")[0].split("[[hooks.PreToolUse]]").slice(1);
+    expect(groepen.length).toBe(2);
+    expect(groepen[0]).toContain("hook.sh --bron codex");
+    expect(groepen[1]).toContain(`matcher = ${JSON.stringify(GRENZEN_MATCHER)}`);
+    expect(groepen[1]).toContain("codex-wrap.sh /");
+    expect(groepen[1]).toContain("lab-lead-hooks/grenzen.sh");
+    expect(groepen[1]).not.toContain("hook.sh");
+    for (const t of ["Bash", "apply_patch"]) expect(new RegExp(GRENZEN_MATCHER).test(t)).toBe(true);
+    expect(commando("/d/lab-lead-hooks", "/b/bun", "grenzen.sh")).toBe("env LAB_LEAD_BUN=/b/bun /d/lab-lead-hooks/codex-wrap.sh /d/lab-lead-hooks/grenzen.sh");
   });
 
   test("toevoegen achteraan, vervangen op zijn plaats, weghalen; de rest van het bestand blijft gelijk", () => {
@@ -125,8 +146,12 @@ describe("installeer", () => {
     expect((nu.match(/trusted_hash/g) ?? []).length).toBe(EVENTS.length);
     expect(statSync(cfg).mode & 0o777).toBe(0o640);
     expect(statSync(`${cfg}.voor-peerbus`).mode & 0o077).toBe(0);
-    for (const b of ["hook.sh", "hook.ts", "register.ts", "codex-adapter.ts", "codex-wrap.sh", "codex-wrap.ts"]) expect(existsSync(join(home, "hooks/lab-lead-hooks", b))).toBe(true);
+    for (const b of ["hook.sh", "hook.ts", "register.ts", "codex-adapter.ts", "codex-wrap.sh", "codex-wrap.ts", "grenzen.sh"]) {
+      expect(BESTANDEN).toContain(b);
+      expect(existsSync(join(home, "hooks/lab-lead-hooks", b))).toBe(true);
+    }
     expect(statSync(join(home, "hooks/lab-lead-hooks/codex-wrap.sh")).mode & 0o100).toBeTruthy();
+    expect(statSync(join(home, "hooks/lab-lead-hooks/grenzen.sh")).mode & 0o100).toBeTruthy();
     expect(u.stdout).toContain(`klaar: ${EVENTS.length} hooks vertrouwd`);
   });
 
@@ -156,6 +181,31 @@ describe("installeer", () => {
     expect(u.stdout).toContain(`vertrouwd: ${EVENTS.length} hook(s)`);
     expect(readFileSync(`${cfg}.voor-peerbus`, "utf8")).toBe('model = "x"\n');
     expect(readFileSync(cfg, "utf8")).toContain(join(dir, "elders"));
+  });
+
+  test("M1: na de installer ziet controleerGrenzen een vertrouwde grenzen-hook; zonder trust, zonder entry of met een kapotte hash niet", async () => {
+    writeFileSync(cfg, 'model = "x"\n');
+    const nep = nepServer();
+    expect(controleerGrenzen(cfg)).toMatch(/geen PreToolUse-hooks/);
+    await installeer(opties(), { start: nep.start });
+    expect(controleerGrenzen(cfg)).toBeNull();
+    const heel = readFileSync(cfg, "utf8");
+    // trust van de grenzen-groep (groep 1) weg: niet vertrouwd, ook al staat de hook van groep 0 wel vertrouwd
+    const zonderTrust = heel.replace(/\[hooks\.state\."[^"]*:pre_tool_use:1:0"\]\ntrusted_hash = "[^"]+"\n/, "");
+    expect(zonderTrust).not.toBe(heel);
+    writeFileSync(cfg, zonderTrust);
+    expect(controleerGrenzen(cfg)).toMatch(/niet vertrouwd/);
+    writeFileSync(cfg, heel.replace(/(pre_tool_use:1:0"\]\ntrusted_hash = ")sha256:[0-9a-f]+/, "$1sha256:kapot"));
+    expect(controleerGrenzen(cfg)).toMatch(/niet vertrouwd/);
+    // zonder grenzen-entry
+    writeFileSync(cfg, heel.replaceAll("grenzen.sh", "iets-anders.sh"));
+    expect(controleerGrenzen(cfg)).toMatch(/ontbreekt/);
+    // matcher dekt apply_patch niet
+    writeFileSync(cfg, heel.replace(`matcher = ${JSON.stringify(GRENZEN_MATCHER)}`, 'matcher = "Bash"'));
+    expect(controleerGrenzen(cfg)).toMatch(/niet vertrouwd .*matcher|matcher dekt/);
+    expect(controleerGrenzen(join(dir, "weg.toml"))).toMatch(/bestaat niet/);
+    writeFileSync(cfg, "[[hooks.PreToolUse\n");
+    expect(controleerGrenzen(cfg)).toMatch(/geen geldige TOML/);
   });
 
   test("zonder bestaande config.toml: wordt aangemaakt, geen backup", async () => {
@@ -219,5 +269,10 @@ describe("leesArgs", () => {
     expect(leesArgs(["--wat"], {}, "/b")).toContain("onbekende optie");
     expect(leesArgs(["--codex-home"], {}, "/b")).toContain("mist een waarde");
     expect((leesArgs(["--droog", "--verwijder"], { HOME: "/h" }, "/b") as Opties).droog).toBe(true);
+  });
+
+  test("Z5: het standaard bun-pad is dat van kiesBun (stabiel pad uit PATH), niet het versiepad van het draaiende proces", () => {
+    expect((leesArgs([], { HOME: "/h" }, "/b") as Opties).bun).toBe(kiesBun());
+    expect(kiesBun(() => "/opt/homebrew/bin/bun", "/Cellar/bun/1.4.2/bin/bun")).toBe("/opt/homebrew/bin/bun");
   });
 });
