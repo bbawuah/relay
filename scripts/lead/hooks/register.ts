@@ -403,6 +403,21 @@ export function zoekIdentiteit(staat: string, cwd: string, nu = Date.now()): { p
   return null;
 }
 
+/** Staat er een identiteitsbestand (geldig of niet, verlopen of kapot) voor `cwd` of een bovenliggende map? */
+export function heeftIdentiteitsbestand(staat: string, cwd: string): boolean {
+  for (let d = cwd; d && d !== "/" && d !== "."; d = dirname(d)) {
+    let echt = d;
+    try {
+      echt = realpathSync(d);
+    } catch {}
+    try {
+      lstatSync(identiteitPad(staat, echt));
+      return true;
+    } catch {}
+  }
+  return false;
+}
+
 /** Houdt de identiteit van een levende sessie vers (ts = nu): hij verloopt alleen na IDENTITEIT_MAX_MS zonder activiteit. */
 export function ververseIdentiteit(staat: string, cwd: string, spawnId: string, nu = Date.now()): void {
   if (!spawnId) return;

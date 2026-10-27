@@ -163,6 +163,9 @@ export async function verwerk(event: string, invoer: Invoer, env: Omgeving, opti
   const lead = leadNaamVan(env, rec0);
   const agentId = tekst(invoer.agent_id);
   const t = nu();
+  // Een subagent deelt het session_id van de hoofdsessie (Codex geeft zijn UserPromptSubmit met agent_id; Stop komt alleen
+  // van de hoofdsessie, de subagent heeft SubagentStop): zijn prompt is geen nieuwe beurt van de hoofdsessie.
+  if (agentId && (event === "UserPromptSubmit" || event === "Stop")) return LEEG;
 
   const bron = opties.bron ?? "claude";
   const peers = event === "UserPromptSubmit" || event === "Stop" || event === "SessionEnd" ? await laadPeers(env, opties) : null;

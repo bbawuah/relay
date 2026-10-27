@@ -3,10 +3,12 @@
 // Tools: send, inbox, list, notify_when_idle. Afzender = env LAB_AGENT_NAAM; staatmap = env LAB_LEAD_STAAT.
 // vrijgeven en vasthouden bestaan hier bewust niet: dat is voor Brian of de lead (CLI).
 // Zonder LAB_AGENT_NAAM (een Codex-thread in T3 krijgt geen omgeving per thread) komt de identiteit uit
-// <staat>/identiteit/<hash>.json van de checkout waarin de server draait (zie metIdentiteit).
+// <staat>/identiteit/<hash>.json van de checkout waarin de server draait (zie metIdentiteit). Zonder dat bestand, zonder naam en
+// zonder rol (Brians eigen Codex) volgt de naam uit _meta.threadId van de aanroep (afgeleide-naam.ts).
 
 import { identiteitEnv } from "../hooks/codex-wrap";
-import type { Omgeving } from "../hooks/register";
+import { type Omgeving, staatMap } from "../hooks/register";
+import { afgeleideNaam, magAfleiden } from "./afgeleide-naam";
 import { standaardBus } from "./standaard";
 import { type Bus, toon } from "./types";
 
@@ -95,13 +97,20 @@ export function metIdentiteit(env: Omgeving, cwd: string, nu = Date.now()): Omge
   return i.LAB_AGENT_NAAM ? { ...env, LAB_AGENT_NAAM: i.LAB_AGENT_NAAM, ...(i.LAB_LEAD_NAAM ? { LAB_LEAD_NAAM: i.LAB_LEAD_NAAM } : {}) } : env;
 }
 
+/** De afgeleide naam uit `_meta` van de aanroep (door Codex gezet, niet door het model); `arguments` telt nooit mee. */
+function metaNaam(meta: unknown): string | null {
+  if (!meta || typeof meta !== "object" || Array.isArray(meta)) return null;
+  const m = meta as Record<string, unknown>;
+  return afgeleideNaam(m.threadId) ?? afgeleideNaam(m.sessionId);
+}
+
 const PROTOCOLLEN = ["2024-11-05", "2025-03-26", "2025-06-18"];
 /** Details van een fout gaan naar stderr (kort, zonder stack); het model krijgt altijd dezelfde tekst, zonder paden. */
 const logFout = (wat: string, e: unknown): void => void process.stderr.write(`peers-mcp: ${wat}: ${e instanceof Error ? e.message : String(e)}\n`);
 const VASTE_FOUT = "interne fout: de peerbus kon dit niet uitvoeren (details staan in de serverlog).";
 
 /** Verwerkt één JSON-RPC-bericht. Notificaties (zonder id) krijgen geen antwoord. */
-export async function verwerk(m: Rpc, bus: Bus, env: Omgeving): Promise<Verwerkt> {
+export async function verwerk(m: Rpc, bus: Bus, env: Omgeving, afleiden = false): Promise<Verwerkt> {
   const geldigId = (i: unknown) => i === undefined || i === null || typeof i === "string" || typeof i === "number";
   if (!m || typeof m !== "object" || Array.isArray(m) || !geldigId(m.id)) {
     return { antwoord: { jsonrpc: "2.0", id: null, error: { code: -32600, message: "ongeldig verzoek (batches en losse waarden worden niet ondersteund)" } } };
@@ -125,7 +134,7 @@ export async function verwerk(m: Rpc, bus: Bus, env: Omgeving): Promise<Verwerkt
       const a = args && typeof args === "object" && !Array.isArray(args) ? (args as Record<string, unknown>) : {};
       let r: Awaited<ReturnType<typeof roepAan>>;
       try {
-        r = await roepAan(bus, env.LAB_AGENT_NAAM || "", naam, a);
+        r = await roepAan(bus, env.LAB_AGENT_NAAM || (afleiden ? metaNaam(m.params?._meta) : "") || "", naam, a);
       } catch (e) {
         logFout(`tool ${naam}`, e);
         return goed(tekst(VASTE_FOUT, true));
@@ -141,6 +150,7 @@ if (import.meta.main) {
   const { createInterface } = await import("node:readline");
   const omgeving = metIdentiteit(process.env, process.cwd());
   const bus = standaardBus(omgeving);
+  const afleiden = magAfleiden(omgeving, staatMap(omgeving), process.cwd());
   let keten: Promise<void> = Promise.resolve();
   // true alleen als de regel echt naar stdout is geschreven; een dichte lezer (EPIPE) geeft false.
   const schrijf = (o: unknown) => new Promise<boolean>((klaar) => process.stdout.write(`${JSON.stringify(o)}\n`, (err) => klaar(!err)));
@@ -153,7 +163,7 @@ if (import.meta.main) {
       if (regel.trim()) await schrijf({ jsonrpc: "2.0", id: null, error: { code: -32700, message: "geen geldige JSON" } });
       return;
     }
-    const v = await verwerk(m, bus, omgeving);
+    const v = await verwerk(m, bus, omgeving, afleiden);
     const geschreven = v.antwoord ? await schrijf(v.antwoord) : true;
     if (!geschreven) return logFout("antwoord niet geschreven", "stdout dicht; bijwerkingen overgeslagen");
     try {

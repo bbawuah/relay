@@ -3,7 +3,7 @@ import { chmodSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, 
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { schoneEnv } from "../../test-integriteit";
-import { IDENTITEIT_SLEUTELS, cwdUitInvoer, hookOmgeving, identiteitEnv } from "./codex-wrap";
+import { IDENTITEIT_SLEUTELS, cwdUitInvoer, hookOmgeving, identiteitEnv, sessieUitInvoer } from "./codex-wrap";
 import { IDENTITEIT_MAX_MS, identiteitPad, leesIdentiteit, schrijfIdentiteit, ververseIdentiteit, wisIdentiteit } from "./register";
 
 const WRAP = join(import.meta.dir, "codex-wrap.sh");
@@ -112,6 +112,28 @@ describe("identiteitEnv", () => {
     schrijfIdentiteit(staat, werk, ident);
     const met = hookOmgeving(daemon, werk);
     expect(met).toMatchObject({ PATH: "/bin", LAB_AGENT_NAAM: "cx1", LAB_AGENT_ROL: "agent", LAB_SPAWN_ID: "sp-1", LAB_T3_THREAD: "mcp:abc" });
+  });
+  test("hookOmgeving: Brians eigen Codex-sessie (geen identiteit, geen naam of rol) krijgt de afgeleide naam uit het sessie-id; een werker nooit", () => {
+    const sid = "01a17ebd-76bc-7472-a451-ac8ef9f536d4";
+    const eigen = hookOmgeving({ PATH: "/bin", LAB_LEAD_STAAT: staat }, join(dir, "geen-identiteit"), Date.now(), sid);
+    expect(eigen.LAB_AGENT_NAAM).toBe("codex-ac8ef9f536d4");
+    expect(eigen.LAB_AGENT_ROL).toBeUndefined();
+    expect(eigen.LAB_LEAD_NAAM).toBeUndefined();
+    // zonder (geldig) id geen naam
+    expect(hookOmgeving({ PATH: "/bin", LAB_LEAD_STAAT: staat }, werk, Date.now(), "").LAB_AGENT_NAAM).toBeUndefined();
+    // een daemon-omgeving met naam of rol van een andere (dode) werker: geen afgeleide naam, en de sleutels gaan eruit
+    for (const extra of [{ LAB_AGENT_NAAM: "dode-werker" }, { LAB_AGENT_ROL: "agent" }]) {
+      const u = hookOmgeving({ PATH: "/bin", LAB_LEAD_STAAT: staat, ...extra }, werk, Date.now(), sid);
+      for (const k of IDENTITEIT_SLEUTELS) expect(u[k]).toBeUndefined();
+    }
+    // een werker met een (nu verlopen) identiteitsbestand: nooit een afgeleide naam
+    schrijfIdentiteit(staat, werk, { ...ident, ts: Date.now() - IDENTITEIT_MAX_MS - 1000 });
+    expect(hookOmgeving({ PATH: "/bin", LAB_LEAD_STAAT: staat }, werk, Date.now(), sid).LAB_AGENT_NAAM).toBeUndefined();
+  });
+  test("sessieUitInvoer", () => {
+    expect(sessieUitInvoer('{"session_id":"abc"}')).toBe("abc");
+    expect(sessieUitInvoer("{kapot")).toBe("");
+    expect(sessieUitInvoer('{"session_id":3}')).toBe("");
   });
   test("cwdUitInvoer", () => {
     expect(cwdUitInvoer('{"cwd":"/x"}')).toBe("/x");
