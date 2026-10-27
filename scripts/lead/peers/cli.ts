@@ -26,7 +26,14 @@ function neemWaarde(args: string[], vlag: string): { waarde?: string; rest: stri
   return { waarde, rest: [...args.slice(0, i), ...args.slice(i + 2)] };
 }
 
-export async function draai(args: string[], env: Omgeving, bus: Bus, leesStdin: () => Promise<string> = () => Bun.stdin.text()): Promise<CliUitslag> {
+/** Draait de opdracht en wacht daarna op wekken die de bus op de achtergrond start (anders stopt het proces vóór het seintje). */
+export async function draai(args: string[], env: Omgeving, bus: Bus & { klaar?: () => Promise<void> }, leesStdin: () => Promise<string> = () => Bun.stdin.text()): Promise<CliUitslag> {
+  const uit = await draaiOpdracht(args, env, bus, leesStdin);
+  await bus.klaar?.();
+  return uit;
+}
+
+async function draaiOpdracht(args: string[], env: Omgeving, bus: Bus, leesStdin: () => Promise<string> = () => Bun.stdin.text()): Promise<CliUitslag> {
   const ok = (uit: string): CliUitslag => ({ code: 0, uit: uit ? `${uit}\n` : "", fout: "" });
   const mis = (fout: string): CliUitslag => ({ code: 1, uit: "", fout: `${fout}\n` });
   const [cmd, ...rest] = args;

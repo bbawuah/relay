@@ -11,9 +11,9 @@
 //   slot/<soort>/<naam>.lock   lock (hardlink met `pid-token`), per ontvanger (post), afzender (tempo) en doel (abo)
 //
 // Mappen 0700, bestanden 0600. De bus leest het register (scripts/lead/hooks/register.ts) en schrijft er nooit in.
-// Elke naam die een bestandsnaam wordt, moet passen op NAAM; alles daarbuiten (ook `.` en `..`) wordt aan elke ingang geweigerd.
+// Elke naam die een bestandsnaam wordt, moet passen op NAAM en wordt voor elk pad in kleine letters gezet (Alice en alice delen één inbox: een send naar een naam met zo'n tweeling wordt geweigerd); alles daarbuiten (ook `.` en `..`) wordt aan elke ingang geweigerd.
 
-import { appendFileSync, existsSync, linkSync, mkdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, linkSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { hostname } from "node:os";
 import { join } from "node:path";
 import { type Rec, alleRecords } from "../hooks/register";
@@ -74,7 +74,7 @@ export function markeerExtern(staat: string, naam: string): void {
   if (!geldigeNaam(naam)) return;
   const dir = join(staat, "peers", "extern");
   mkdirSync(dir, { recursive: true, mode: 0o700 });
-  writeFileSync(join(dir, naam), `${Date.now()}\n`, { mode: 0o600 });
+  writeFileSync(join(dir, naam.toLowerCase()), `${Date.now()}\n`, { mode: 0o600 });
 }
 
 function slaap(ms: number): void {
@@ -92,7 +92,10 @@ function pidLeeft(pid: number): boolean {
 
 type WekAanvraag = { actie: "nu"; aantal: number } | { actie: "wacht"; ms: number; tot: number };
 
-export function maakBus(opties: BusOpties): Bus {
+/** De bus plus `klaar()`: wacht op wekken die op de achtergrond lopen (notifyWhenIdle, overname in list). Een CLI roept dit aan vóór hij stopt. */
+export type BusMetKlaar = Bus & { klaar(): Promise<void> };
+
+export function maakBus(opties: BusOpties): BusMetKlaar {
   const nu = opties.nu ?? Date.now;
   const wekker = opties.wekker ?? geenWekker;
   const machine = opties.machine ?? hostname();
@@ -100,7 +103,7 @@ export function maakBus(opties: BusOpties): Bus {
   const root = join(opties.staat, "peers");
   const pad = (map: string, naam: string, ext: string) => {
     if (!geldigeNaam(naam)) throw new Error(`ongeldige naam: ${JSON.stringify(naam)}`);
-    return join(root, map, `${naam}${ext}`);
+    return join(root, map, `${naam.toLowerCase()}${ext}`); // APFS kent geen hoofdletters: Alice en alice zijn één bestand
   };
 
   function zorgMap(map: string): void {
@@ -145,6 +148,22 @@ export function maakBus(opties: BusOpties): Bus {
     return true;
   }
 
+  /** Achtergebleven `.tmp`-bestanden (en `.dood.`-restanten) in een slotmap, ouder dan een minuut, van gecrashte processen. */
+  function ruimTmp(dir: string): void {
+    try {
+      for (const n of readdirSync(dir)) {
+        if (!n.endsWith(".tmp") && !n.includes(".dood.")) continue;
+        try {
+          if (Date.now() - statSync(join(dir, n)).mtimeMs > 60_000) rmSync(join(dir, n), { force: true });
+        } catch {
+          // al weg
+        }
+      }
+    } catch {
+      // geen map
+    }
+  }
+
   /**
    * Voert `f` uit met de lock `soort/naam`; wacht hoogstens SLOT_MAX_MS, daarna een fout (de send gooit nooit, dus wordt het `geweigerd`).
    * De lock is een hardlink naar een bestand met `pid-token`: een dode pid maakt hem meteen vrij en wij verwijderen in `finally`
@@ -154,9 +173,10 @@ export function maakBus(opties: BusOpties): Bus {
     if (!geldigeNaam(naam)) throw new Error(`ongeldige naam: ${JSON.stringify(naam)}`);
     const dir = join(root, "slot", soort);
     mkdirSync(dir, { recursive: true, mode: 0o700 });
-    const lock = join(dir, `${naam}.lock`);
+    ruimTmp(dir);
+    const lock = join(dir, `${naam.toLowerCase()}.lock`);
     const token = `${process.pid}-${Math.random().toString(36).slice(2)}${Date.now().toString(36)}`;
-    const mijn = join(dir, `${naam}.${token}.tmp`);
+    const mijn = join(dir, `${naam.toLowerCase()}.${token}.tmp`);
     writeFileSync(mijn, token, { mode: 0o600 });
     const begin = Date.now();
     try {
@@ -272,6 +292,13 @@ export function maakBus(opties: BusOpties): Bus {
     return uit;
   }
 
+  /** Staat er nog een levende sessie waarvan de naam alleen in hoofdletters verschilt? Dan delen ze bestanden en is de ontvanger onduidelijk. */
+  function heeftTweeling(naam: string, sessies: Map<string, Sessie>): boolean {
+    const klein = naam.toLowerCase();
+    for (const n of sessies.keys()) if (n !== naam && n.toLowerCase() === klein) return true;
+    return false;
+  }
+
   /** Extern als het register het zegt of als de bus de markering heeft gezet (een sessie die externe inhoud zag). */
   function isExtern(r: Sessie): boolean {
     return r.herkomst === "extern" || existsSync(pad("extern", r.naam, ""));
@@ -310,7 +337,10 @@ export function maakBus(opties: BusOpties): Bus {
     };
   }
 
-  type WekStaat = { ts?: number; open?: { tot: number } };
+  type WekStaat = { ts?: number; open?: { tot: number; pid?: number } };
+
+  /** Een wachter is levend zolang zijn proces leeft en het venster niet ruim voorbij is. */
+  const wachterLeeft = (open: NonNullable<WekStaat["open"]>, n: number) => n < open.tot + WEK_VENSTER_MS && (open.pid === undefined || pidLeeft(open.pid));
 
   /**
    * Beslist of en wanneer `naam` gewekt wordt. Alleen aanroepen met het slot `post/<naam>`.
@@ -327,9 +357,9 @@ export function maakBus(opties: BusOpties): Bus {
       schrijfAtomair(p, JSON.stringify({ ts: n }));
       return { actie: "nu", aantal: ongelezen(naam).length };
     }
-    if (st.open && n < st.open.tot + WEK_VENSTER_MS) return null;
+    if (st.open && wachterLeeft(st.open, n)) return null;
     const tot = ts + WEK_VENSTER_MS;
-    schrijfAtomair(p, JSON.stringify({ ts, open: { tot } }));
+    schrijfAtomair(p, JSON.stringify({ ts, open: { tot, pid: process.pid } }));
     return { actie: "wacht", ms: tot - n, tot };
   }
 
@@ -339,6 +369,12 @@ export function maakBus(opties: BusOpties): Bus {
     } catch (e) {
       return { gewekt: false, route: "fout", melding: e instanceof Error ? e.message : String(e) };
     }
+  }
+
+  const achtergrond = new Set<Promise<unknown>>();
+  function opAchtergrond(p: Promise<unknown>): void {
+    const q: Promise<unknown> = p.catch(() => {}).finally(() => achtergrond.delete(q));
+    achtergrond.add(q);
   }
 
   const kort = (w: WekUitslag): WekKort => ({ gewekt: w.gewekt, route: w.route });
@@ -352,7 +388,8 @@ export function maakBus(opties: BusOpties): Bus {
       await wacht(a.ms);
       aantal = metSlot("post", ontv.naam, () => {
         const p = pad("wek", ontv.naam, ".json");
-        if (leesJson<WekStaat>(p, {}).open?.tot !== a.tot) return 0;
+        const open = leesJson<WekStaat>(p, {}).open;
+        if (open?.tot !== a.tot || open.pid !== process.pid) return 0;
         schrijfAtomair(p, JSON.stringify({ ts: nu() }));
         return ongelezen(ontv.naam).length;
       });
@@ -405,6 +442,7 @@ export function maakBus(opties: BusOpties): Bus {
     if (!afz) return fout("geen_afzender", `Afzender ${JSON.stringify(van)} staat niet (meer) in het register, of de naam is ongeldig (letters, cijfers, . _ -).`);
     const ontv = sessies.get(naar);
     if (!ontv) return fout("onbekend", `Ontvanger ${JSON.stringify(naar)} is niet bekend of niet meer levend; kijk met list.`);
+    if (heeftTweeling(naar, sessies)) return fout("onbekend", `Ontvanger ${JSON.stringify(naar)} is dubbelzinnig: er is een levende sessie met dezelfde naam in andere hoofdletters.`);
     if (tekst.length > MAX_TEKST) return fout("te_lang", `Tekst is ${tekst.length} tekens; hoogstens ${MAX_TEKST}.`);
 
     const uit = metSlot("post", naar, (): { uitslag: SendUitslag; wek: WekAanvraag | null } => {
@@ -504,7 +542,24 @@ export function maakBus(opties: BusOpties): Bus {
       if (extern) markeerExtern(opties.staat, naam);
     },
 
+    async klaar() {
+      while (achtergrond.size > 0) await Promise.all([...achtergrond]);
+    },
+
     list() {
+      // Een wachter die stierf (pid dood of venster ruim voorbij) laat een wek liggen: de eerstvolgende list neemt hem over.
+      for (const r of levende().values()) {
+        try {
+          const a = metSlot("post", r.naam, () => {
+            const st = leesJson<WekStaat>(pad("wek", r.naam, ".json"), {});
+            if (!st.open || wachterLeeft(st.open, nu()) || ongelezen(r.naam).length === 0) return null;
+            return wekAanvraag(r.naam);
+          });
+          if (a) opAchtergrond(voerWek(r, a));
+        } catch {
+          // list moet altijd een lijst geven
+        }
+      }
       return [...levende().values()].map((r): Peer => {
         const tellers = metSlot("post", r.naam, () => ({ ongelezen: ongelezen(r.naam).length, vastgehouden: houdVast(r.naam).length }));
         return { naam: r.naam, vendor: r.vendor ?? "claude", host: r.host ?? "tui", toestand: r.toestand, lead: r.lead, cwd: r.cwd, machine, ...tellers };
@@ -513,12 +568,13 @@ export function maakBus(opties: BusOpties): Bus {
 
     notifyWhenIdle(abonnee, doel): AbonneerUitslag {
       if (!geldigeNaam(abonnee) || !levende().has(abonnee)) return { ok: false, reden: "geen_afzender", melding: `${JSON.stringify(abonnee)} staat niet (meer) in het register, of de naam is ongeldig.` };
+      if (geldigeNaam(doel) && heeftTweeling(doel, levende())) return { ok: false, reden: "onbekend", melding: `${JSON.stringify(doel)} is dubbelzinnig: er is een levende sessie met dezelfde naam in andere hoofdletters.` };
       const d = geldigeNaam(doel) ? zoekRecord(doel) : undefined;
       if (!d) return { ok: false, reden: "onbekend", melding: `${JSON.stringify(doel)} is niet bekend of de naam is ongeldig; kijk met list.` };
       if (IDLE_TOESTANDEN.has(d.toestand)) {
         const m = meldSync(doel, abonnee, `${doel} is ${d.toestand}`);
-        // Fire-and-forget: valt de wek binnen het wekvenster, dan wacht deze belofte in de achtergrond (een CLI-proces die eerder stopt, wekt niet).
-        if (m) void voerWek(m.ontv, m.aanvraag).catch(() => {});
+        // Op de achtergrond: valt de wek binnen het wekvenster, dan wacht deze belofte; `klaar()` wacht erop (de CLI doet dat).
+        if (m) opAchtergrond(voerWek(m.ontv, m.aanvraag));
         return { ok: true, al_idle: true };
       }
       zorgMap("abonnementen");
@@ -539,14 +595,17 @@ export function maakBus(opties: BusOpties): Bus {
         if (lijst.length > 0) rmSync(p, { force: true });
         return lijst.filter(geldigeNaam);
       });
+      // Eerst alle meldingen neerleggen (snel), dan de wekken tegelijk afwachten: de hook van het doel hangt zo hoogstens één wekwacht.
+      const wekken: Promise<unknown>[] = [];
       for (const abonnee of abo) {
         try {
           const m = meldSync(doel, abonnee, `${doel} is ${toestand}`);
-          if (m) await voerWek(m.ontv, m.aanvraag);
+          if (m) wekken.push(voerWek(m.ontv, m.aanvraag).catch(() => {}));
         } catch {
           // een mislukte melding mag de hook van het doel niet breken
         }
       }
+      await Promise.all(wekken);
     },
 
     vastgehouden(naam) {

@@ -194,6 +194,20 @@ describe("cli: namen, rol en extern", () => {
   });
 });
 
+describe("cli: wacht op de wek van notify-when-idle", () => {
+  test("de CLI geeft pas terug als de achtergrondwek klaar is", async () => {
+    sessie("w", "", { toestand: "klaar" });
+    const wekken: number[] = [];
+    const b = maakBus({ staat, nu: () => klok, wekker: { wek: async (_d, n) => (wekken.push(n), { gewekt: true, route: "nep" }) }, wacht: async (ms) => void (klok += ms) });
+    await b.send("w", "a", "zet het wekvenster van a aan");
+    klok += 100;
+    const r = await draai(["notify-when-idle", "w"], env("a"), b);
+    expect(r.code).toBe(0);
+    expect(r.uit).toContain("al idle");
+    expect(wekken).toEqual([1, 2]); // de tweede wek (binnen het venster) is afgewacht vóór de CLI terugkeerde
+  });
+});
+
 describe("cli als proces", () => {
   test("bun cli.ts send en inbox tegen een tijdelijke staatmap, exitcode en uitvoer", async () => {
     const pad = join(import.meta.dir, "cli.ts");

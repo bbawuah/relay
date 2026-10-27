@@ -95,10 +95,21 @@ slot/<soort>/<naam>.lock   lock (hardlink naar `pid-token`), soort post (ontvang
 - **Retentie**: een gelezen bericht blijft 24 uur staan, zodat een antwoord er hop en draad van kan overnemen; daarna ruimt de eerstvolgende schrijfactie het op.
 - De bus leest het register (`scripts/lead/hooks/register.ts`) en schrijft er niet in.
 
+## Tijdsgrenzen (voor de hooktimeout van spoor D)
+
+Alle wachttijden hieronder komen bovenop de tijdsgrens van de wekker (spoor C: socket 2 s, codex 5 s, t3 twee aanroepen). Normaal duurt een bus-aanroep milliseconden.
+
+- `send`: hoogstens 5 s op de lock van de afzender (tempo), 5 s op de lock van de ontvanger, tot 5 s wachten op het eind van het wekvenster en nog eens 5 s op de lock bij het wekken. Bovengrens ≈ 20 s, daarna `geweigerd` of een fout; zonder lockconflict en buiten het venster < 1 s, binnen het venster tot 5 s.
+- `idleGemeld`: 5 s op de abonnementslock, per abonnee 5 s op zijn lock (achter elkaar), daarna alle wekken tegelijk (tot 5 s wachten + 5 s lock + wekker). Bovengrens ≈ 10 s + 5 s per abonnee + wekker; normaal < 1 s.
+- Advies: een hooktimeout van minimaal 30 s en een bus-aanroep die bij timeout niet wordt herhaald (een herhaalde send is `dubbel`).
+
 ## Open punten
 
 - Groei: `dubbel/`, `wek/`, `tempo/`, `abonnementen/`, `extern/` en achtergebleven `.tmp`-bestanden worden niet opgeruimd (klein, maar het groeit per naam). Opruimen is een vervolgstap.
-- Een `notifyWhenIdle` op een doel dat al idle is wekt in de achtergrond; valt dat binnen het wekvenster en stopt het CLI-proces eerder, dan volgt er geen seintje (het bericht staat wel in de inbox).
+- Een `notifyWhenIdle` op een doel dat al idle is wekt op de achtergrond; `bus.klaar()` wacht daarop (de CLI doet dat). Een MCP-aanroep of ander proces dat zonder `klaar()` stopt, laat de wek liggen; de volgende `send` of `list` neemt hem over (pid van de wachter dood, of het venster ruim voorbij).
+- `ruimStaleLock`: tussen het lezen van een dode lock en het hernoemen kan een andere proces er een verse lock neerzetten; de bus zet die terug, maar in dat korte venster kunnen twee houders tegelijk bezig zijn.
+- Een proces dat langer dan 10 s bevroren is (SIGSTOP, slaapstand) terwijl het een lock houdt, verliest die: een ander ruimt hem als verouderd op en er kunnen twee houders zijn. Een lock duurt normaal milliseconden; er is geen heartbeat.
+- Hoofdletters: namen gaan voor elk pad in kleine letters; de bus weigert een send naar een naam met een levende hoofdlettertweeling, maar het register (`register/<id>.json`) is zelf niet hoofdlettergevoelig voor ids.
 - Het wekvenster blokkeert een send die er binnen valt tot 5 s; een MCP-tool die snel achter elkaar naar dezelfde ontvanger stuurt, merkt dat.
 
 ## Testen
