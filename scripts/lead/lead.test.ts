@@ -1116,6 +1116,23 @@ exit 1
     );
   });
 
+  test("gereserveerde namen codex-<12 hex> (ook hoofdletters) worden geweigerd, ook in --meerdere; andere codex-namen mogen", () => {
+    for (const naam of ["codex-0123456789ab", "CODEX-ABCDEF012345", "Codex-aBcDeF012345"]) {
+      const r = codex(["--map", wt, "--droog"], {}, naam);
+      expect(r.code).toBe(1);
+      expect(r.fout).toMatch(/gereserveerd/);
+      const lijst = join(dir, "res.txt");
+      writeFileSync(lijst, `${naam} ${opdracht()}\n`);
+      const m = draai(SPAWN, ["--meerdere", lijst, "--lead", "l", "--map", wt, "--vendor", "codex", "--droog"], basis());
+      expect(m.code).toBe(1);
+      expect(m.fout).toMatch(/gereserveerd/);
+    }
+    for (const naam of ["codex-0123456789a", "codex-0123456789abc", "codex-0123456789ag", "mijn-codex-0123456789ab"]) {
+      expect(codex(["--map", wt, "--droog"], {}, naam).fout).not.toMatch(/gereserveerd/);
+    }
+    expect(idBestanden()).toEqual([]);
+  });
+
   test("een ongeldige --vendor, een sublead en een model met shell-tekens worden geweigerd", () => {
     expect(draai(SPAWN, ["--naam", "w", "--opdracht", opdracht(), "--lead", "l", "--vendor", "gpt", "--droog"], basis()).fout).toMatch(/claude of codex/);
     expect(codex(["--sublead", "--droog"]).fout).toMatch(/--sublead vraagt Claude/);

@@ -85,6 +85,7 @@ if [ -n "$meerdere" ]; then
     case ${n:-} in ""|"#"*) continue ;; esac
     [ -n "${o:-}" ] && [ -z "${extra:-}" ] || fout "$meerdere regel $regelnr: verwacht 'naam opdrachtbestand [model]'"
     [[ $n =~ ^[A-Za-z0-9._-]+$ ]] || fout "$meerdere regel $regelnr: naam '$n' mag alleen letters, cijfers, punt, streepje en underscore bevatten"
+    [[ $n =~ ^[Cc][Oo][Dd][Ee][Xx]-[0-9A-Fa-f]{12}$ ]] && fout "$meerdere regel $regelnr: naam '$n' is gereserveerd (afgeleide namen van Codex-sessies zonder identiteit)"
     for eerder in ${namen[@]+"${namen[@]}"}; do
       [ "$eerder" != "$n" ] || fout "$meerdere regel $regelnr: dubbele naam '$n'; er is nog niets gestart"
     done
@@ -141,6 +142,7 @@ fi
 
 [ -n "$naam" ] || fout "--naam ontbreekt"
 [[ $naam =~ ^[A-Za-z0-9._-]+$ ]] || fout "naam '$naam' mag alleen letters, cijfers, punt, streepje en underscore bevatten"
+[[ $naam =~ ^[Cc][Oo][Dd][Ee][Xx]-[0-9A-Fa-f]{12}$ ]] && fout "naam '$naam' is gereserveerd: de vorm codex-<12 hex> (hoofd- of kleine letters) is voor afgeleide namen van Codex-sessies zonder identiteit (#685)"
 [ -n "$opdracht" ] || fout "--opdracht ontbreekt"
 case $opdracht in *$'\n'*|*$'\r'*|*"'"*) fout "opdrachtpad mag geen regeleinde of enkele aanhalingsteken bevatten" ;; esac
 [ -f "$opdracht" ] || fout "opdrachtbestand bestaat niet: $opdracht"
