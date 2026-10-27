@@ -10,7 +10,8 @@
 #          Sandbox (tmux): de werker draait met een permissieprofiel (workspace-write-achtig, netwerk aan): schrijven alleen in de
 #          worktree, /tmp, TMPDIR, de bun-cache, <common>/objects, refs, logs en worktrees/<naam>; hooks, config, commondir en
 #          gitdir blijven read-only; sleutelmappen zijn onleesbaar; geen escalatieverzoeken (-a never). Een T3-thread krijgt
-#          geen -c en dus geen sandbox: --t3 met --vendor codex weigert tenzij --zonder-sandbox.
+#          geen -c en dus geen sandbox: --t3 met --vendor codex weigert tenzij --zonder-sandbox, een expliciete escape die alleen
+#          op aanwijzing van Brian mag. De upstream van de werkertak (origin/<tak>) zet spawn vooraf, want .git/config is read-only.
 #          --t3: start de sessie als thread in T3 Code (server op deze machine) in plaats van in tmux; --map moet dan
 #          een eigen worktree zijn. Laatste regel van de uitvoer: t3:<thread-id>.
 #        scripts/lead/spawn.sh --meerdere <lijst> [--model ..] [--map ..] [--lead ..] [--droog]
@@ -278,7 +279,7 @@ codex_controles() {
   eigen_worktree || fout "--vendor codex eist een eigen worktree als --map (git worktree add), niet de hoofdcheckout of een map zonder eigen worktree: $map"
   command -v "$BUN" >/dev/null 2>&1 || fout "--vendor codex heeft bun nodig om de grenzen-hook in $cfg te controleren"
   if [ "$t3" = 1 ]; then
-    [ "$zonder_sandbox" = 1 ] || fout "--t3 met --vendor codex weigert: een T3-thread krijgt geen -c per thread en dus niet de sandbox van de tmux-werker (schrijven alleen in de worktree, hooks en config read-only). Start in tmux, of accepteer dat de thread zonder die sandbox draait met --zonder-sandbox"
+    [ "$zonder_sandbox" = 1 ] || fout "--t3 met --vendor codex weigert: een T3-thread krijgt geen -c per thread en dus niet de sandbox van de tmux-werker (schrijven alleen in de worktree, hooks en config read-only). Start in tmux. --zonder-sandbox is een expliciete escape (de thread draait dan zonder die sandbox) en mag alleen op aanwijzing van Brian"
   else
     codex_sandbox
   fi
@@ -295,6 +296,22 @@ codex_controles() {
     3) fout "$uit" ;;
     *) fout "Codex-config niet in orde, de grenzen zouden niet gelden: $uit" ;;
   esac
+}
+
+# De sandbox laat de werker .git/config niet schrijven, dus `git push -u` zou na afloop mislukken. Zet de upstream van de werkertak
+# daarom hier vooraf (buiten de sandbox): origin + refs/heads/<tak>, ook als die tak op origin nog niet bestaat. Alleen als de tak
+# nog geen upstream heeft of die naar main/master wijst (een verse agenttak vanaf origin/main); een andere upstream blijft staan.
+# Een losse HEAD, main/master of een repo zonder remote origin: niets doen.
+codex_upstream() {
+  local tak merge
+  tak=$(git_schoon -C "$map" symbolic-ref -q --short HEAD 2>/dev/null) || return 0
+  case $tak in ""|main|master) return 0 ;; esac
+  git_schoon -C "$map" remote get-url origin >/dev/null 2>&1 || return 0
+  merge=$(git_schoon -C "$map" config --get "branch.$tak.merge" 2>/dev/null || true)
+  case $merge in ""|refs/heads/main|refs/heads/master) ;; *) return 0 ;; esac
+  git_schoon -C "$map" config "branch.$tak.remote" origin &&
+    git_schoon -C "$map" config "branch.$tak.merge" "refs/heads/$tak" ||
+    echo "spawn: let op: kon de upstream van $tak niet zetten; de werker pusht met 'git push origin $tak' (zonder -u)" >&2
 }
 
 t3_controleer_map() {
@@ -496,6 +513,7 @@ fi
 if [ "$vendor" = codex ]; then
   identiteit_vrij
   schrijf_identiteit
+  codex_upstream
 fi
 
 pane=$(bash "$SPAWN" window "$map" "$cmd" | tail -n 1) || pane=""   # pipefail: een falend spawn-script moet de foutmelding en de opruiming krijgen

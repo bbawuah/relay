@@ -1183,6 +1183,7 @@ exit 1
       const r = codex(["--map", wt, ...extra], {}, "cx1", true);
       expect(r.code).toBe(1);
       expect(r.fout).toMatch(/weigert.*--zonder-sandbox/);
+      expect(r.fout).toMatch(/alleen op aanwijzing van Brian/);
     }
     expect(idBestanden()).toEqual([]);
     expect(log("t3.log")).toBe("");
@@ -1297,6 +1298,35 @@ exit 1
     expect(codex(["--map", wt, "--droog"]).uit).toContain(UIT); // tmux: -c wint
     writeFileSync(join(wt, ".codex", "config.toml"), 'web_search = "disabled"\n');
     expect(codex(["--map", wt, "--t3", "--droog"]).code).toBe(0);
+  });
+
+  test("tmux: spawn zet de upstream van de werkertak vooraf (.git/config is read-only in de sandbox); een bestaande eigen upstream blijft", () => {
+    writeFileSync(join(dir, "pane.txt"), "Ask Codex\n");
+    const cfg = (sleutel: string) => git(repo, "config", "--get", sleutel).stdout.toString().trim();
+    const start = () => {
+      rmSync(idDir(), { recursive: true, force: true });
+      return codex(["--map", wt]);
+    };
+    // zonder remote origin: niets
+    git(repo, "remote", "remove", "origin");
+    start();
+    expect(cfg("branch.werk.merge")).toBe("");
+    git(repo, "remote", "add", "origin", origin);
+    // droog schrijft niets
+    codex(["--map", wt, "--droog"]);
+    expect(cfg("branch.werk.merge")).toBe("");
+    // geen upstream: origin + refs/heads/<tak>, ook als de tak op origin nog niet bestaat
+    start(); // de nep-pane toont geen tool-aanroep: exit 1 na de start is hier normaal
+    expect(cfg("branch.werk.remote")).toBe("origin");
+    expect(cfg("branch.werk.merge")).toBe("refs/heads/werk");
+    // een verse agenttak vanaf origin/main (upstream main) wordt omgezet
+    git(repo, "config", "branch.werk.merge", "refs/heads/main");
+    start();
+    expect(cfg("branch.werk.merge")).toBe("refs/heads/werk");
+    // een andere, bewust gekozen upstream blijft staan
+    git(repo, "config", "branch.werk.merge", "refs/heads/ander");
+    start();
+    expect(cfg("branch.werk.merge")).toBe("refs/heads/ander");
   });
 
   test("tmux in een eigen worktree schrijft de identiteit (0600 in een map 0700); een andere checkout krijgt niets", () => {
