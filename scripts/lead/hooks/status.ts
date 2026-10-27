@@ -127,16 +127,16 @@ function gitTekst(g: GitInfo | undefined): string {
 
 export function tabel(rijen: Rij[], nu: number, metGit: boolean): string {
   if (rijen.length === 0) return "geen sessies in het register\n";
-  const kop = ["naam", "rol", "lead", "toestand", "sinds", "laatste tool", "rapport", "opdracht"];
+  const kop = ["naam", "rol", "vendor", "lead", "toestand", "sinds", "laatste tool", "rapport", "opdracht"];
   if (metGit) kop.push("git");
   const regels: string[][] = [];
   for (const r of rijen) {
     const wacht = (r.wacht_tot ?? 0) > nu && r.toestand === "idle" ? ` (wacht ~${tijd(r.wacht_tot ?? 0)})` : "";
     const toest = (r.toestand === "klaar" ? "klaar ✓" : r.toestand === "vrij" ? "vrij ✓" : r.toestand) + wacht;
     const rapport = r.rapport_om ? tijd(r.rapport_om) : "–";
-    regels.push([r.naam || r.id.slice(0, 8), r.rol, r.lead || "–", r.vastgelopen ? `${toest} ?` : toest, duur(nu - r.sinds), r.laatste_tool ?? "–", rapport, kort(r.opdracht), ...(metGit ? [gitTekst(r.git)] : [])]);
+    regels.push([r.naam || r.id.slice(0, 8), r.rol, r.vendor ?? "claude", r.lead || "–", r.vastgelopen ? `${toest} ?` : toest, duur(nu - r.sinds), r.laatste_tool ?? "–", rapport, kort(r.opdracht), ...(metGit ? [gitTekst(r.git)] : [])]);
     for (const k of r.kinderen) {
-      regels.push([`  └ ${k.id.slice(0, 8)}`, `${k.agent_type || "subagent"}`, "", k.toestand, duur(nu - k.sinds), k.laatste_tool ?? "–", "", ""]);
+      regels.push([`  └ ${k.id.slice(0, 8)}`, `${k.agent_type || "subagent"}`, "", "", k.toestand, duur(nu - k.sinds), k.laatste_tool ?? "–", "", ""]);
     }
   }
   const breed = kop.map((_, i) => Math.max(kop[i].length, ...regels.map((r) => (r[i] ?? "").length)));

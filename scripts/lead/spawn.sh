@@ -2,6 +2,9 @@
 # Start een Claude-sessie in een eigen tmux-venster en geef die een opdracht.
 # Gebruik: scripts/lead/spawn.sh --naam <n> --opdracht <bestand> [--model sonnet|opus]
 #          [--map <pad>] [--lead <unieke naam>] [--sublead [--workflow <JJJJ-MM-DD>]] [--vervolg <tak>] [--t3] [--droog]
+#          [--vendor claude|codex]
+#          --vendor codex: een Codex-sessie (`codex -C <map>`; --model is dan een Codex-model); standaard claude. LAB_AGENT_ROL staat
+#          altijd in de omgeving: in tmux via env, in T3 via <staat>/identiteit (codex-wrap.sh zet het in de hookomgeving).
 #          --t3: start de sessie als thread in T3 Code (server op deze machine) in plaats van in tmux; --map moet dan
 #          een eigen worktree zijn. Laatste regel van de uitvoer: t3:<thread-id>.
 #        scripts/lead/spawn.sh --meerdere <lijst> [--model ..] [--map ..] [--lead ..] [--droog]
@@ -25,7 +28,7 @@ for v in WACHT POLS BEWIJS; do
 done
 [[ $WACHT_VERTROUWEN =~ ^[0-9]+$ ]] || fout "WACHT_VERTROUWEN moet een geheel getal zijn, niet '$WACHT_VERTROUWEN'"
 
-naam="" opdracht="" model="" map="$PWD" lead="" droog=0 sublead=0 vervolg="" workflow="" meerdere="" t3=0
+naam="" opdracht="" model="" map="$PWD" lead="" droog=0 sublead=0 vervolg="" workflow="" meerdere="" t3=0 vendor=claude
 waarde() { [ "$#" -ge 2 ] || fout "optie $1 heeft een waarde nodig"; }
 while [ $# -gt 0 ]; do
   case $1 in
@@ -40,10 +43,13 @@ while [ $# -gt 0 ]; do
     --droog) droog=1; shift ;;
     --meerdere) waarde "$@"; meerdere=$2; shift 2 ;;
     --t3) t3=1; shift ;;
-    -h|--help) sed -n '2,11p' "$0"; exit 0 ;;
+    --vendor) waarde "$@"; vendor=$2; shift 2 ;;
+    -h|--help) sed -n '2,15p' "$0"; exit 0 ;;
     *) fout "onbekende optie: $1" ;;
   esac
 done
+
+case $vendor in claude|codex) ;; *) fout "--vendor moet claude of codex zijn, niet '$vendor'" ;; esac
 
 if [ -n "$meerdere" ]; then
   [ -z "$naam$opdracht$vervolg" ] && [ "$sublead" = 0 ] || fout "--meerdere sluit --naam, --opdracht, --vervolg en --sublead uit"
@@ -61,7 +67,11 @@ if [ -n "$meerdere" ]; then
       [ "$eerder" != "$n" ] || fout "$meerdere regel $regelnr: dubbele naam '$n'; er is nog niets gestart"
     done
     [ -f "$o" ] || fout "$meerdere regel $regelnr: opdrachtbestand bestaat niet: $o; er is nog niets gestart"
-    case ${m:-$model} in ""|sonnet|opus) ;; *) fout "$meerdere regel $regelnr: model moet sonnet of opus zijn, niet '${m:-$model}'" ;; esac
+    if [ "$vendor" = codex ]; then
+      [[ ${m:-$model} =~ ^[A-Za-z0-9._-]*$ ]] || fout "$meerdere regel $regelnr: codex-model '${m:-$model}' mag alleen letters, cijfers, punt, streepje en underscore bevatten"
+    else
+      case ${m:-$model} in ""|sonnet|opus) ;; *) fout "$meerdere regel $regelnr: model moet sonnet of opus zijn, niet '${m:-$model}'" ;; esac
+    fi
     namen+=("$n") opdrachten+=("$o") modellen+=("${m:-$model}")
   done <"$meerdere"
   [ "${#namen[@]}" -gt 0 ] || fout "lijst $meerdere bevat geen sessies"
@@ -73,6 +83,7 @@ if [ -n "$meerdere" ]; then
     [ -z "$lead" ] || args+=(--lead "$lead")
     [ "$droog" = 0 ] || args+=(--droog)
     [ "$t3" = 0 ] || args+=(--t3)
+    [ "$vendor" = claude ] || args+=(--vendor "$vendor")
     bash "$zelf" "${args[@]}" >"$uitmap/${namen[$i]}.uit" 2>"$uitmap/${namen[$i]}.fout" &
     pids+=($!)
   done
@@ -105,8 +116,18 @@ fi
 [ -n "$opdracht" ] || fout "--opdracht ontbreekt"
 case $opdracht in *$'\n'*|*$'\r'*|*"'"*) fout "opdrachtpad mag geen regeleinde of enkele aanhalingsteken bevatten" ;; esac
 [ -f "$opdracht" ] || fout "opdrachtbestand bestaat niet: $opdracht"
-case $model in ""|sonnet|opus) ;; *) fout "--model moet sonnet of opus zijn, niet '$model'" ;; esac
+if [ "$vendor" = codex ]; then
+  [[ $model =~ ^[A-Za-z0-9._-]*$ ]] || fout "--model '$model' mag alleen letters, cijfers, punt, streepje en underscore bevatten"
+  [ "$sublead" = 0 ] || fout "--sublead vraagt Claude (de Agent-tool); gebruik --vendor claude"
+else
+  case $model in ""|sonnet|opus) ;; *) fout "--model moet sonnet of opus zijn, niet '$model'" ;; esac
+fi
 [ -d "$map" ] || fout "map bestaat niet: $map"
+if [ "$vendor" = codex ]; then
+  KLAAR_RE='Ask Codex|^[│ ]*› *$' KLAAR_TEKST='Ask Codex' VERTROUWEN_TEKST='Hooks need review' BEWIJS_RE='^[[:space:]]*• ' BEWIJS_TEKST='•'
+else
+  KLAAR_RE='auto mode|^[│ ]*❯ *$' KLAAR_TEKST='auto mode' VERTROUWEN_TEKST='Quick safety check' BEWIJS_RE='⏺' BEWIJS_TEKST='⏺'
+fi
 [ -n "$lead" ] || fout "naam van de lead ontbreekt: geef --lead of zet LAB_LEAD_NAAM"
 [[ $lead =~ ^[A-Za-z0-9._-]+$ ]] || fout "lead-naam '$lead' mag alleen letters, cijfers, punt, streepje en underscore bevatten"
 if command -v "$BUN" >/dev/null 2>&1; then
@@ -150,14 +171,56 @@ t3_bin() {
   ls -d "$HOME"/.t3/runtime/versions/*/t3 2>/dev/null | sort -V | tail -n 1
 }
 
+# Codex-threads in T3 hebben geen eigen omgeving: de identiteit gaat naar <staat>/identiteit/<sha256 van de checkout>.json,
+# dat codex-wrap.sh in de omgeving van elke hook zet (ook van grenzen.sh, dat LAB_AGENT_ROL nodig heeft).
+STAAT="${LAB_LEAD_STAAT:-$HOME/.local/state/lab-lead}"
+identiteit_pad() {
+  local echt hash
+  echt=$(cd "$map" && pwd -P)
+  hash=$(printf '%s' "$echt" | shasum -a 256 | cut -c1-24)
+  echo "$STAAT/identiteit/$hash.json"
+}
+
+# Is $map een eigen (linked) worktree? De hoofdcheckout krijgt nooit een identiteit: iedereen met dezelfde cwd zou die erven.
+eigen_worktree() {
+  local gemeen eigen
+  gemeen=$(cd "$map" && cd "$(git_schoon rev-parse --git-common-dir)" && pwd -P) || return 1
+  eigen=$(cd "$(git_schoon -C "$map" rev-parse --absolute-git-dir)" && pwd -P) || return 1
+  [ "$eigen" != "$gemeen" ]
+}
+
+# Een andere sessie in dezelfde checkout? Dan weigeren (de identiteit is per checkout, niet per sessie).
+identiteit_vrij() {
+  local inst bestaand
+  inst=$(identiteit_pad)
+  [ -f "$inst" ] || return 0
+  bestaand=$(jq -r '.naam // ""' "$inst" 2>/dev/null || true)
+  [ -z "$bestaand" ] || [ "$bestaand" = "$naam" ] ||
+    fout "$map draagt al de identiteit van sessie '$bestaand' ($inst); één Codex-sessie per checkout. Is die klaar, haal dan dat bestand weg (of wacht tot hij na 12 u verloopt)"
+}
+
+# Schrijft <staat>/identiteit/<hash>.json (0600 in een map 0700). ts in ms: de identiteit verloopt na 12 u (register.ts).
+schrijf_identiteit() {
+  local inst tmp
+  inst=$(identiteit_pad)
+  mkdir -p "$STAAT/identiteit" && chmod 700 "$STAAT/identiteit"
+  tmp=$(mktemp "$inst.XXXXXX")
+  jq -n --arg n "$naam" --arg r "$rol" --arg l "$lead" --arg o "$opdracht" --arg s "$spawn_id" --argjson ts "$(( $(date +%s) * 1000 ))" \
+    '{naam: $n, rol: $r, lead: $l, opdracht: $o, spawn_id: $s, ts: $ts}' >"$tmp" || { rm -f "$tmp"; fout "kon $inst niet schrijven"; }
+  chmod 600 "$tmp"
+  mv "$tmp" "$inst"
+}
+
 t3_controleer_map() {
   command -v jq >/dev/null 2>&1 || fout "--t3 heeft jq nodig"
-  local top gemeen eigen inst bestaand
+  local top inst bestaand
   top=$(git_schoon -C "$map" rev-parse --show-toplevel 2>/dev/null) || fout "--t3: $map is geen git-checkout"
   [ "$(cd "$top" && pwd -P)" = "$(cd "$map" && pwd -P)" ] || fout "--t3: --map moet de wortel van een worktree zijn ($top), geen submap"
-  gemeen=$(cd "$map" && cd "$(git_schoon rev-parse --git-common-dir)" && pwd -P)
-  eigen=$(cd "$(git_schoon -C "$map" rev-parse --absolute-git-dir)" && pwd -P)
-  [ "$eigen" != "$gemeen" ] || fout "--t3: $map is de hoofdcheckout; maak een eigen worktree (git worktree add) en geef die als --map"
+  eigen_worktree || fout "--t3: $map is de hoofdcheckout; maak een eigen worktree (git worktree add) en geef die als --map"
+  if [ "$vendor" = codex ]; then
+    identiteit_vrij
+    return 0
+  fi
   git_schoon -C "$map" check-ignore -q .claude/settings.local.json ||
     fout "--t3: .claude/settings.local.json is niet git-genegeerd in $map; de identiteit zou dan in een commit kunnen belanden"
   inst="$map/.claude/settings.local.json"
@@ -174,15 +237,25 @@ t3_start() {
   local zin=$1 bin model_slug provider inst tmp uit id verstreken js st items pend
   t3_controleer_map
   bin=$(t3_bin || true)
-  provider="${LAB_T3_PROVIDER:-claudeAgent}"
-  case $model in
-    sonnet) model_slug=claude-sonnet-5-5 ;;
-    opus) model_slug=claude-opus-5-5 ;;
-    *) model_slug="${LAB_T3_MODEL:-claude-opus-5-5}" ;;
-  esac
-  inst="$map/.claude/settings.local.json"
+  if [ "$vendor" = codex ]; then
+    provider="${LAB_T3_PROVIDER:-codex}"
+    model_slug="${model:-${LAB_T3_MODEL:-gpt-6-luna}}"
+    inst=$(identiteit_pad)
+  else
+    provider="${LAB_T3_PROVIDER:-claudeAgent}"
+    case $model in
+      sonnet) model_slug=claude-sonnet-5-5 ;;
+      opus) model_slug=claude-opus-5-5 ;;
+      *) model_slug="${LAB_T3_MODEL:-claude-opus-5-5}" ;;
+    esac
+    inst="$map/.claude/settings.local.json"
+  fi
   if [ "$droog" = 1 ]; then
-    echo "droog: zet env LAB_AGENT_NAAM=$naam LAB_AGENT_ROL=$rol LAB_LEAD_NAAM=$lead LAB_OPDRACHT=$opdracht_q LAB_SPAWN_ID=$spawn_id in $inst (overige sleutels blijven)"
+    if [ "$vendor" = codex ]; then
+      echo "droog: schrijf de identiteit (naam=$naam rol=$rol lead=$lead opdracht=$opdracht_q spawn_id=$spawn_id) naar $inst; codex-wrap.sh zet die als LAB_AGENT_ROL e.d. in elke hook"
+    else
+      echo "droog: zet env LAB_AGENT_NAAM=$naam LAB_AGENT_ROL=$rol LAB_LEAD_NAAM=$lead LAB_OPDRACHT=$opdracht_q LAB_SPAWN_ID=$spawn_id in $inst (overige sleutels blijven)"
+    fi
     echo "droog: ${bin:-t3} project add --title $naam $map (alleen als de map nog geen T3-project is)"
     echo "droog: ${bin:-t3} thread start --title $naam --provider $provider --model $model_slug $map - (startzin op stdin)"
     echo "droog: startzin: $zin"
@@ -191,13 +264,17 @@ t3_start() {
   fi
   [ -n "$bin" ] && [ -x "$bin" ] || fout "--t3: t3 niet gevonden (zet LAB_T3, of verbind T3 Code eenmaal met deze machine zodat ~/.t3/runtime bestaat)"
 
-  mkdir -p "$map/.claude"
-  [ -f "$inst" ] || echo '{}' >"$inst"
-  tmp=$(mktemp "$inst.XXXXXX")
-  jq --arg n "$naam" --arg r "$rol" --arg l "$lead" --arg o "$opdracht" --arg s "$spawn_id" \
-    '.env = ((.env // {}) + {LAB_AGENT_NAAM: $n, LAB_AGENT_ROL: $r, LAB_LEAD_NAAM: $l, LAB_OPDRACHT: $o, LAB_SPAWN_ID: $s})' \
-    "$inst" >"$tmp" || { rm -f "$tmp"; fout "--t3: kon $inst niet bijwerken"; }
-  mv "$tmp" "$inst"
+  if [ "$vendor" = codex ]; then
+    schrijf_identiteit
+  else
+    mkdir -p "$map/.claude"
+    [ -f "$inst" ] || echo '{}' >"$inst"
+    tmp=$(mktemp "$inst.XXXXXX")
+    jq --arg n "$naam" --arg r "$rol" --arg l "$lead" --arg o "$opdracht" --arg s "$spawn_id" \
+      '.env = ((.env // {}) + {LAB_AGENT_NAAM: $n, LAB_AGENT_ROL: $r, LAB_LEAD_NAAM: $l, LAB_OPDRACHT: $o, LAB_SPAWN_ID: $s})' \
+      "$inst" >"$tmp" || { rm -f "$tmp"; fout "--t3: kon $inst niet bijwerken"; }
+    mv "$tmp" "$inst"
+  fi
 
   if ! (cd "$map" && "$bin" thread list >/dev/null 2>&1); then
     uit=$("$bin" project add --title "$naam" "$map" 2>&1) || fout "--t3: project toevoegen mislukte (draait de T3-server?): $uit"
@@ -207,6 +284,11 @@ t3_start() {
   # t3 drukt het id af (in een terminal met "Thread " ervoor): de laatste niet-lege regel
   id=$(printf '%s\n' "$uit" | sed -e 's/^Thread //' -e '/^[[:space:]]*$/d' | tail -n 1)
   [[ $id =~ ^[A-Za-z0-9:._%-]+$ ]] || fout "--t3: geen thread-id in de uitvoer van t3: $uit"
+  if [ "$vendor" = codex ]; then
+    # het thread-id is de wekroute (t3 thread send) en LAB_T3_THREAD voor de hooks; de thread draait al, dus het kan pas nu
+    tmp=$(mktemp "$inst.XXXXXX")
+    jq --arg t "$id" '. + {t3_thread: $t}' "$inst" >"$tmp" && chmod 600 "$tmp" && mv "$tmp" "$inst" || { rm -f "$tmp"; echo "spawn: waarschuwing: kon t3_thread niet in $inst zetten" >&2; }
+  fi
 
   # Bewijs dat de sessie werkt (zoals ⏺ in tmux): item 1 is de startzin, item 2 een hook die direct meedraait
   # (binnen milliseconden, vermoedelijk een hook; gezien met T3 0.1.2), pas item 3 is werk van de agent zelf.
@@ -238,6 +320,28 @@ case $opdracht_q in *[!A-Za-z0-9_/.:+=@-]*) opdracht_q="'$opdracht_q'" ;; esac
 spawn_id="$(date +%s)-$$-$RANDOM"
 cmd="env LAB_AGENT_NAAM=$naam LAB_AGENT_ROL=$rol LAB_LEAD_NAAM=$lead LAB_OPDRACHT=$opdracht_q LAB_SPAWN_ID=$spawn_id claude -n $naam"
 if [ -n "$model" ]; then cmd="$cmd --model $model"; fi
+if [ "$vendor" = codex ]; then
+  # LAB_AGENT_ROL staat altijd in de omgeving (grenzen.sh past de hoofdcheckout-regel alleen toe met een rol; Codex stuurt geen agent_id).
+  # LAB_LEAD_STAAT mee als hij gezet is, zodat de hooks en de peers-MCP hetzelfde register zien als deze aanroep.
+  staat_q=""
+  [ -z "${LAB_LEAD_STAAT:-}" ] || staat_q=" LAB_LEAD_STAAT=$(printf '%q' "$LAB_LEAD_STAAT")"
+  cmd="env LAB_AGENT_NAAM=$naam LAB_AGENT_ROL=$rol LAB_LEAD_NAAM=$lead LAB_OPDRACHT=$opdracht_q LAB_SPAWN_ID=$spawn_id$staat_q codex -C $(printf '%q' "$map")"
+  [ -z "$model" ] || cmd="$cmd -m $model"
+  # De peers-MCP alleen voor deze sessie (-c), nooit globaal in ~/.codex.
+  server="${LAB_PEERS_SERVER:-$HIER/peers/server.ts}"
+  bun_abs=$(command -v "$BUN" 2>/dev/null || true)
+  if [ "$t3" = 1 ]; then
+    :   # een T3-thread krijgt geen -c per thread: de peers-MCP leest de identiteit uit <staat>/identiteit (zie peers/server.ts)
+  elif [ -f "$server" ] && [ -n "$bun_abs" ] && [[ $server$bun_abs != *"'"* && $server$bun_abs != *'"'* ]]; then
+    cmd="$cmd -c 'mcp_servers.peers.command=\"$bun_abs\"' -c 'mcp_servers.peers.args=[\"$server\"]'"
+    # Een statische env-tabel per spawn (Codex geeft een MCP-server niet de omgeving van de sessie door).
+    mcp_env="LAB_AGENT_NAAM=\"$naam\",LAB_LEAD_NAAM=\"$lead\""
+    [ -z "${LAB_LEAD_STAAT:-}" ] || [[ $LAB_LEAD_STAAT == *"'"* || $LAB_LEAD_STAAT == *'"'* ]] || mcp_env="$mcp_env,LAB_LEAD_STAAT=\"$LAB_LEAD_STAAT\""
+    cmd="$cmd -c 'mcp_servers.peers.env={$mcp_env}' -c 'mcp_servers.peers.default_tools_approval_mode=\"approve\"'"
+  else
+    echo "spawn: waarschuwing: peers-MCP ($server) of bun ontbreekt; de sessie start zonder peers.send" >&2
+  fi
+fi
 pad=$opdracht
 case $pad in *[[:space:]]*) pad="'$pad'" ;; esac
 zin="Je lead is $lead. Jij bent sessie $naam. Lees $pad en voer die uit. Rapporteer aan de lead via SendMessage (to: $lead)."
@@ -253,6 +357,10 @@ elif [ -n "$vervolg" ]; then
   zin="Je lead is $lead. Jij bent sessie $naam, een vervolgsessie op tak $vervolg. Lees $pad en voer die uit; lees verder alleen git log origin/main..$vervolg en git diff origin/main...$vervolg, geen eerdere sessielogs. Rapporteer aan de lead via SendMessage (to: $lead)."
 fi
 
+if [ "$vendor" = codex ]; then
+  # Codex kent geen SendMessage: het rapport aan de lead is de tool send van de MCP-server peers.
+  zin="${zin//via SendMessage (to: $lead)/met de tool send van MCP-server peers (naar: $lead)}"
+fi
 zin="$zin Sluit je laatste rapport aan de lead af met een vaste slotregel (laatste regel, kaal): \`vrij\` als je klaar en opgeruimd bent, of \`wacht op achtergrondrun tot ~HH:MM\` (hoogstens 2 uur vooruit) als je op een achtergrondrun wacht. \"vrij\" ergens anders in de tekst telt niet."
 
 if [ "$t3" = 1 ]; then
@@ -263,16 +371,20 @@ fi
 if [ "$droog" = 1 ]; then
   echo "droog: $SPAWN window $map \"$cmd\""
   echo "droog: tmux set -p -t <pane> @agent_rol $rol; tmux set -p -t <pane> @agent_naam $naam"
-  echo "droog: wacht (max ${WACHT}s) tot de pane 'auto mode' of de promptregel toont"
-  echo "droog: toont de pane de vertrouwensvraag ('Quick safety check'), dan melding aan Brian (tmux display-message + stderr) en wachten (max ${WACHT_VERTROUWEN}s, WACHT_VERTROUWEN) tot de vraag weg is; nooit zelf antwoorden; bij time-out fout met pane en startzin"
+  if [ "$vendor" = codex ]; then
+    if eigen_worktree; then echo "droog: schrijf de identiteit (naam=$naam rol=$rol) naar $(identiteit_pad) (0600 in een map 0700); codex-wrap.sh zet die in elke hook"
+    else echo "droog: $map is de hoofdcheckout: geen identiteitsbestand (hooks zien alleen LAB_AGENT_ROL uit de omgeving van de pane)"; fi
+  fi
+  echo "droog: wacht (max ${WACHT}s) tot de pane '$KLAAR_TEKST' of de promptregel toont"
+  echo "droog: toont de pane de vertrouwensvraag ('$VERTROUWEN_TEKST'), dan melding aan Brian (tmux display-message + stderr) en wachten (max ${WACHT_VERTROUWEN}s, WACHT_VERTROUWEN) tot de vraag weg is; nooit zelf antwoorden; bij time-out fout met pane en startzin"
   echo "droog: tmux send-keys -l \"$zin\" + Enter"
-  echo "droog: controleer dat er een tool-aanroep (⏺) verschijnt (max ${BEWIJS}s)"
+  echo "droog: controleer dat er een tool-aanroep ($BEWIJS_TEKST) verschijnt (max ${BEWIJS}s)"
   exit 0
 fi
 
 # Waarschuwing vooraf (alleen lezen, nooit schrijven): is de map of een bovenliggende map vertrouwd?
 vertrouwd=0 d=$map
-if [ -f "$CLAUDE_JSON" ] && command -v jq >/dev/null 2>&1; then
+if [ "$vendor" = claude ] && [ -f "$CLAUDE_JSON" ] && command -v jq >/dev/null 2>&1; then
   while :; do
     t=$(jq -r --arg p "$d" '.projects[$p].hasTrustDialogAccepted // false' "$CLAUDE_JSON" 2>/dev/null || echo false)
     if [ "$t" = true ]; then vertrouwd=1; break; fi
@@ -284,6 +396,15 @@ else
 fi
 [ "$vertrouwd" = 1 ] || echo "spawn: let op: $map is nog niet vertrouwd in Claude Code; de sessie $naam wacht straks op Brians antwoord op de vertrouwensvraag" >&2
 
+if [ "$vendor" = codex ]; then
+  if eigen_worktree; then
+    identiteit_vrij
+    schrijf_identiteit
+  else
+    echo "spawn: waarschuwing: $map is de hoofdcheckout; geen identiteitsbestand voor Codex-hooks (die erven dan de omgeving van de app-server-daemon)" >&2
+  fi
+fi
+
 pane=$(bash "$SPAWN" window "$map" "$cmd" | tail -n 1)
 [[ $pane =~ ^%[0-9]+$ ]] || fout "kreeg geen pane-id terug van het spawn-script: '$pane'"
 
@@ -293,12 +414,13 @@ tmux set -p -t "$pane" @agent_naam "$naam" 2>/dev/null || true
 # De echte vertrouwensvraag van Claude Code ("Quick safety check: Is this a project you created or one you trust?"
 # met de keuze "Yes, I trust this folder"). Andere vragen tellen niet mee.
 VERTROUWEN='Quick safety check|Yes, I trust this folder'
+if [ "$vendor" = codex ]; then VERTROUWEN='Hooks need review|trust the contents|Do you trust'; fi
 
 klaar=0 verstreken=0 gemeld=0 start_v=0
 while :; do
   scherm=$(tmux capture-pane -p -t "$pane" 2>/dev/null || true)
   # eerst de prompt: de vertrouwenstekst kan na het bevestigen als scrollback boven de prompt blijven staan
-  if printf '%s\n' "$scherm" | grep -Eq 'auto mode|^[│ ]*❯ *$'; then klaar=1; break; fi
+  if printf '%s\n' "$scherm" | grep -Eq "$KLAAR_RE"; then klaar=1; break; fi
   if printf '%s\n' "$scherm" | grep -Eq "$VERTROUWEN"; then
     if [ "$gemeld" = 0 ]; then
       gemeld=1 start_v=$SECONDS
@@ -325,10 +447,10 @@ tmux send-keys -t "$pane" Enter
 
 verstreken=0
 while :; do
-  if tmux capture-pane -p -t "$pane" 2>/dev/null | grep -q '⏺'; then
+  if tmux capture-pane -p -t "$pane" 2>/dev/null | grep -Eq "$BEWIJS_RE"; then
     echo "$pane"; exit 0
   fi
   [ "$verstreken" -lt "$BEWIJS" ] || break
   sleep "$POLS"; verstreken=$((verstreken + POLS))
 done
-fout "de startzin is getypt in pane $pane, maar er verscheen geen tool-aanroep (⏺) binnen ${BEWIJS}s; kijk zelf in de sessie"
+fout "de startzin is getypt in pane $pane, maar er verscheen geen tool-aanroep ($BEWIJS_TEKST) binnen ${BEWIJS}s; kijk zelf in de sessie"

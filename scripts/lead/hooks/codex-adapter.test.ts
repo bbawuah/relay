@@ -1,10 +1,10 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { herkomstNa, hostVan, leesBron, maaktExtern, peerVelden } from "./codex-adapter";
 import { type Opties, verwerk } from "./hook";
-import { leesRecord } from "./register";
+import { externMarkering, leesIdentiteit, leesRecord, schrijfIdentiteit } from "./register";
 
 const FIX = join(import.meta.dir, "codex-fixtures");
 const SID = String(JSON.parse(readFileSync(join(FIX, "codex-SessionStart.json"), "utf8")).session_id);
@@ -129,6 +129,21 @@ describe("hook.ts met Codex-invoer (echte fixtures uit de spike)", () => {
     expect(leesRecord(staat, SID)?.herkomst).toBe("schoon");
   });
 
+  test("SessionStart (startup en clear) wist de extern-markering van de bus", async () => {
+    const e = env();
+    const m = externMarkering(staat, "cx1");
+    for (const source of ["startup", "clear"]) {
+      mkdirSync(join(staat, "peers", "extern"), { recursive: true });
+      writeFileSync(m, "");
+      await verwerk("SessionStart", { ...fixture("SessionStart"), source }, e, opt());
+      expect(existsSync(m)).toBe(false);
+    }
+    // zonder markering geen fout; een andere sessie behoudt de zijne
+    writeFileSync(externMarkering(staat, "ander"), "");
+    await verwerk("SessionStart", fixture("SessionStart"), e, opt());
+    expect(existsSync(externMarkering(staat, "ander"))).toBe(true);
+  });
+
   test("Claude: SendMessage blijft rapport; peers.send ook; WebSearch maakt extern; socket komt in het record", async () => {
     const e = env({ CLAUDE_CODE_MESSAGING_SOCKET: "/tmp/cc-socks/9.sock" });
     const o: Opties = { nu: () => klok };
@@ -142,6 +157,25 @@ describe("hook.ts met Codex-invoer (echte fixtures uit de spike)", () => {
     expect(leesRecord(staat, "c1")?.rapport_in_beurt).toBe(true);
     await verwerk("PostToolUse", { session_id: "c1", cwd: "/w", tool_name: "WebSearch", tool_input: {} }, e, o);
     expect(leesRecord(staat, "c1")?.herkomst).toBe("extern");
+  });
+
+  test("T3: het thread-id komt na SessionStart in de identiteit; het volgende event vult host en t3_thread aan", async () => {
+    await verwerk("SessionStart", fixture("SessionStart"), env(), opt());
+    expect(leesRecord(staat, SID)).toMatchObject({ host: "tui" });
+    expect(leesRecord(staat, SID)?.t3_thread).toBeUndefined();
+    await verwerk("PreToolUse", fixture("PreToolUse-Bash"), env({ LAB_T3_THREAD: "mcp:abc" }), opt());
+    expect(leesRecord(staat, SID)).toMatchObject({ host: "t3", t3_thread: "mcp:abc", vendor: "codex" });
+  });
+
+  test("SessionEnd haalt de identiteit van deze spawn weg, niet die van een nieuwere", async () => {
+    const cwd = String(fixture("SessionStart").cwd);
+    const i = { naam: "cx1", rol: "agent", lead: "lead", opdracht: "", spawn_id: "sp-1", ts: klok };
+    schrijfIdentiteit(staat, cwd, i);
+    await verwerk("SessionStart", fixture("SessionStart"), env({ LAB_SPAWN_ID: "sp-1" }), opt());
+    await verwerk("SessionEnd", fixture("SessionEnd"), env({ LAB_SPAWN_ID: "sp-0" }), opt());
+    expect(leesIdentiteit(staat, cwd, klok)).not.toBeNull();
+    await verwerk("SessionEnd", fixture("SessionEnd"), env({ LAB_SPAWN_ID: "sp-1" }), opt());
+    expect(leesIdentiteit(staat, cwd, klok)).toBeNull();
   });
 
   test("een inbound-keuze in het record overleeft een nieuwe SessionStart", async () => {

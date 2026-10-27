@@ -72,13 +72,13 @@ describe("installeer-hooks", () => {
       expect(e.timeout).toBe(e.ev === "SessionEnd" ? 1 : 5);
     }
     expect(eigen.find((e) => e.ev === "PreToolUse")?.matcher).toBe("*");
-    expect(eigen.find((e) => e.ev === "PostToolUse")?.matcher).toBe("SendMessage");
+    expect(eigen.find((e) => e.ev === "PostToolUse")?.matcher).toBe("SendMessage|WebFetch|WebSearch|mcp__.*");
     expect(nu.hooks.PreCompact).toEqual(oud.hooks.PreCompact);
   });
 
-  test("kopieert hook.sh (uitvoerbaar), hook.ts en register.ts", () => {
+  test("kopieert hook.sh (uitvoerbaar), hook.ts, register.ts en codex-adapter.ts", () => {
     installeer(opties());
-    expect(readdirSync(doel).sort()).toEqual(["hook.sh", "hook.ts", "register.ts"]);
+    expect(readdirSync(doel).sort()).toEqual(["codex-adapter.ts", "hook.sh", "hook.ts", "register.ts"]);
     expect(statSync(join(doel, "hook.sh")).mode & 0o111).toBeGreaterThan(0);
   });
 

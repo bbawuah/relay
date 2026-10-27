@@ -21,7 +21,7 @@
 // last_assistant_message, transcripts. Geen netwerk, geen git, geen gh.
 
 import { type Bron, PEERS_SEND, herkomstNa, leesBron, peerVelden } from "./codex-adapter";
-import { type Omgeving, type Rec, dubbeleLeads, eigenLeadNaam, inboxGrootte, inboxMelding, leesOfMaak, leesRecord, lopendeSubagents, isKindProces, meldAdres, nieuwRecord, pakOngelezen, regelsTekst, schrijfRecord, staatMap, tmuxPanes, voorgangerInPane, zetToestand } from "./register";
+import { type Omgeving, type Rec, dubbeleLeads, eigenLeadNaam, inboxGrootte, inboxMelding, leesOfMaak, leesRecord, lopendeSubagents, isKindProces, meldAdres, nieuwRecord, pakOngelezen, regelsTekst, schrijfRecord, staatMap, tmuxPanes, voorgangerInPane, wisExternMarkering, wisIdentiteit, zetToestand } from "./register";
 
 export type Uitslag = { code: number; stdout: string; stderr: string };
 export type Opties = {
@@ -108,7 +108,9 @@ export async function verwerk(event: string, invoer: Invoer, env: Omgeving, opti
   const bron = opties.bron ?? "claude";
   const laad = (): Rec => {
     const r = leesOfMaak(staat, sessieId, env, cwd, t);
-    return r.vendor ? r : { ...r, ...peerVelden(bron, env, sessieId) };
+    const m = r.vendor ? r : { ...r, ...peerVelden(bron, env, sessieId) };
+    // spawn.sh --t3 kent het thread-id pas na de start van de thread: de identiteit krijgt het erbij, dus het volgende event vult het aan.
+    return env.LAB_T3_THREAD && m.t3_thread !== env.LAB_T3_THREAD ? { ...m, host: "t3" as const, t3_thread: env.LAB_T3_THREAD } : m;
   };
   const naamVan = (r: Rec) => r.naam || env.LAB_AGENT_NAAM || sessieId.slice(0, 8);
   const meld = (r: Rec, txt: string) => {
@@ -132,6 +134,8 @@ export async function verwerk(event: string, invoer: Invoer, env: Omgeving, opti
         }
       }
       schrijfRecord(staat, r);
+      // De bus markeert een sessie die externe inhoud las met <staat>/peers/extern/<naam>; een nieuwe start (ook /clear) is weer schoon.
+      wisExternMarkering(staat, r.naam);
       if (isLead) {
         const dubbel = dubbeleLeads(staat, r.naam, r.id, (opties.panes ?? tmuxPanes)());
         // Het register kent de naam, Claude Code pas na `-n` of `/rename`. Een model kan geen /rename uitvoeren: de lead
@@ -261,6 +265,8 @@ export async function verwerk(event: string, invoer: Invoer, env: Omgeving, opti
       zetToestand(r, "weg", t);
       r.einde = t;
       schrijfRecord(staat, r);
+      // De identiteit van deze spawn (codex-wrap) is niet meer nodig; een nieuwe spawn in dezelfde checkout blijft staan.
+      wisIdentiteit(staat, cwd, env.LAB_SPAWN_ID || "", t);
       return LEEG;
     }
     default:

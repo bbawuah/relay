@@ -8,10 +8,10 @@
 //
 // Er worden nooit prompttekst, tool-invoer, antwoorden of transcripts bewaard.
 
-import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import type { PeerVelden } from "../peers/types";
 
 export type Toestand = "bezig" | "idle" | "goedkeuring" | "klaar" | "vrij" | "vastgelopen" | "weg";
@@ -329,26 +329,65 @@ export function voorgangerInPane(staat: string, pane: string, isLead: boolean, e
   return k.sort((a, b) => b.start - a.start)[0] ?? null;
 }
 
-// ---- identiteit per checkout (T3-threads van Codex hebben geen eigen omgeving) ----
+/** Markering van de bus (<staat>/peers/extern/<naam>): de sessie las externe inhoud. SessionStart (ook /clear) wist hem. */
+export function externMarkering(staat: string, naam: string): string {
+  return join(staat, "peers", "extern", veilig(naam));
+}
 
-export type Identiteit = { naam: string; rol: string; lead: string; opdracht: string; spawn_id: string };
+export function wisExternMarkering(staat: string, naam: string): void {
+  if (!naam) return;
+  rmSync(externMarkering(staat, naam), { force: true });
+}
+
+// ---- identiteit per checkout (hooks van Codex erven de omgeving van de app-server-daemon, niet van de sessie) ----
+
+/** Een identiteit verloopt na deze tijd, ook als de sessie nooit netjes eindigde. */
+export const IDENTITEIT_MAX_MS = 12 * 3600_000;
+
+export type Identiteit = { naam: string; rol: string; lead: string; opdracht: string; spawn_id: string; ts: number; t3_thread?: string };
 
 export function identiteitPad(staat: string, cwd: string): string {
   return join(staat, "identiteit", `${createHash("sha256").update(cwd).digest("hex").slice(0, 24)}.json`);
 }
 
-/** Door spawn.sh --t3 --vendor codex: de identiteit van de sessie in deze checkout, voor codex-wrap. */
+/** Door spawn.sh --vendor codex: de identiteit van de sessie in deze checkout, voor codex-wrap (modus 600 in een map 700). */
 export function schrijfIdentiteit(staat: string, cwd: string, i: Identiteit): void {
   mkdirSync(join(staat, "identiteit"), { recursive: true, mode: 0o700 });
   schrijfAtomair(identiteitPad(staat, cwd), `${JSON.stringify(i)}\n`);
 }
 
-export function leesIdentiteit(staat: string, cwd: string): Identiteit | null {
+function leesIdentiteitBestand(pad: string, nu: number): Identiteit | null {
   try {
-    const o = JSON.parse(readFileSync(identiteitPad(staat, cwd), "utf8"));
+    const o = JSON.parse(readFileSync(pad, "utf8"));
     if (!o || typeof o !== "object" || typeof o.naam !== "string" || typeof o.rol !== "string" || !o.rol) return null;
-    return { naam: o.naam, rol: o.rol, lead: String(o.lead ?? ""), opdracht: String(o.opdracht ?? ""), spawn_id: String(o.spawn_id ?? "") };
+    if (typeof o.ts !== "number" || nu - o.ts > IDENTITEIT_MAX_MS) return null;
+    return { naam: o.naam, rol: o.rol, lead: String(o.lead ?? ""), opdracht: String(o.opdracht ?? ""), spawn_id: String(o.spawn_id ?? ""), ts: o.ts, ...(typeof o.t3_thread === "string" && o.t3_thread ? { t3_thread: o.t3_thread } : {}) };
   } catch {
     return null;
   }
+}
+
+export function leesIdentiteit(staat: string, cwd: string, nu = Date.now()): Identiteit | null {
+  return leesIdentiteitBestand(identiteitPad(staat, cwd), nu);
+}
+
+/** Zoekt de identiteit voor `cwd` of een bovenliggende map (een sessie kan in een submap van de checkout draaien). */
+export function zoekIdentiteit(staat: string, cwd: string, nu = Date.now()): { pad: string; identiteit: Identiteit } | null {
+  for (let d = cwd; d && d !== "/" && d !== "."; d = dirname(d)) {
+    let echt = d;
+    try {
+      echt = realpathSync(d); // spawn.sh hasht het echte pad van de checkout (macOS: /var is /private/var)
+    } catch {}
+    const pad = identiteitPad(staat, echt);
+    const identiteit = leesIdentiteitBestand(pad, nu);
+    if (identiteit) return { pad, identiteit };
+  }
+  return null;
+}
+
+/** SessionEnd: haalt de identiteit weg als hij nog van deze spawn is (een nieuwe spawn in dezelfde checkout blijft staan). */
+export function wisIdentiteit(staat: string, cwd: string, spawnId: string, nu = Date.now()): void {
+  if (!spawnId) return;
+  const g = zoekIdentiteit(staat, cwd, nu);
+  if (g && g.identiteit.spawn_id === spawnId) rmSync(g.pad, { force: true });
 }

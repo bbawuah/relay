@@ -22,7 +22,7 @@ import { homedir } from "node:os";
 import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 
 export const MERK = "lab-lead-hooks/hook.sh";
-export const BESTANDEN = ["hook.sh", "hook.ts", "register.ts"];
+export const BESTANDEN = ["hook.sh", "hook.ts", "register.ts", "codex-adapter.ts"];
 export const WEKKER_TIMEOUT = 1900;
 
 type Hook = { type?: string; command?: string; timeout?: number; asyncRewake?: boolean; [k: string]: unknown };
@@ -34,7 +34,8 @@ export const EVENTS: EventSpec[] = [
   { event: "SessionStart", matcher: "startup|resume", timeout: 5 },
   { event: "UserPromptSubmit", timeout: 5 },
   { event: "PreToolUse", matcher: "*", timeout: 5 },
-  { event: "PostToolUse", matcher: "SendMessage", timeout: 5 },
+  // SendMessage en peers.send zijn het rapport (H4); WebFetch, WebSearch en MCP-tools zetten de herkomst op extern.
+  { event: "PostToolUse", matcher: "SendMessage|WebFetch|WebSearch|mcp__.*", timeout: 5 },
   { event: "Notification", matcher: "permission_prompt|idle_prompt", timeout: 5 },
   { event: "Stop", timeout: 5 },
   { event: "StopFailure", timeout: 5 },

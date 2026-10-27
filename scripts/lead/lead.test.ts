@@ -1,10 +1,12 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 // Alle tests draaien de scripts met een nep-gh en nep-tmux vooraan op PATH, in een
 // wegwerpmap met een eigen git-repo en lokale bare "origin". Geen echte tmux, geen echte PR's.
+
+import { identiteitEnv } from "./hooks/codex-wrap";
 
 const SPAWN = join(import.meta.dir, "spawn.sh");
 const MERGE = join(import.meta.dir, "merge.sh");
@@ -1041,5 +1043,159 @@ exit 1
     expect(m.code).toBe(0);
     expect(m.uit).toContain("spawn: a gestart: droog: controleer met thread show");
     expect(m.uit).toContain("spawn: b gestart: droog: controleer met thread show");
+  });
+});
+
+describe("spawn.sh --vendor codex", () => {
+  let wt: string;
+  let staat: string;
+  const opdracht = () => {
+    const p = join(dir, "opdracht.md");
+    writeFileSync(p, "doe iets\n");
+    return p;
+  };
+  const basis = (extra: Record<string, string> = {}) => ({
+    LAB_SPAWN_SCRIPT: join(bin, "nep-agent-spawn.sh"),
+    LAB_SPAWN_POLS: "0",
+    LAB_SPAWN_WACHT: "0",
+    LAB_SPAWN_BEWIJS: "0",
+    LAB_LEAD_NAAM: "",
+    LAB_CLAUDE_JSON: join(dir, "bestaat-niet.json"),
+    LAB_T3: join(bin, "t3"),
+    LAB_T3_MODEL: "",
+    LAB_LEAD_STAAT: staat,
+    ...extra,
+  });
+  const codex = (args: string[], extra: Record<string, string> = {}, naam = "cx1") => draai(SPAWN, ["--naam", naam, "--opdracht", opdracht(), "--lead", "lead-x", "--vendor", "codex", ...args], basis(extra));
+  const idDir = () => join(staat, "identiteit");
+  const idBestanden = () => (existsSync(idDir()) ? readdirSync(idDir()) : []);
+
+  beforeEach(() => {
+    staat = join(dir, "staat");
+    wt = join(dir, "eigen-worktree");
+    git(repo, "worktree", "add", "-q", "-b", "werk", wt);
+    schrijfBin(
+      "t3",
+      `#!/usr/bin/env bash
+echo "t3 [$PWD] $*" >> "$FAKE_DIR/t3.log"
+case "$1 $2" in
+  "thread list") exit 0 ;;
+  "thread start") cat > "$FAKE_DIR/t3-stdin.txt"; echo "mcp:1234abcd-0000"; exit 0 ;;
+  "thread show") echo '{"thread":{"status":"running","itemCount":3,"pendingRequestCount":0},"messages":[]}'; exit 0 ;;
+esac
+exit 1
+`,
+    );
+  });
+
+  test("een ongeldige --vendor, een sublead en een model met shell-tekens worden geweigerd", () => {
+    expect(draai(SPAWN, ["--naam", "w", "--opdracht", opdracht(), "--lead", "l", "--vendor", "gpt", "--droog"], basis()).fout).toMatch(/claude of codex/);
+    expect(codex(["--sublead", "--droog"]).fout).toMatch(/--sublead vraagt Claude/);
+    expect(codex(["--model", "a;b", "--droog"]).fout).toMatch(/mag alleen letters/);
+    expect(codex(["--model", "opus", "--droog"]).code).toBe(0); // een Codex-model is vrij, niet sonnet/opus
+  });
+
+  test("tmux: de opdrachtregel start codex met LAB_AGENT_ROL altijd in de omgeving en -C <map>", () => {
+    const r = codex(["--map", wt, "--model", "gpt-6-luna", "--droog"]);
+    expect(r.code).toBe(0);
+    expect(r.uit).toMatch(/env LAB_AGENT_NAAM=cx1 LAB_AGENT_ROL=agent LAB_LEAD_NAAM=lead-x /);
+    expect(r.uit).toContain(`LAB_LEAD_STAAT=${staat} codex -C ${wt} -m gpt-6-luna`);
+    expect(r.uit).not.toContain("claude -n");
+    expect(r.uit).toContain("met de tool send van MCP-server peers (naar: lead-x)");
+    expect(r.uit).not.toContain("SendMessage");
+    expect(r.uit).toContain("schrijf de identiteit (naam=cx1 rol=agent)");
+    expect(idBestanden()).toEqual([]); // droog schrijft niets
+    expect(log("spawn.log")).toBe("");
+  });
+
+  test("tmux: de peers-MCP gaat per spawn mee als -c met een statische env-tabel, nooit als env_vars", () => {
+    const server = join(dir, "server.ts");
+    writeFileSync(server, "// nep\n");
+    const r = codex(["--map", wt, "--droog"], { LAB_PEERS_SERVER: server });
+    expect(r.uit).toContain(`-c 'mcp_servers.peers.args=["${server}"]'`);
+    expect(r.uit).toContain(`-c 'mcp_servers.peers.env={LAB_AGENT_NAAM="cx1",LAB_LEAD_NAAM="lead-x",LAB_LEAD_STAAT="${staat}"}'`);
+    expect(r.uit).not.toContain("env_vars");
+    const zonder = codex(["--map", wt, "--droog"], { LAB_PEERS_SERVER: join(dir, "bestaat-niet.ts") });
+    expect(zonder.fout).toMatch(/peers-MCP .* ontbreekt/);
+    expect(zonder.uit).not.toContain("mcp_servers.peers");
+  });
+
+  test("tmux in een eigen worktree schrijft de identiteit (0600 in een map 0700); een andere checkout krijgt niets", () => {
+    writeFileSync(join(dir, "pane.txt"), "Ask Codex\n");
+    const r = codex(["--map", wt]);
+    expect(r.fout).not.toMatch(/hoofdcheckout/);
+    const bestanden = idBestanden();
+    expect(bestanden.length).toBe(1);
+    const i = JSON.parse(readFileSync(join(idDir(), bestanden[0]), "utf8"));
+    expect(i).toMatchObject({ naam: "cx1", rol: "agent", lead: "lead-x", opdracht: join(dir, "opdracht.md") });
+    expect(typeof i.ts).toBe("number");
+    expect(statSync(join(idDir(), bestanden[0])).mode & 0o777).toBe(0o600);
+    expect(statSync(idDir()).mode & 0o777).toBe(0o700);
+    // een tweede worktree en de hoofdcheckout hebben geen bestand: de hash hoort bij het pad van de checkout
+    const wt2 = join(dir, "andere-worktree");
+    git(repo, "worktree", "add", "-q", "-b", "werk2", wt2);
+    expect(identiteitEnv({ LAB_LEAD_STAAT: staat }, wt2)).toEqual({});
+    expect(identiteitEnv({ LAB_LEAD_STAAT: staat }, repo)).toEqual({});
+    expect(identiteitEnv({ LAB_LEAD_STAAT: staat }, join(wt, "sub"))).toMatchObject({ LAB_AGENT_NAAM: "cx1", LAB_AGENT_ROL: "agent" });
+  });
+
+  test("tmux in de hoofdcheckout: geen identiteitsbestand, wel een waarschuwing", () => {
+    writeFileSync(join(dir, "pane.txt"), "Ask Codex\n");
+    const r = codex(["--map", repo]);
+    expect(r.fout).toMatch(/hoofdcheckout; geen identiteitsbestand/);
+    expect(idBestanden()).toEqual([]);
+  });
+
+  test("een tweede sessie in dezelfde checkout wordt geweigerd; dezelfde naam mag opnieuw", () => {
+    writeFileSync(join(dir, "pane.txt"), "Ask Codex\n");
+    expect(codex(["--map", wt], {}, "cx1").fout).not.toMatch(/draagt al/);
+    const r = codex(["--map", wt], {}, "cx2");
+    expect(r.code).toBe(1);
+    expect(r.fout).toMatch(/draagt al de identiteit van sessie 'cx1'/);
+    expect(codex(["--map", wt], {}, "cx1").fout).not.toMatch(/draagt al/);
+  });
+
+  test("tmux: de Codex-vertrouwensvraag wordt gemeld en nooit beantwoord", () => {
+    writeFileSync(join(dir, "pane.txt"), "Hooks need review\n  Review hooks\n");
+    const r = codex(["--map", wt], { LAB_SPAWN_POLS: "1", WACHT_VERTROUWEN: "1" });
+    expect(r.code).toBe(1);
+    expect(r.fout).toContain("cx1 wacht op vertrouwen in pane %7");
+    expect(log("tmux.log")).not.toContain("send-keys");
+  });
+
+  test("tmux: klaar bij 'Ask Codex'; het bewijs is een •-regel, niet ⏺", () => {
+    writeFileSync(join(dir, "pane.txt"), "Ask Codex\n");
+    const stil = codex(["--map", wt]);
+    expect(stil.fout).toMatch(/geen tool-aanroep \(•\)/);
+    expect(log("tmux.log")).toContain("send-keys");
+    writeFileSync(join(dir, "pane.txt"), "Ask Codex\n• Ran ls\n");
+    const ok = codex(["--map", wt]);
+    expect(ok.code).toBe(0);
+    expect(ok.uit.trim().split("\n").at(-1)).toBe("%7");
+  });
+
+  test("T3: weigert de hoofdcheckout; schrijft in een eigen worktree de identiteit met rol en thread-id, niet settings.local.json", () => {
+    expect(codex(["--map", repo, "--t3"]).fout).toMatch(/hoofdcheckout/);
+    expect(idBestanden()).toEqual([]);
+    const r = codex(["--map", wt, "--t3", "--model", "gpt-6-luna"]);
+    expect(r.fout).toBe("");
+    expect(r.uit.trim().split("\n").at(-1)).toBe("t3:mcp:1234abcd-0000");
+    expect(log("t3.log")).toContain(`thread start --title cx1 --provider codex --model gpt-6-luna ${wt} -`);
+    expect(existsSync(join(wt, ".claude"))).toBe(false);
+    const bestanden = idBestanden();
+    expect(bestanden.length).toBe(1);
+    expect(JSON.parse(readFileSync(join(idDir(), bestanden[0]), "utf8"))).toMatchObject({ naam: "cx1", rol: "agent", t3_thread: "mcp:1234abcd-0000" });
+    expect(readFileSync(join(dir, "t3-stdin.txt"), "utf8")).toContain("met de tool send van MCP-server peers (naar: lead-x)");
+  });
+
+  test("T3 --droog schrijft niets; --meerdere geeft --vendor door", () => {
+    const r = codex(["--map", wt, "--t3", "--droog"]);
+    expect(r.uit).toContain("--provider codex");
+    expect(idBestanden()).toEqual([]);
+    const lijst = join(dir, "lijst.txt");
+    writeFileSync(lijst, `a ${opdracht()}\n`);
+    const m = draai(SPAWN, ["--meerdere", lijst, "--lead", "l", "--map", wt, "--vendor", "codex", "--droog"], basis());
+    expect(m.code).toBe(0);
+    expect(m.uit).toContain("(•)"); // het Codex-bewijs, niet ⏺: --vendor ging mee naar de deelaanroep
   });
 });
