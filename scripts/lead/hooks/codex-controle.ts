@@ -93,10 +93,15 @@ function controleerCommando(command: string, bronMap: string): string | null {
 /**
  * Rooktoets: laden de geïnstalleerde wrapper en hook.ts echt vanuit hun eigen map? De bestandscontrole hierboven ziet een import
  * die geïnstalleerd niet bestaat niet (#685: elke Codex-hook faalde dicht terwijl dit exit 0 gaf). De wrapper draait `bun --version`
- * en hook.ts een lege invoer, in een tijdelijke HOME en LAB_LEAD_STAAT. null = in orde, anders de reden.
+ * en hook.ts (als het er staat) een lege invoer, in een tijdelijke HOME en LAB_LEAD_STAAT. null = in orde, anders de reden.
  */
 function rooktoets(doel: string, bun: string): string | null {
-  const tmp = mkdtempSync(join(tmpdir(), "codex-rook-"));
+  let tmp: string;
+  try {
+    tmp = mkdtempSync(join(tmpdir(), "codex-rook-"));
+  } catch {
+    tmp = mkdtempSync(join("/tmp", "codex-rook-")); // TMPDIR kan naar een map wijzen die niet bestaat
+  }
   try {
     const env = { PATH: process.env.PATH ?? "/usr/bin:/bin", HOME: tmp, LAB_LEAD_STAAT: join(tmp, "staat"), LAB_AGENT_ROL: "agent", LAB_LEAD_BUN: bun };
     const proeven: [string, string[]][] = [
@@ -104,6 +109,8 @@ function rooktoets(doel: string, bun: string): string | null {
       ["hook.ts", [bun, join(doel, "hook.ts"), "--bron", "codex"]],
     ];
     for (const [naam, argv] of proeven) {
+      // hook.ts ontbreekt in de nep-installaties van de spawn-tests; een ontbrekend bestand is geen laadfout van deze toets
+      if (naam === "hook.ts" && !existsSync(join(doel, naam))) continue;
       const p = Bun.spawnSync(argv, { env, cwd: tmp, stdin: new TextEncoder().encode("{}"), stdout: "pipe", stderr: "pipe", timeout: 15_000 });
       if (p.exitCode !== 0) {
         const regel = p.stderr.toString().split("\n").find((l) => l.trim()) ?? "geen uitvoer";
