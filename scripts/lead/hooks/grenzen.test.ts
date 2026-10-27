@@ -1055,6 +1055,60 @@ describe("grenzen.sh: apply_patch van Codex", () => {
     });
   });
 
+  describe("herstelronde PR 673", () => {
+    test("meerdere hunks: een hunk met alleen +regels stopt de telling niet (38 KB + 6000 tekens in een latere hunk)", () => {
+      writeFileSync(join(VAULT, "n.md"), "a\n" + "q\n".repeat(19000) + "END\n");
+      const patch = wrap(upd(join(VAULT, "n.md"), `@@\n+x\n@@\n END\n+${"w".repeat(6000)}`));
+      expect(run(patch).code).toBe(2);
+      // dezelfde vorm, klein: mag
+      expect(run(wrap(upd(join(VAULT, "n.md"), "@@\n+x\n@@\n END\n+kort"))).code).toBe(0);
+    });
+    test("een Add File in .git van de hoofdcheckout (hooks) wordt geweigerd, absoluut en vanuit een worktree", () => {
+      const r = run(wrap(add(join(HOOFD, ".git", "hooks", "pre-push"))), HOOFD, "werker");
+      expect(r.code).toBe(2);
+      expect(r.stderr).toContain("gedeelde hoofdcheckout");
+      expect(run(wrap(add(".git/hooks/pre-push")), HOOFD, "werker").code).toBe(2);
+      expect(run(wrap(add("../hoofd/.git/hooks/pre-push")), WORKTREE, "werker").code).toBe(2);
+      expect(run(wrap(add(".git/config")), HOOFD, "werker").code).toBe(2);
+      expect(run(wrap(add("../hoofd/.git/hooks/pre-push")), WORKTREE, "lead").code).toBe(0);
+    });
+    test(".env.production.local en .env.local zijn sleutelbestanden; .example en .envrc niet", () => {
+      expect(run(wrap(add(".env.production.local"))).code).toBe(2);
+      expect(run(wrap(add("a/.env.staging.eu"))).code).toBe(2);
+      expect(run(wrap(add(".env.production.example"))).code).toBe(0);
+      expect(run(wrap(add(".envrc"))).code).toBe(0);
+    });
+    test("hoofdletters: .ENV, Config.JSON, CONFIG.PROPERTIES en ~/.CLAUDE tellen als sleutel", () => {
+      for (const pad of [".ENV", "Config.JSON", "CONFIG.PROPERTIES", ".Env.Local", ".CONFIG/Klaarover/x", `${HOME}/.CLAUDE/x`, `${HOME}/.Codex/x`]) {
+        expect(run(wrap(add(pad))).code).toBe(2);
+      }
+    });
+    test("hoofdletters: GROOT.MD in de vault valt onder de grootteregel, LEAD.MD en ARCHIEF/ onder de uitzonderingen", () => {
+      expect(run(wrap(add(join(VAULT, "GROOT.MD"), GROOT))).code).toBe(2);
+      expect(run(wrap(add(join(VAULT, "Plan.Md"), GROOT))).code).toBe(2);
+      expect(run(wrap(add(join(VAULT, "LEAD.MD"), GROOT))).code).toBe(0);
+      expect(run(wrap(add(join(VAULT, "Archief", "x.md"), GROOT))).code).toBe(0);
+    });
+    test("$CODEX_HOME wordt beschermd naast ~/.codex", () => {
+      const ch = join(BASIS, "ander-codex-home");
+      mkdirSync(ch, { recursive: true });
+      expect(run(wrap(add(join(ch, "config.toml"))), WERK, null, {}, { CODEX_HOME: ch }).code).toBe(2);
+      expect(run(wrap(add(join(ch, "config.toml")))).code).toBe(0);
+    });
+    test("een symlink naar de vault omzeilt de grootteregel niet", () => {
+      symlinkSync(VAULT, join(WERK, "vaultlink"));
+      expect(run(wrap(add("vaultlink/via-link.md", GROOT))).code).toBe(2);
+    });
+    test("een pad dat met ~ begint wordt niet aangevuld maar geweigerd, met uitleg", () => {
+      for (const pad of ["~/vault-b-status/x.md", "~/werk/x.txt", "~brian/x.txt"]) {
+        const r = run(wrap(add(pad)));
+        expect(r.code).toBe(2);
+        expect(r.stderr).toContain("met ~ begint");
+      }
+      expect(run(wrap(`*** Update File: a.txt\n*** Move to: ~/x.txt\n@@\n-a\n+b`)).code).toBe(2);
+    });
+  });
+
   describe("een patch die niet te lezen is wordt geweigerd, met uitleg", () => {
     const SLECHT: Array<[string, unknown]> = [
       ["zonder Begin Patch", "*** Add File: x.txt\n+hi\n*** End Patch"],

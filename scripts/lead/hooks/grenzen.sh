@@ -105,6 +105,12 @@ hoofd_paden = {os.path.realpath(os.path.expanduser(x)) for x in
                os.environ.get("LAB_HOOFDCHECKOUT", "~/Desktop/LAB-BAWUAH/lab-bawuah").split(":") if x}
 hoofd_cache = {}
 def is_hoofd(pad):
+    # binnen <hoofdcheckout>/.git (hooks, config) faalt git rev-parse --show-toplevel: dat telt ook als hoofdcheckout
+    echt = os.path.realpath(pad)
+    for h in hoofd_paden:
+        g = os.path.join(h, ".git")
+        if echt == g or echt.startswith(g + os.sep):
+            return True
     while pad and not os.path.isdir(pad) and os.path.dirname(pad) != pad:
         pad = os.path.dirname(pad)
     if pad in hoofd_cache:
@@ -148,7 +154,9 @@ if tool == "apply_patch":
         x = x.strip()
         if not x:
             patch_weiger("leeg pad")
-        return os.path.normpath(os.path.join(cwd_p, os.path.expanduser(x)))
+        if x.startswith("~"):
+            weiger(f"een patchpad dat met ~ begint ({x[:40]!r}) wordt niet aangevuld (Codex doet dat waarschijnlijk niet, dus de toets zou een ander bestand zien dan de patch). Gebruik een absoluut pad of een pad relatief aan de werkmap.")
+        return os.path.normpath(os.path.join(cwd_p, x))
     bestanden = []  # dicts: bron, doel, soort, plus (lijst), oud/nieuw per hunk
     huidig_b = None
     for r in regels[1:-1]:
@@ -184,45 +192,50 @@ if tool == "apply_patch":
             patch_weiger(f"regel zonder + - of spatie: {r[:40]!r}")
     if not bestanden:
         patch_weiger("geen bestand in de patch")
-    home_p = os.path.expanduser("~")
+    home_p = os.path.realpath(os.path.expanduser("~"))
+    zware_mappen = set()
+    for z in (os.path.join(home_p, ".claude"), os.path.join(home_p, ".codex"), os.path.expanduser(os.environ.get("CODEX_HOME", ""))):
+        if z:
+            zware_mappen.update({z.lower(), os.path.realpath(z).lower()})
     def patch_sleutel(pad):
-        for kandidaat in {pad, os.path.realpath(pad)}:
+        # hoofdletterongevoelig (APFS): namen en mappen worden in kleine letters vergeleken
+        for kandidaat in {pad.lower(), os.path.realpath(pad).lower()}:
             naam = os.path.basename(kandidaat)
             if naam.endswith(".example"):
                 continue
-            if naam in ("config.properties", "config.json") or re.fullmatch(r"\.env(\.[A-Za-z0-9_-]+)?", naam):
+            if naam in ("config.properties", "config.json") or re.fullmatch(r"\.env(\..+)?", naam):
                 return True
             if re.search(r"\.config/(klaarover|douane|agentwerkbank)(/|$)", kandidaat):
                 return True
-            for map_ in (".claude", ".codex"):
-                zwaar = os.path.join(home_p, map_)
+            for zwaar in zware_mappen:
                 if kandidaat == zwaar or kandidaat.startswith(zwaar + os.sep):
                     return True
         return False
-    vault_p = os.path.join(home_p, "vault-b-status")
+    vault_p = os.path.realpath(os.path.join(home_p, "vault-b-status"))
     def patch_na(b, huidig_t):
         # tekst na de patch (bytes) van één bestand; bij een Update zonder passende context een schatting
         if b["soort"] == "Add":
             return len(("\n".join(t for _, t in b["hunks"][0]) + "\n").encode("utf-8"))
         tekst = huidig_t if huidig_t is not None else ""
         schatting = len(tekst.encode("utf-8"))
-        pos = 0
+        exact, pos = True, 0
         for h in b["hunks"]:
             oud = [t for k, t in h if k != "+"]
             nieuw = [t for k, t in h if k != "-"]
             plus = sum(len(t.encode("utf-8")) + 1 for k, t in h if k == "+")
             min_ = sum(len(t.encode("utf-8")) + 1 for k, t in h if k == "-")
             o, n = "\n".join(oud), "\n".join(nieuw)
-            i = tekst.find(o, pos) if o else -1
-            if o and i >= 0:
+            i = tekst.find(o, pos) if (exact and o) else -1
+            if i >= 0:
                 tekst = tekst[:i] + n + tekst[i + len(o):]
                 pos = i + len(n)
                 schatting = len(tekst.encode("utf-8"))
             else:
+                # geen passende context (of een hunk met alleen +regels): vanaf hier telt de som van + en -,
+                # ook voor de hunks erna
+                exact = False
                 schatting += plus - min_
-                tekst = None
-                break
-        return len(tekst.encode("utf-8")) if tekst is not None else schatting
+        return schatting
     doelen = []
     for b in bestanden:
         for pad in (b["bron"], b["doel"]):
@@ -233,9 +246,9 @@ if tool == "apply_patch":
                     doelen.append(pad)
         if b["soort"] == "Delete":
             continue
-        pad = b["doel"] or b["bron"]
-        rel = os.path.relpath(pad, vault_p)
-        if pad.endswith(".md") and not rel.startswith("..") and rel != "lead.md" and rel.split(os.sep)[0] not in ("archief", "emb-gemma"):
+        pad = os.path.realpath(b["doel"] or b["bron"])
+        rel = os.path.relpath(pad, vault_p).lower()
+        if pad.lower().endswith(".md") and not rel.startswith("..") and rel != "lead.md" and rel.split(os.sep)[0] not in ("archief", "emb-gemma"):
             try:
                 grens = int(float(os.environ.get("LAB_VAULT_MAX_KB", "40")) * 1024)
             except ValueError:
