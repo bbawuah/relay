@@ -1095,6 +1095,19 @@ describe("grenzen.sh: apply_patch van Codex", () => {
       expect(run(wrap(add(join(ch, "config.toml"))), WERK, null, {}, { CODEX_HOME: ch }).code).toBe(2);
       expect(run(wrap(add(join(ch, "config.toml")))).code).toBe(0);
     });
+    test("N1: .git in andere hoofdletters, en een pad in kleine letters, tellen als hoofdcheckout (APFS)", () => {
+      expect(run(wrap(add(".GIT/hooks/pre-push")), HOOFD, "werker").code).toBe(2);
+      expect(run(wrap(add(`${HOOFD.toLowerCase()}/.git/config`)), WORKTREE, "werker").code).toBe(2);
+      expect(run(wrap(add(`${HOOFD.toUpperCase()}/.Git/hooks/x`)), WORKTREE, "werker").code).toBe(2);
+      expect(run(wrap(add(`${HOOFD.toLowerCase()}/nieuw.txt`)), WORKTREE, "werker").code).toBe(2);
+      expect(run(wrap(add(`${HOOFD.toLowerCase()}/.git/config`)), WORKTREE, "lead").code).toBe(0);
+    });
+    test("N2: een min-regel die niet exact matcht telt niet als krimp (38 KB + fuzzy min van 5000 en plus van 5500)", () => {
+      writeFileSync(join(VAULT, "fuzzy.md"), "a\n" + "q\n".repeat(19500));
+      expect(run(wrap(upd(join(VAULT, "fuzzy.md"), `@@\n-${"e".repeat(5000)}\n+${"w".repeat(5500)}`))).code).toBe(2);
+      // exact matchende min-regel blijft krimp
+      expect(run(wrap(upd(join(VAULT, "fuzzy.md"), "@@\n-a\n+b"))).code).toBe(0);
+    });
     test("een symlink naar de vault omzeilt de grootteregel niet", () => {
       symlinkSync(VAULT, join(WERK, "vaultlink"));
       expect(run(wrap(add("vaultlink/via-link.md", GROOT))).code).toBe(2);

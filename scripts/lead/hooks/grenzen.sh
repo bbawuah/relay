@@ -103,11 +103,13 @@ import subprocess
 # Zonder dat tweede kenmerk zou ook een eigen clone (zelfde vorm) als hoofdcheckout tellen.
 hoofd_paden = {os.path.realpath(os.path.expanduser(x)) for x in
                os.environ.get("LAB_HOOFDCHECKOUT", "~/Desktop/LAB-BAWUAH/lab-bawuah").split(":") if x}
+hoofd_lc = {h.lower() for h in hoofd_paden}
 hoofd_cache = {}
 def is_hoofd(pad):
     # binnen <hoofdcheckout>/.git (hooks, config) faalt git rev-parse --show-toplevel: dat telt ook als hoofdcheckout
-    echt = os.path.realpath(pad)
-    for h in hoofd_paden:
+    # hoofdletterongevoelig (APFS): realpath herstelt de hoofdletters niet, dus alles in kleine letters
+    echt = os.path.realpath(pad).lower()
+    for h in hoofd_lc:
         g = os.path.join(h, ".git")
         if echt == g or echt.startswith(g + os.sep):
             return True
@@ -122,7 +124,7 @@ def is_hoofd(pad):
         regels = r.stdout.split("\n")
         if r.returncode == 0 and len(regels) >= 3 and regels[0] and regels[1] and regels[2]:
             gd, cd, top = (os.path.realpath(os.path.join(pad, x)) for x in regels[:3])
-            uit = gd == cd and top in hoofd_paden
+            uit = gd == cd and top.lower() in hoofd_lc
     except Exception:
         uit = False
     hoofd_cache[pad] = uit
@@ -137,7 +139,7 @@ def is_hoofd(pad):
 #   - een agent (LAB_AGENT_ROL anders dan lead, of een subagent) schrijft niet in de gedeelde hoofdcheckout
 # Een patch die niet te lezen is (geen Begin/End, onbekende kop, regel zonder + - spatie) wordt geweigerd.
 # Niet gedekt: `apply_patch` als shellcommando (Bash), een symlink die pas na de patch ontstaat, en
-# een Update waarvan de context niet in het bestand staat (dan telt de som van + en - regels).
+# een Update waarvan de context niet in het bestand staat (dan telt de som van de + regels).
 if tool == "apply_patch":
     inv = ti.get("command")
     if not isinstance(inv, str):
@@ -223,7 +225,6 @@ if tool == "apply_patch":
             oud = [t for k, t in h if k != "+"]
             nieuw = [t for k, t in h if k != "-"]
             plus = sum(len(t.encode("utf-8")) + 1 for k, t in h if k == "+")
-            min_ = sum(len(t.encode("utf-8")) + 1 for k, t in h if k == "-")
             o, n = "\n".join(oud), "\n".join(nieuw)
             i = tekst.find(o, pos) if (exact and o) else -1
             if i >= 0:
@@ -231,10 +232,12 @@ if tool == "apply_patch":
                 pos = i + len(n)
                 schatting = len(tekst.encode("utf-8"))
             else:
-                # geen passende context (of een hunk met alleen +regels): vanaf hier telt de som van + en -,
+                # geen passende context (of een hunk met alleen +regels): vanaf hier telt de som van de + regels,
                 # ook voor de hunks erna
                 exact = False
-                schatting += plus - min_
+                # min-regels tellen niet mee: Codex past met een fuzzy match (spaties aan het eind), dus een
+                # niet-exacte min-regel kan niet als krimp gelden (strenger)
+                schatting += plus
         return schatting
     doelen = []
     for b in bestanden:
