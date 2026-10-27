@@ -9,8 +9,10 @@
 // Er worden nooit prompttekst, tool-invoer, antwoorden of transcripts bewaard.
 
 import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { createHash } from "node:crypto";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import type { PeerVelden } from "../peers/types";
 
 export type Toestand = "bezig" | "idle" | "goedkeuring" | "klaar" | "vrij" | "vastgelopen" | "weg";
 
@@ -42,7 +44,7 @@ export type Rec = {
   spawn_id?: string;
   /** Gezet door hernoem.ts: naam/lead zijn bewust gewijzigd en gaan mee bij /clear. */
   hernoemd?: boolean;
-};
+} & PeerVelden;
 
 export type Omgeving = { [k: string]: string | undefined };
 
@@ -325,4 +327,28 @@ export function voorgangerInPane(staat: string, pane: string, isLead: boolean, e
     (r) => r.soort === "sessie" && r.id !== eigenId && r.pane === pane && (r.rol === "lead") === isLead && r.hernoemd === true && (r.toestand !== "weg" || (r.einde !== null && nu - r.einde < 60_000)),
   );
   return k.sort((a, b) => b.start - a.start)[0] ?? null;
+}
+
+// ---- identiteit per checkout (T3-threads van Codex hebben geen eigen omgeving) ----
+
+export type Identiteit = { naam: string; rol: string; lead: string; opdracht: string; spawn_id: string };
+
+export function identiteitPad(staat: string, cwd: string): string {
+  return join(staat, "identiteit", `${createHash("sha256").update(cwd).digest("hex").slice(0, 24)}.json`);
+}
+
+/** Door spawn.sh --t3 --vendor codex: de identiteit van de sessie in deze checkout, voor codex-wrap. */
+export function schrijfIdentiteit(staat: string, cwd: string, i: Identiteit): void {
+  mkdirSync(join(staat, "identiteit"), { recursive: true, mode: 0o700 });
+  schrijfAtomair(identiteitPad(staat, cwd), `${JSON.stringify(i)}\n`);
+}
+
+export function leesIdentiteit(staat: string, cwd: string): Identiteit | null {
+  try {
+    const o = JSON.parse(readFileSync(identiteitPad(staat, cwd), "utf8"));
+    if (!o || typeof o !== "object" || typeof o.naam !== "string" || typeof o.rol !== "string" || !o.rol) return null;
+    return { naam: o.naam, rol: o.rol, lead: String(o.lead ?? ""), opdracht: String(o.opdracht ?? ""), spawn_id: String(o.spawn_id ?? "") };
+  } catch {
+    return null;
+  }
 }

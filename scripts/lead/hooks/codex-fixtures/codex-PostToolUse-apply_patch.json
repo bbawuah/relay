@@ -1,0 +1,15 @@
+{
+  "session_id": "01a17d55-99c5-7432-805a-5e1a6057b280",
+  "turn_id": "01a17d55-9b00-7e81-a2cc-a47260540011",
+  "transcript_path": "/private/tmp/peerbus-spike.ozqJbD/codexhome/sessions/2026/10/27/rollout-2026-10-27T13-28-44-01a17d55-99c5-7432-805a-5e1a6057b280.jsonl",
+  "cwd": "/private/tmp/peerbus-spike.ozqJbD/w1",
+  "hook_event_name": "PostToolUse",
+  "model": "gpt-6-luna",
+  "permission_mode": "bypassPermissions",
+  "tool_name": "apply_patch",
+  "tool_input": {
+    "command": "*** Begin Patch\n*** Add File: y.txt\n+hi\n*** End Patch"
+  },
+  "tool_response": "Exit code: 0\nWall time: 0 seconds\nOutput:\nSuccess. Updated the following files:\nA y.txt\n",
+  "tool_use_id": "exec-9d6df586-2e14-4ce1-9d98-d9d75e5505c9"
+}
