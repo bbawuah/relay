@@ -39,6 +39,13 @@ def weiger(reden):
     print(f"Geweigerd door grenzen.sh: {reden}", file=sys.stderr)
     sys.exit(2)
 
+def procmap():
+    # terugval als de hookinvoer geen cwd heeft; een onleesbare procesmap mag de hook niet laten crashen
+    try:
+        return os.getcwd()
+    except OSError:
+        return "/"
+
 SLEUTEL = re.compile(r"(\.config/(klaarover|douane|agentwerkbank)\b|(^|[/\s'\"])\.env(\.[A-Za-z0-9_-]+)?($|[\s'\"]))")
 LEES = re.compile(r"(^|[;&|(\s])(cat|head|tail|less|more|bat|strings|xxd|od|grep|rg|awk|sed|source|\.|base64|cp|scp|open)\s")
 
@@ -151,7 +158,7 @@ if tool == "apply_patch":
     regels = inv.strip("\n").replace("\r\n", "\n").split("\n")
     if regels[0].strip() != "*** Begin Patch" or regels[-1].strip() != "*** End Patch":
         patch_weiger("Begin Patch of End Patch ontbreekt")
-    cwd_p = str(d.get("cwd") or os.getcwd())
+    cwd_p = str(d.get("cwd") or procmap())
     def patch_pad(x):
         x = x.strip()
         if not x:
@@ -579,7 +586,7 @@ if tool == "Bash":
         return None
     merge_aan = os.environ.get("LAB_GRENS_MERGE") == "1" or os.path.exists(os.path.expanduser("~/.claude/hooks/grenzen.merge"))
     is_subagent = bool(d.get("agent_id") or d.get("agent_type"))
-    basis = str(d.get("cwd") or os.getcwd())
+    basis = str(d.get("cwd") or procmap())
     hier = basis
     jump = False
     for seg in re.split(r"&&|\|\||[;&|()\n`]|\$\(", cz):
@@ -1127,7 +1134,10 @@ if tool == "Bash":
 sys.exit(0)
 PY
 # De invoer van de hook (stdin) gaat rechtstreeks naar python; de code staat in argv.
-/usr/bin/python3 -c "$code"
+# -I (geïsoleerd): de werkmap komt niet op sys.path. Anders faalt elke import met PermissionError als de cwd van de sessie
+# onleesbaar is (dan weigert de hook ALLES), en kan een json.py in de cwd als hook-code draaien. De cwd van de hookinvoer
+# (d["cwd"]) is wat de logica gebruikt, niet de procesmap.
+/usr/bin/python3 -I -c "$code"
 status=$?
 # 0 = toestaan, 2 = bewuste weigering; elke andere status is een eigen fout: dicht (ook weigeren).
 case $status in
