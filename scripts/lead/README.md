@@ -43,6 +43,11 @@ Veel sessies tegelijk: `spawn.sh --meerdere lijst.txt --lead <n> [--model ..] [-
 | `--vendor claude\|codex` | Standaard `claude`. `codex` start `codex -C <map>` (met `--model` als Codex-model, `-m`), zie "`--vendor codex`" hieronder. Sluit `--sublead` uit. |
 | `--droog` | Alleen tonen. |
 
+Twee weigeringen vóór de start (voor elke vendor, ook met `--droog`; 27 okt: de peerbus-demo verloor twee keer vier rondes):
+
+- **Checkout loopt achter.** Heeft `origin/main` een commit in `scripts/lead/` die de checkout van deze `spawn.sh` mist, dan weigert spawn met `spawn: scripts/lead/ in <checkout> loopt N commit(s) achter op origin/main …; draai: git -C <checkout> pull --ff-only`. Een oudere `spawn.sh` start werkers zonder de nieuwste grenzen (Codex zonder netwerk-uit-sandbox, #683/#692). Spawn haalt eerst `origin/main` op (10 s); mislukt dat, dan een waarschuwing en vergelijken met de lokale `origin/main`. Geen repo of geen `origin/main`: waarschuwing en door. Een tak die vooruit loopt in `scripts/lead/` is geen achterstand. Bewust achterlopen (een dev op een tak): `LAB_SPAWN_NIET_ACTUEEL_OK=1` (waarschuwing). Test-haken: `LAB_SPAWN_REPO`, `LAB_SPAWN_FETCH_S`.
+- **Onbekende lead.** Staat `--lead` (of `LAB_LEAD_NAAM`) niet als levend lead-record in het register, dan weigert spawn: een rapport van de werker (`peers.send`) zou "onbekend" geven en verloren gaan. De melding noemt het herstel: start de lead met de shell-functie `lead` (zet `LAB_AGENT_ROL=lead` en de naam) of herstart met `LAB_LEAD=1 LAB_AGENT_ROL=lead LAB_AGENT_NAAM=<naam> LAB_LEAD_NAAM=<naam> claude --resume <id> -n <naam>`. Zonder register (map `<staat>/register` ontbreekt) en bij een fout in de controle zelf geen weigering (fail-open, met waarschuwing). Een sub-lead noemt de echte lead als `--lead` en valt dus onder dezelfde toets.
+
 Wat het doet:
 
 1. Start `agent-spawn.sh window <map> "env LAB_AGENT_NAAM=<naam> LAB_AGENT_ROL=<agent|sublead|vervolg> LAB_LEAD_NAAM=<lead> LAB_OPDRACHT=<abs pad> claude -n <naam> [--model m]"`. Het voorvoegsel is de identiteit voor de hooks (zie "Hooks en `lead status`"); het opdrachtpad staat in het voorvoegsel (met spatie tussen enkele quotes), de startzin staat niet in de quotes van het commando. Direct na het starten zet het script `tmux set -p -t <pane> @agent_rol <rol>` en `@agent_naam <naam>`.

@@ -48,6 +48,12 @@ beforeEach(() => {
     `#!/usr/bin/env bash\nprintf '${TEKST}'\nsleep "$(cat "${dir}/trust-sec")"\n[ -f "${dir}/geen-clear" ] || clear\nprintf 'auto mode\\n'\nprintf '│ ❯ \\n'\nIFS= read -r zin\nprintf '%s\\n' "$zin" > "${dir}/getypt.txt"\nprintf '⏺ Read(opdracht.md)\\n'\nsleep 30\n`,
   );
   maak("nep-agent-spawn.sh", `#!/usr/bin/env bash\ntmux new-window -d -P -F '#{pane_id}' "${join(bin, "pane.sh")}"\n`);
+  // Wegwerp-repo voor de actualiteitscontrole van spawn.sh (origin/main = HEAD, geen remote: geen netwerk, geen waarschuwing)
+  mkdirSync(join(dir, "repo"));
+  const g = (...a: string[]) => Bun.spawnSync(["git", "-c", "user.name=t", "-c", "user.email=t@t", ...a], { cwd: join(dir, "repo"), env: { ...schoon(), GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_SYSTEM: "/dev/null" } });
+  g("init", "-q", "-b", "main");
+  g("commit", "-q", "--allow-empty", "-m", "begin");
+  g("update-ref", "refs/remotes/origin/main", "HEAD");
   expect(tmux("new-session", "-d", "-x", "100", "-y", "30", "sleep 120").exitCode).toBe(0);
 });
 
@@ -73,6 +79,7 @@ const draai = (extra: Record<string, string>, args: string[] = []) => {
       LAB_SPAWN_WACHT: "30",
       LAB_SPAWN_BEWIJS: "30",
       LAB_LEAD_NAAM: "",
+      LAB_SPAWN_REPO: join(dir, "repo"),
       LAB_LEAD_STAAT: join(dir, "staat"),
       LAB_CLAUDE_JSON: join(dir, "claude.json"),
       ...extra,
