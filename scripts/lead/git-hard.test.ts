@@ -1,9 +1,9 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { schoneEnv } from "../test-integriteit";
-import { GIT_HARD_OPTIES, gitArgs, gitHard, gitInWorktree, vertrouwdeWorktrees } from "./git-hard";
+import { GIT_HARD_OPTIES, geweigerdeAanroep, gitArgs, gitHard, gitInWorktree, vertrouwdeWorktrees } from "./git-hard";
 import { gitHardZonder } from "./git-hard.testhulp";
 import { gitInfo } from "./hooks/status";
 
@@ -35,7 +35,7 @@ const schrijfUitvoerbaar = (pad: string, tekst: string) => {
 const gemerkt = (pad: string) => existsSync(pad);
 
 beforeEach(() => {
-  dir = mkdtempSync(path.join(tmpdir(), "git-hard-"));
+  dir = realpathSync(mkdtempSync(path.join(tmpdir(), "git-hard-"))); // echt pad: de pin weigert paden met een symlink (macOS: /var → /private/var)
   markFsmonitor = path.join(dir, "MARK-FSMONITOR");
   markHook = path.join(dir, "MARK-HOOK");
   markFilter = path.join(dir, "MARK-FILTER");
@@ -68,6 +68,8 @@ beforeEach(() => {
   mkdirSync(path.join(wt, "sub"));
   writeFileSync(path.join(wt, "sub", ".git"), `gitdir: ${path.join(evil, ".git")}\n`);
   writeFileSync(path.join(wt, "sub", ".gitattributes"), "* filter=k\n");
+  // Een .gitmodules van de werker met ignore=none gaat boven -c diff.ignoreSubmodules=all; alleen de vlag op de opdrachtregel wint.
+  writeFileSync(path.join(wt, ".gitmodules"), '[submodule "sub"]\n\tpath = sub\n\turl = ./evil\n\tignore = none\n');
   writeFileSync(path.join(wt, "sub", "x"), "y\n"); // even lang als "x\n": git moet hashen (dus het filter draaien) om het verschil te zien
   rauw(wt, "update-index", "--add", "--cacheinfo", `160000,${rauw(evil, "rev-parse", "HEAD")},sub`);
   // De hook van de werker, relatief aan zijn worktree.
@@ -90,6 +92,7 @@ describe("de aanval uit de review (voorwaarde)", () => {
   for (const [naam, args] of [
     ["diff --stat", ["diff", "--stat"]],
     ["diff --quiet", ["diff", "--quiet"]],
+    ["diff HEAD", ["diff", "HEAD"]],
     ["commit -a", ["commit", "-a", "-q", "--allow-empty", "-m", "x"]],
     ["diff-index HEAD", ["diff-index", "HEAD"]],
   ] as const) {
@@ -133,7 +136,28 @@ describe("gitHard", () => {
     expect(gemerkt(markHook)).toBe(false);
   });
 
+  test("met een .gitmodules ignore=none: diff, diff HEAD en log -p laten geen filter-markeerbestand achter", () => {
+    gitHard(wt, ["diff", "--stat"]);
+    gitHard(wt, ["diff", "--quiet"]);
+    gitHard(wt, ["diff", "HEAD"]);
+    gitHard(wt, ["log", "-p", "-1"]);
+    expect(gemerkt(markFilter)).toBe(false);
+    expect(gemerkt(markFsmonitor)).toBe(false);
+  });
+
+  test("stash en describe --dirty worden geweigerd (126) en draaien niets; describe zonder --dirty mag", () => {
+    expect(gitHard(wt, ["stash"])).toMatchObject({ code: 126 });
+    expect(gitHard(wt, ["stash", "list"])).toMatchObject({ code: 126 });
+    expect(gitHard(wt, ["describe", "--dirty", "--always"])).toMatchObject({ code: 126 });
+    expect(gitHard(wt, ["describe", "--dirty=-x"])).toMatchObject({ code: 126 });
+    expect(gitInWorktree(hoofd, wt, ["stash"])).toMatchObject({ code: 126 });
+    expect(geweigerdeAanroep(["describe", "--always"])).toBeNull();
+    expect(gitHard(wt, ["describe", "--always"]).code).toBe(0);
+    expect(gemerkt(markFilter)).toBe(false);
+  });
+
   test("status en plumbing krijgen --ignore-submodules=all; andere subcommando's niet", () => {
+    expect(gitArgs(["diff", "--stat"]).slice(-3)).toEqual(["diff", "--ignore-submodules=all", "--stat"]);
     expect(gitArgs(["status", "--porcelain"]).slice(-3)).toEqual(["status", "--ignore-submodules=all", "--porcelain"]);
     expect(gitArgs(["diff-index", "HEAD"]).slice(-3)).toEqual(["diff-index", "--ignore-submodules=all", "HEAD"]);
     expect(gitArgs(["diff-files"])).toContain("--ignore-submodules=all");
@@ -233,6 +257,42 @@ describe("gitdir vastpinnen: een herschreven wt/.git telt niet", () => {
     expect(gemerkt(markFilter)).toBe(false);
   });
 
+  test("een herschreven <common>/worktrees/<n>/gitdir naar het pad van een andere worktree kaapt de pin niet (dubbel pad)", () => {
+    const wt2 = path.join(dir, "wt2");
+    rauw(hoofd, "worktree", "add", "-q", "-b", "tweede", wt2);
+    const wtGitdir = vertrouwdeWorktrees(hoofd).find((v) => v.wt === wt)!.gitdir;
+    writeFileSync(path.join(wtGitdir, "gitdir"), `${path.join(wt2, ".git")}\n`); // wt2 wijst nu naar twee gitdirs
+    expect(vertrouwdeWorktrees(hoofd).map((v) => path.basename(v.wt))).toEqual(["hoofd"]);
+    expect(gitInWorktree(hoofd, wt2, ["status", "--porcelain"])).toMatchObject({ code: 126 });
+    expect(gitInWorktree(hoofd, wt, ["status", "--porcelain"])).toMatchObject({ code: 126 });
+  });
+
+  test("een wt-map die door een symlink naar een andere worktree is vervangen wordt geweigerd", () => {
+    const wt2 = path.join(dir, "wt2");
+    rauw(hoofd, "worktree", "add", "-q", "-b", "tweede", wt2);
+    renameSync(wt, path.join(dir, "wt-weg"));
+    symlinkSync(wt2, wt);
+    // wt (symlink) en wt2 hebben nu hetzelfde echte pad: allebei vallen af (faalt dicht), alleen hoofd blijft
+    expect(vertrouwdeWorktrees(hoofd).map((v) => path.basename(v.wt))).toEqual(["hoofd"]);
+    expect(gitInWorktree(hoofd, wt, ["rev-parse", "--abbrev-ref", "HEAD"])).toMatchObject({ code: 126 });
+    expect(gitInWorktree(hoofd, wt2, ["rev-parse", "--abbrev-ref", "HEAD"])).toMatchObject({ code: 126 });
+  });
+
+  test("een gitdir-bestand dat niet exact naar <wt>/.git wijst telt niet mee", () => {
+    const wtGitdir = vertrouwdeWorktrees(hoofd).find((v) => v.wt === wt)!.gitdir;
+    writeFileSync(path.join(wtGitdir, "gitdir"), `${path.join(wt, "sub", ".git")}\n`);
+    expect(vertrouwdeWorktrees(hoofd).find((v) => v.wt === wt)).toBeUndefined();
+  });
+
+  test("extensions.worktreeConfig aan én een config.worktree van de worktree: geweigerd (126); zonder dat bestand niet", () => {
+    rauw(hoofd, "config", "extensions.worktreeConfig", "true");
+    const wtGitdir = vertrouwdeWorktrees(hoofd).find((v) => v.wt === wt)!.gitdir;
+    expect(gitInWorktree(hoofd, wt, ["rev-parse", "--abbrev-ref", "HEAD"]).code).toBe(0);
+    writeFileSync(path.join(wtGitdir, "config.worktree"), `[filter "k"]\n\tclean = ${path.join(dir, "filter2.sh")}\n`);
+    expect(gitInWorktree(hoofd, wt, ["status", "--porcelain"])).toMatchObject({ code: 126 });
+    expect(gemerkt(markFilter)).toBe(false);
+  });
+
   test("vertrouwdeWorktrees: hoofd en wt, met de gitdir uit <common>/worktrees/<naam>", () => {
     const lijst = vertrouwdeWorktrees(hoofd);
     expect(lijst.map((v) => path.basename(v.wt)).sort()).toEqual(["hoofd", "wt"]);
@@ -242,8 +302,8 @@ describe("gitdir vastpinnen: een herschreven wt/.git telt niet", () => {
 });
 
 describe("mutatietest: de test is rood als de helper een optie of de pin mist", () => {
-  test("zonder -c core.fsmonitor= verschijnt het markeerbestand wel (diff, waar --ignore-submodules niet helpt)", () => {
-    gitHardZonder(wt, ["diff", "--stat"], ["core.fsmonitor=", "diff.ignoreSubmodules=all"]);
+  test("zonder -c core.fsmonitor= verschijnt het markeerbestand wel (diff, met de ignore-submodules-lagen ook weg)", () => {
+    gitHardZonder(wt, ["diff", "--stat"], ["core.fsmonitor=", "diff.ignoreSubmodules=all", "--ignore-submodules=all"]);
     expect(gemerkt(markFsmonitor)).toBe(true);
   });
 
@@ -262,11 +322,18 @@ describe("mutatietest: de test is rood als de helper een optie of de pin mist", 
     expect(gemerkt(markHook)).toBe(true);
   });
 
-  test("zonder -c diff.ignoreSubmodules=all draaien het filter (diff, commit -a) en de fsmonitor wel, ook als de fsmonitor-optie er is", () => {
+  test("zonder -c diff.ignoreSubmodules=all draait het filter bij commit -a wel; bij diff houdt de vlag het schoon (diepte)", () => {
     gitHardZonder(wt, ["diff", "--stat"], ["diff.ignoreSubmodules=all"]);
+    expect(gemerkt(markFilter)).toBe(false);
+    gitHardZonder(wt, ["commit", "-a", "-q", "--allow-empty", "-m", "x"], ["diff.ignoreSubmodules=all"], { env: env() });
+    expect(gemerkt(markFilter)).toBe(true);
+  });
+
+  test("diff zonder --ignore-submodules=all én zonder de config-sleutel draait het filter wel (.gitmodules ignore=none wint van de sleutel)", () => {
+    gitHardZonder(wt, ["diff", "--stat"], ["diff.ignoreSubmodules=all", "--ignore-submodules=all"]);
     expect(gemerkt(markFilter)).toBe(true);
     rmSync(markFilter, { force: true });
-    gitHardZonder(wt, ["commit", "-a", "-q", "--allow-empty", "-m", "x"], ["diff.ignoreSubmodules=all"], { env: env() });
+    gitHardZonder(wt, ["diff", "--stat"], ["--ignore-submodules=all"]); // alleen de sleutel: de .gitmodules wint, dus de vlag is nodig
     expect(gemerkt(markFilter)).toBe(true);
   });
 
@@ -310,15 +377,20 @@ describe("bronscan: git in de lead-tooling loopt via de helper", () => {
     { bestand: "push.sh", bevat: "", reden: "draait in de worktree van wie pusht en zet daar bewust de hooks (pre-push-poort) aan; lead en Brian draaien push.sh nooit in een worktree van een werker (AGENTS.md)" },
     { bestand: "merge.sh", bevat: "git patch-id", reden: "leest een diff van stdin, geen repo of werkmap" },
     { bestand: "git-hard.testhulp.ts", bevat: "", reden: "testhulp van deze test, bouwt zelf de argv met GIT_HARD_OPTIES" },
-    { bestand: "vaste-cyclus.js", bevat: "", reden: "tekst in een prompt voor een sessie, geen aanroep" },
-    { bestand: "status.sh", bevat: "", reden: "roept alleen status.ts aan; de tekst noemt git niet als commando" },
+    { bestand: "vaste-cyclus.js", bevat: "git log origin/main..HEAD", reden: "tekst in een prompt voor een sessie, geen aanroep" },
+    { bestand: "vaste-cyclus.js", bevat: "git show origin/", reden: "tekst in een prompt voor een sessie, geen aanroep" },
     { bestand: "hooks/status.ts", bevat: 'kop.push("git")', reden: "kolomkop van de tabel, geen aanroep" },
     { bestand: "installeer-grens.ts", bevat: "throw new Error(`git ${args", reden: "foutmelding met de argumenten van een aanroep die al via gitArgs liep" },
     { bestand: "spawn.sh", bevat: "lees verder alleen git log", reden: "tekst in de opdrachtzin voor de sessie, geen aanroep" },
   ];
   /** Bestanden waar "git" als gegeven voorkomt (commandolijsten, meldingen): daar tellen alleen Python-aanroepen en een regel die met `git ` begint. */
   const ALLEEN_AANROEPEN = ["hooks/grenzen.sh"];
-  const uitgezonderd = (pad: string, tekst: string) => UITZONDERING.some((u) => u.bestand === rel(pad) && tekst.includes(u.bevat));
+  const treffers = new Map<(typeof UITZONDERING)[number], number>();
+  const uitgezonderd = (pad: string, tekst: string) => {
+    const u = UITZONDERING.find((x) => x.bestand === rel(pad) && tekst.includes(x.bevat));
+    if (u) treffers.set(u, (treffers.get(u) ?? 0) + 1);
+    return !!u;
+  };
 
   const TS_GIT = /["'`]git(["'`\s]|$)|\$`\s*git\b/;
   test("de TS-scan vangt de vormen die de eerste versie miste", () => {
@@ -328,7 +400,7 @@ describe("bronscan: git in de lead-tooling loopt via de helper", () => {
     for (const r of ["const gitHard = 1", "// git status", "gitArgs(args)"]) expect(TS_GIT.test(r), r).toBe(false);
   });
 
-  test("elke string 'git' in TS/JS-bron (alle aanroepvormen) staat in git-hard.ts of op een regel met gitArgs(", () => {
+  const scanTs = (): string[] => {
     const fout: string[] = [];
     for (const pad of bronnen(LEAD, /\.(ts|js)$/)) {
       if (path.basename(pad) === "git-hard.ts") continue;
@@ -339,10 +411,13 @@ describe("bronscan: git in de lead-tooling loopt via de helper", () => {
         fout.push(`${rel(pad)}:${nr}: ${tekst.trim()}`);
       }
     }
-    expect(fout).toEqual([]);
+    return fout;
+  };
+  test("elke string 'git' in TS/JS-bron (alle aanroepvormen) staat in git-hard.ts of op een regel met gitArgs(", () => {
+    expect(scanTs()).toEqual([]);
   });
 
-  test("elke git-aanroep in een .sh of .py in scripts/lead draagt de vier opties, of staat als uitzondering met reden in deze test", () => {
+  const scanSh = (): { fout: string[]; gezien: number } => {
     const fout: string[] = [];
     let gezien = 0;
     for (const pad of bronnen(LEAD, /\.(sh|py)$/)) {
@@ -359,6 +434,10 @@ describe("bronscan: git in de lead-tooling loopt via de helper", () => {
         if (!OPTIES.every((o) => tekst.includes(o))) fout.push(`${rel(pad)}:${nr}: ${tekst.trim()}`);
       }
     }
+    return { fout, gezien };
+  };
+  test("elke git-aanroep in een .sh of .py in scripts/lead draagt de vier opties, of staat als uitzondering met reden in deze test", () => {
+    const { fout, gezien } = scanSh();
     expect(gezien).toBeGreaterThanOrEqual(5);
     expect(fout).toEqual([]);
   });
@@ -368,5 +447,11 @@ describe("bronscan: git in de lead-tooling loopt via de helper", () => {
       expect(existsSync(path.join(LEAD, u.bestand)), u.bestand).toBe(true);
       expect(u.reden.trim().length).toBeGreaterThan(10);
     }
+    // elke uitzondering moet nog iets uitzonderen: een dode uitzondering is een gat voor een latere aanroep
+    treffers.clear();
+    scanTs();
+    scanSh();
+    const dood = UITZONDERING.filter((u) => !treffers.get(u)).map((u) => `${u.bestand}: "${u.bevat}"`);
+    expect(dood, `uitzonderingen zonder treffer: ${dood.join("; ")}`).toEqual([]);
   });
 });

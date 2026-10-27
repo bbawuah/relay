@@ -19,11 +19,24 @@ export const GIT_HARD_OPTIES = [
   "-c", "diff.ignoreSubmodules=all",
 ];
 
-/** Plumbing leest `diff.ignoreSubmodules` niet; die krijgt de vlag zelf. */
-const PLUMBING_MET_IGNORE = new Set(["diff-index", "diff-files", "diff-tree"]);
-/** Subcommando's waar `--ignore-submodules=all` zelf bij hoort (status kent de config-sleutel ook, dit is de tweede laag). */
+/**
+ * Plumbing leest `diff.ignoreSubmodules` niet; die krijgt de vlag zelf. Porcelain `diff` ook: een `.gitmodules` van de werker met
+ * `ignore=none` gaat boven de config-sleutel, alleen de vlag op de opdrachtregel gaat daar weer boven.
+ */
+const MET_IGNORE = new Set(["status", "diff", "diff-index", "diff-files", "diff-tree"]);
 export const IGNORE_VLAG = "--ignore-submodules=all";
-export const heeftIgnoreVlag = (sub: string): boolean => sub === "status" || PLUMBING_MET_IGNORE.has(sub);
+export const heeftIgnoreVlag = (sub: string): boolean => MET_IGNORE.has(sub);
+
+/**
+ * Wat de helper niet draait: `stash` en `describe --dirty` kijken in submodules zonder dat de vlag of de config-sleutel dat
+ * tegenhoudt (een `.gitmodules` met `ignore=none` wint), dus het clean-filter van de werker zou draaien. Geeft de reden, of null.
+ */
+export function geweigerdeAanroep(args: string[]): string | null {
+  const sub = args[0];
+  if (sub === "stash") return "git stash wordt niet gehard (kijkt in submodules); doe het niet in een map van een werker";
+  if (sub === "describe" && args.some((a) => a === "--dirty" || a.startsWith("--dirty="))) return "git describe --dirty wordt niet gehard (kijkt in submodules)";
+  return null;
+}
 
 export type GitUitslag = { code: number; uit: string; fout: string };
 export type GitOpties = {
@@ -51,6 +64,8 @@ function draai(argv: string[], opties: GitOpties): GitUitslag {
 
 /** Draait `git -C <cwd> <args>` gehard. `cwd` mag ontbreken (dan de huidige map). Gooit niet. Voor mappen die NIET van een werker zijn (de repo van de lead zelf). */
 export function gitHard(cwd: string | undefined, args: string[], opties: GitOpties = {}): GitUitslag {
+  const nee = geweigerdeAanroep(args);
+  if (nee) return { code: 126, uit: "", fout: `geweigerd: ${nee}` };
   return draai([...(cwd ? ["-C", cwd] : []), ...gitArgs(args, opties)], opties);
 }
 
@@ -67,6 +82,9 @@ const echt = (p: string): string => {
 /**
  * De worktrees van de repo van de lead, met hun gitdir, uit `git worktree list --porcelain` en de `gitdir`-bestanden in
  * `<common>/worktrees/*` (alles aan de kant van de lead, niet uit `wt/.git`). `root` is de eigen repo van de lead.
+ * Een worktree telt alleen mee als: zijn pad gelijk is aan zijn realpath (geen symlink), dat pad maar één keer voorkomt (in de
+ * lijst én onder de gitdir-bestanden: een werker kan `<common>/worktrees/<n>/gitdir` herschrijven naar het pad van een ander) en
+ * `<gitdir>/gitdir` precies terugwijst naar `<wt>/.git`.
  */
 export function vertrouwdeWorktrees(root: string, opties: GitOpties = {}): Vertrouwd[] {
   const c = gitHard(root, ["rev-parse", "--git-common-dir"], opties);
@@ -74,22 +92,29 @@ export function vertrouwdeWorktrees(root: string, opties: GitOpties = {}): Vertr
   const common = echt(path.resolve(root, c.uit));
   const l = gitHard(root, ["worktree", "list", "--porcelain"], opties);
   if (l.code !== 0) return [];
-  const paden = l.uit.split("\n").filter((r) => r.startsWith("worktree ")).map((r) => echt(r.slice("worktree ".length)));
-  const gitdirs = new Map<string, string>();
+  const paden = l.uit.split("\n").filter((r) => r.startsWith("worktree ")).map((r) => r.slice("worktree ".length));
+  const telLijst = new Map<string, number>();
+  for (const r of paden) telLijst.set(echt(r), (telLijst.get(echt(r)) ?? 0) + 1);
+  const gitdirs = new Map<string, { gitdir: string; doel: string }[]>();
   const wmap = path.join(common, "worktrees");
   if (existsSync(wmap)) {
     for (const naam of readdirSync(wmap)) {
       try {
         const doel = readFileSync(path.join(wmap, naam, "gitdir"), "utf8").trim(); // <wt>/.git
-        gitdirs.set(echt(path.dirname(doel)), path.join(wmap, naam));
+        const sleutel = echt(path.dirname(doel));
+        gitdirs.set(sleutel, [...(gitdirs.get(sleutel) ?? []), { gitdir: path.join(wmap, naam), doel }]);
       } catch {
         // geen gitdir-bestand: niet vertrouwd
       }
     }
   }
   return paden.flatMap((wt) => {
-    const gitdir = wt === path.dirname(common) ? common : gitdirs.get(wt);
-    return gitdir ? [{ wt, gitdir, common }] : [];
+    const echtPad = echt(wt);
+    if (wt !== echtPad || telLijst.get(echtPad) !== 1) return [];
+    if (wt === path.dirname(common)) return gitdirs.has(echtPad) ? [] : [{ wt, gitdir: common, common }];
+    const g = gitdirs.get(echtPad);
+    if (!g || g.length !== 1 || g[0]!.doel !== path.join(wt, ".git")) return [];
+    return [{ wt, gitdir: g[0]!.gitdir, common }];
   });
 }
 
@@ -100,9 +125,14 @@ export function vertrouwdeWorktrees(root: string, opties: GitOpties = {}): Vertr
  */
 export function gitInWorktree(root: string, wt: string, args: string[], opties: GitOpties = {}): GitUitslag {
   const weiger = (fout: string): GitUitslag => ({ code: 126, uit: "", fout: `geweigerd: ${fout}` });
+  const nee = geweigerdeAanroep(args);
+  if (nee) return weiger(nee);
   const pad = echt(wt);
   const v = vertrouwdeWorktrees(root, opties).find((x) => x.wt === pad);
-  if (!v) return weiger(`${wt} staat niet in git worktree list van ${root}`);
+  if (!v) return weiger(`${wt} staat niet (eenduidig) in git worktree list van ${root}`);
+  // extensions.worktreeConfig laat <gitdir>/config.worktree meetellen, en die kan de werker schrijven
+  const wc = gitHard(root, ["config", "--type=bool", "--get", "extensions.worktreeConfig"], opties);
+  if (wc.uit === "true" && existsSync(path.join(v.gitdir, "config.worktree"))) return weiger(`extensions.worktreeConfig staat aan en ${path.join(v.gitdir, "config.worktree")} bestaat`);
   const vast = ["-C", v.wt, `--git-dir=${v.gitdir}`, `--work-tree=${v.wt}`];
   const gemeen = draai([...vast, ...gitArgs(["rev-parse", "--git-common-dir"])], opties);
   if (gemeen.code !== 0 || echt(path.resolve(v.gitdir, gemeen.uit)) !== v.common) return weiger(`${wt} hoort niet bij de repo ${v.common}`);
