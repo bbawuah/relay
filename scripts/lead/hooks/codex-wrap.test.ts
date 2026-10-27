@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { chmodSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { schoneEnv as gitEnv } from "../../test-integriteit";
+import { schoneEnv } from "../../test-integriteit";
 import { IDENTITEIT_SLEUTELS, cwdUitInvoer, hookOmgeving, identiteitEnv } from "./codex-wrap";
 import { IDENTITEIT_MAX_MS, identiteitPad, leesIdentiteit, schrijfIdentiteit, ververseIdentiteit, wisIdentiteit } from "./register";
 
@@ -21,7 +21,7 @@ beforeEach(() => {
 afterEach(() => rmSync(dir, { recursive: true, force: true }));
 
 const ident = { naam: "cx1", rol: "agent", lead: "lead-x", opdracht: "/o/OPDRACHT.md", spawn_id: "sp-1", ts: Date.now(), t3_thread: "mcp:abc" };
-const schoneEnv = (extra: Record<string, string> = {}): Record<string, string> => ({ PATH: "/usr/bin:/bin", HOME: dir, LAB_LEAD_BUN: process.execPath, ...extra });
+const hookEnv = (extra: Record<string, string> = {}): Record<string, string> => ({ PATH: "/usr/bin:/bin", HOME: dir, LAB_LEAD_BUN: process.execPath, ...extra });
 
 function draai(env: Record<string, string>, invoer: object, cmd = ['echo "ROL=$LAB_AGENT_ROL NAAM=$LAB_AGENT_NAAM LEAD=$LAB_LEAD_NAAM T3=$LAB_T3_THREAD"; cat']) {
   const p = Bun.spawnSync(["/bin/sh", WRAP, "/bin/sh", "-c", ...cmd], { env, stdin: new TextEncoder().encode(JSON.stringify(invoer)), stdout: "pipe", stderr: "pipe" });
@@ -124,7 +124,7 @@ describe("codex-wrap.sh", () => {
   test("T3-thread zonder env: het commando krijgt LAB_AGENT_ROL en de rest uit de identiteit, en de invoer ongewijzigd", () => {
     schrijfIdentiteit(staat, werk, ident);
     const invoer = { cwd: join(werk, "sub"), hook_event_name: "PreToolUse" };
-    const r = draai(schoneEnv({ LAB_LEAD_STAAT: staat }), invoer);
+    const r = draai(hookEnv({ LAB_LEAD_STAAT: staat }), invoer);
     expect(r.code).toBe(0);
     expect(r.out).toContain("ROL=agent NAAM=cx1 LEAD=lead-x T3=mcp:abc");
     expect(r.out).toContain(JSON.stringify(invoer));
@@ -132,23 +132,23 @@ describe("codex-wrap.sh", () => {
 
   test("de identiteit uit het bestand wint van een verouderde daemon-omgeving (Codex-TUI: hooks erven de omgeving van de daemon)", () => {
     schrijfIdentiteit(staat, werk, { naam: "cx1", rol: "agent", lead: "lead-x", opdracht: "/o/OPDRACHT.md", spawn_id: "sp-1", ts: Date.now() });
-    const r = draai(schoneEnv({ LAB_LEAD_STAAT: staat, LAB_AGENT_ROL: "lead", LAB_AGENT_NAAM: "andere-sessie", LAB_LEAD_NAAM: "l", LAB_T3_THREAD: "oud" }), { cwd: werk });
+    const r = draai(hookEnv({ LAB_LEAD_STAAT: staat, LAB_AGENT_ROL: "lead", LAB_AGENT_NAAM: "andere-sessie", LAB_LEAD_NAAM: "l", LAB_T3_THREAD: "oud" }), { cwd: werk });
     expect(r.out).toContain("ROL=agent NAAM=cx1 LEAD=lead-x T3=\n");
   });
 
   test("Z2: zonder identiteit voor deze checkout gaan de identiteitssleutels uit de omgeving (die is van een andere sessie of van Brian zelf)", () => {
     schrijfIdentiteit(staat, werk, ident);
-    const r = draai(schoneEnv({ LAB_LEAD_STAAT: staat, LAB_AGENT_ROL: "sublead", LAB_AGENT_NAAM: "eigen", LAB_LEAD_NAAM: "l" }), { cwd: join(dir, "andere") });
+    const r = draai(hookEnv({ LAB_LEAD_STAAT: staat, LAB_AGENT_ROL: "sublead", LAB_AGENT_NAAM: "eigen", LAB_LEAD_NAAM: "l" }), { cwd: join(dir, "andere") });
     expect(r.out).toContain("ROL= NAAM= LEAD= T3=");
   });
 
   test("zonder identiteit draait het commando ongewijzigd (grenzen.sh moet ook zonder rol werken); exit 2 en stderr gaan door", () => {
-    const r = draai(schoneEnv({ LAB_LEAD_STAAT: staat }), { cwd: werk }, ['echo "ROL=[$LAB_AGENT_ROL]"; echo geweigerd >&2; exit 2']);
+    const r = draai(hookEnv({ LAB_LEAD_STAAT: staat }), { cwd: werk }, ['echo "ROL=[$LAB_AGENT_ROL]"; echo geweigerd >&2; exit 2']);
     expect(r.code).toBe(2);
     expect(r.out).toContain("ROL=[]");
     expect(r.err).toContain("geweigerd");
     mkdirSync(join(staat, "identiteit"), { recursive: true });
-    expect(draai(schoneEnv({ LAB_LEAD_STAAT: staat }), { cwd: werk }, ['echo "ROL=[$LAB_AGENT_ROL]"']).out).toContain("ROL=[]");
+    expect(draai(hookEnv({ LAB_LEAD_STAAT: staat }), { cwd: werk }, ['echo "ROL=[$LAB_AGENT_ROL]"']).out).toContain("ROL=[]");
   });
 
   test("Z5: zonder bun faalt de wrapper luid bij PreToolUse (exit 2, geen commando) en is hij stil bij andere events", () => {
@@ -167,8 +167,7 @@ describe("codex-wrap.sh", () => {
 describe("M1: de rol uit het identiteitsbestand komt aan bij grenzen.sh", () => {
   const BASIS = () => join(dir, "repos");
   function git(cwd: string, ...args: string[]) {
-    const env = { ...gitEnv(), GIT_AUTHOR_NAME: "t", GIT_AUTHOR_EMAIL: "t@t", GIT_COMMITTER_NAME: "t", GIT_COMMITTER_EMAIL: "t@t" };
-    const p = Bun.spawnSync(["git", "-C", cwd, ...args], { env, stdout: "pipe", stderr: "pipe" });
+    const p = Bun.spawnSync(["git", "-C", cwd, ...args], { env: { ...schoneEnv(), GIT_AUTHOR_NAME: "t", GIT_AUTHOR_EMAIL: "t@t", GIT_COMMITTER_NAME: "t", GIT_COMMITTER_EMAIL: "t@t" }, stdout: "pipe", stderr: "pipe" });
     if (p.exitCode !== 0) throw new Error(`git ${args.join(" ")}: ${p.stderr.toString()}`);
   }
   test("een Codex-hook zonder LAB_AGENT_ROL in zijn eigen omgeving krijgt de rol uit de identiteit: git fetch in de hoofdcheckout wordt geweigerd; zonder identiteit niet", () => {
