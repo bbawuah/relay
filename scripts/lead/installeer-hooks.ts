@@ -20,30 +20,20 @@
 import { chmodSync, copyFileSync, existsSync, mkdirSync, readFileSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, dirname, isAbsolute, join, resolve } from "node:path";
+import { beleid } from "./beleid/beleid";
+import { MERK, WEKKER_TIMEOUT, claudeSpecs, commando, genereer, nieuweHooks as nieuweHooksUitBron } from "./beleid/claude";
 import { peersKopieen } from "./hooks/peers-kopie";
 
-export const MERK = "lab-lead-hooks/hook.sh";
+export { MERK, WEKKER_TIMEOUT, commando };
 export const BESTANDEN = ["hook.sh", "hook.ts", "register.ts", "codex-adapter.ts"];
-export const WEKKER_TIMEOUT = 1900;
 
-type Hook = { type?: string; command?: string; timeout?: number; asyncRewake?: boolean; [k: string]: unknown };
-type Groep = { matcher?: string; hooks?: Hook[]; [k: string]: unknown };
 type Json = { [k: string]: unknown };
 
-type EventSpec = { event: string; matcher?: string; timeout: number };
-export const EVENTS: EventSpec[] = [
-  { event: "SessionStart", matcher: "startup|clear|resume", timeout: 5 },
-  { event: "UserPromptSubmit", timeout: 5 },
-  { event: "PreToolUse", matcher: "*", timeout: 5 },
-  // SendMessage en peers.send zijn het rapport (H4); WebFetch, WebSearch en MCP-tools zetten de herkomst op extern.
-  { event: "PostToolUse", matcher: "SendMessage|WebFetch|WebSearch|mcp__.*", timeout: 5 },
-  { event: "Notification", matcher: "permission_prompt|idle_prompt", timeout: 5 },
-  { event: "Stop", timeout: 5 },
-  { event: "StopFailure", timeout: 5 },
-  { event: "SubagentStart", timeout: 5 },
-  { event: "SubagentStop", timeout: 5 },
-  { event: "SessionEnd", timeout: 1 },
-];
+/** De events die de lead-hooks krijgen, uit de bron (beleid/beleid.ts) vertaald voor Claude. */
+export type EventSpec = { event: string; matcher?: string; timeout: number };
+export const EVENTS: EventSpec[] = claudeSpecs(beleid, {})
+  .filter((s) => s.hook.script === "lead-hook")
+  .map(({ event, matcher, timeout }) => ({ event, ...(matcher === undefined ? {} : { matcher }), timeout }));
 
 export type Opties = {
   droog: boolean;
@@ -58,62 +48,9 @@ export type Opties = {
 };
 export type Uitslag = { code: number; stdout: string; stderr: string };
 
-const shq = (s: string) => (/^[A-Za-z0-9_/.:@+=-]+$/.test(s) ? s : `'${s.replaceAll("'", `'\\''`)}'`);
-const eigen = (h: Hook) => typeof h.command === "string" && h.command.includes(MERK);
-const kopie = <T>(v: T): T => JSON.parse(JSON.stringify(v));
-
-export function commando(doel: string, bun: string, arg = ""): string {
-  return `LAB_LEAD_BUN=${shq(bun)} ${shq(join(doel, "hook.sh"))}${arg ? ` ${arg}` : ""}`;
-}
-
-function eigenGroepen(o: Pick<Opties, "doel" | "bun" | "metWekker">, spec: EventSpec): Groep[] {
-  const g: Groep = {};
-  if (spec.matcher) g.matcher = spec.matcher;
-  g.hooks = [{ type: "command", command: commando(o.doel, o.bun), timeout: spec.timeout }];
-  const uit = [g];
-  if (spec.event === "Stop" && o.metWekker) {
-    uit.push({ hooks: [{ type: "command", command: commando(o.doel, o.bun, "wekker"), timeout: WEKKER_TIMEOUT, asyncRewake: true }] });
-  }
-  return uit;
-}
-
-/** Haalt eigen hooks uit de groepen en zegt waar de eerste stond (in de overgebleven lijst). */
-function strip(groepen: Groep[]): { rest: Groep[]; pos: number | null } {
-  const rest: Groep[] = [];
-  let pos: number | null = null;
-  for (const g of groepen) {
-    const hs = Array.isArray(g.hooks) ? g.hooks : [];
-    if (!hs.some(eigen)) {
-      rest.push(g);
-      continue;
-    }
-    if (pos === null) pos = rest.length;
-    const over = hs.filter((h) => !eigen(h));
-    if (over.length) rest.push({ ...g, hooks: over });
-  }
-  return { rest, pos };
-}
-
-/** Pure functie: de nieuwe `.hooks` voor een bestaande. */
+/** Pure functie: de nieuwe `.hooks` voor een bestaande (de generator in beleid/claude.ts). */
 export function nieuweHooks(oud: unknown, o: Pick<Opties, "doel" | "bun" | "metWekker" | "verwijder">): Json | undefined {
-  if (oud !== undefined && (typeof oud !== "object" || oud === null || Array.isArray(oud))) throw new Error("`.hooks` in settings.json is geen object");
-  const uit: Json = kopie((oud as Json | undefined) ?? {});
-  const events = new Set([...EVENTS.map((e) => e.event), ...Object.keys(uit)]);
-  for (const ev of events) {
-    const huidig = uit[ev];
-    if (huidig !== undefined && !Array.isArray(huidig)) {
-      if (EVENTS.some((e) => e.event === ev) && !o.verwijder) throw new Error(`\`.hooks.${ev}\` in settings.json is geen lijst`);
-      continue;
-    }
-    const heeftEigen = (huidig ?? []).some((g: Groep) => Array.isArray(g.hooks) && g.hooks.some(eigen));
-    const spec = EVENTS.find((e) => e.event === ev);
-    if (!heeftEigen && (o.verwijder || !spec)) continue;
-    const { rest, pos } = strip(huidig ?? []);
-    if (!o.verwijder && spec) rest.splice(pos ?? rest.length, 0, ...eigenGroepen(o, spec));
-    if (rest.length) uit[ev] = rest;
-    else delete uit[ev];
-  }
-  return Object.keys(uit).length ? uit : undefined;
+  return nieuweHooksUitBron(oud, claudeSpecs(beleid, {}), o);
 }
 
 /** Eenvoudige regel-diff (LCS); genoeg voor een paar honderd regels JSON. */
@@ -155,15 +92,14 @@ export function installeer(o: Opties): Uitslag {
     }
   } else if (o.verwijder) return { code: 0, stdout: `${o.settings} bestaat niet; niets te verwijderen\n`, stderr: "" };
 
-  let hooks: Json | undefined;
+  let nieuw: Json;
   try {
-    hooks = nieuweHooks(origineel.hooks, o);
+    const g = genereer(beleid, "claude", { doel: o.doel, bun: o.bun, metWekker: o.metWekker, verwijder: o.verwijder, settings: o.settings, bestaand: origineel });
+    nieuw = JSON.parse(g.bestanden[0]!.inhoud) as Json;
   } catch (e) {
     return fout(`${(e as Error).message}; niets aangepast`);
   }
-  const nieuw: Json = { ...origineel };
-  if (hooks) nieuw.hooks = hooks;
-  else delete nieuw.hooks;
+  const hooks = nieuw.hooks as Json | undefined;
 
   const oudTekst = JSON.stringify(origineel.hooks ?? {}, null, 2).split("\n");
   const nieuwTekst = JSON.stringify(hooks ?? {}, null, 2).split("\n");
