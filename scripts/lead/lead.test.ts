@@ -1058,8 +1058,8 @@ describe("spawn.sh --vendor codex", () => {
   };
   let codexHome: string;
   /** Een Codex-config zoals codex-installeer.ts hem achterlaat: hooks-blok + trust-tabel(len) in hooks.state. */
-  const schrijfConfig = (o: { grenzen?: boolean; vertrouwd?: boolean; matcher?: string; kopieAf?: boolean } = {}) => {
-    const { grenzen = true, vertrouwd = true, matcher = "Bash|apply_patch", kopieAf = false } = o;
+  const schrijfConfig = (o: { grenzen?: boolean; vertrouwd?: boolean; matcher?: string; kopieAf?: boolean; bovenaan?: string } = {}) => {
+    const { grenzen = true, vertrouwd = true, matcher = "Bash|apply_patch", kopieAf = false, bovenaan = "" } = o;
     mkdirSync(codexHome, { recursive: true });
     const cfg = join(codexHome, "config.toml");
     // de geïnstalleerde bestanden zoals codex-installeer.ts ze neerzet (gelijk aan de repo, uitvoerbaar)
@@ -1070,7 +1070,8 @@ describe("spawn.sh --vendor codex", () => {
     }
     if (kopieAf) appendFileSync(join(doel, "grenzen.sh"), "\n# oud\n");
     const groep = (m: string, cmd: string) => `[[hooks.PreToolUse]]\nmatcher = ${JSON.stringify(m)}\n[[hooks.PreToolUse.hooks]]\ntype = "command"\ncommand = ${JSON.stringify(cmd)}\ntimeout = 5\n`;
-    let t = groep(".*", commando(doel, process.execPath));
+    let t = bovenaan ? `${bovenaan}\n` : "";
+    t += groep(".*", commando(doel, process.execPath));
     if (grenzen) t += `\n${groep(matcher, commando(doel, process.execPath, "grenzen.sh"))}`;
     writeFileSync(cfg, t);
     if (vertrouwd) appendFileSync(cfg, `\n[hooks.state."${realpathSync(cfg)}:pre_tool_use:1:0"]\ntrusted_hash = "sha256:${"ab".repeat(32)}"\n`);
@@ -1143,6 +1144,39 @@ exit 1
     const zonder = codex(["--map", wt, "--droog"], { LAB_PEERS_SERVER: join(dir, "bestaat-niet.ts") });
     expect(zonder.fout).toMatch(/peers-MCP .* ontbreekt/);
     expect(zonder.uit).not.toContain("mcp_servers.peers");
+  });
+
+  test("hosted web search: tmux zet hem uit met -c (ook zonder MCP, ook als de config hem aanzet); T3 weigert als de config hem aanzet", () => {
+    writeFileSync(join(dir, "pane.txt"), "Ask Codex\n• Ran ls\n");
+    const UIT = `-c 'web_search="disabled"'`;
+    // tmux: altijd mee, nooit --search; met en zonder peers-MCP
+    expect(codex(["--map", wt, "--droog"], { LAB_PEERS_SERVER: join(dir, "bestaat-niet.ts") }).uit).toContain(UIT);
+    const server = join(dir, "server.ts");
+    writeFileSync(server, "// nep\n");
+    const met = codex(["--map", wt, "--droog"], { LAB_PEERS_SERVER: server });
+    expect(met.uit).toContain(UIT);
+    expect(met.uit).not.toContain("--search");
+    // tmux met een config die hem aanzet: het -c wint, dus geen weigering
+    schrijfConfig({ bovenaan: 'web_search = "live"' });
+    expect(codex(["--map", wt, "--droog"]).uit).toContain(UIT);
+    // T3: geen -c mogelijk, dus weigeren als de config hem aanzet (ook --droog); niets geschreven of gestart
+    for (const bovenaan of ['web_search = "live"', 'web_search = "cached"', "[tools]\nweb_search = true", "[features]\nweb_search_request = true"]) {
+      schrijfConfig({ bovenaan: bovenaan.startsWith("[") ? "" : bovenaan });
+      if (bovenaan.startsWith("[")) appendFileSync(join(codexHome, "config.toml"), `\n${bovenaan}\n`);
+      for (const extra of [["--t3"], ["--t3", "--droog"]]) {
+        const r = codex(["--map", wt, ...extra]);
+        expect(r.code).toBe(1);
+        expect(r.fout).toMatch(/hosted web search staat aan/);
+        expect(r.fout).toMatch(/web_search = "disabled"/);
+      }
+    }
+    expect(idBestanden()).toEqual([]);
+    expect(log("t3.log")).toBe("");
+    // T3 met de sleutel uit of zonder sleutel start wel
+    for (const bovenaan of ['web_search = "disabled"', ""]) {
+      schrijfConfig({ bovenaan });
+      expect(codex(["--map", wt, "--t3", "--droog"]).code).toBe(0);
+    }
   });
 
   test("tmux in een eigen worktree schrijft de identiteit (0600 in een map 0700); een andere checkout krijgt niets", () => {

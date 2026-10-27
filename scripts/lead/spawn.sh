@@ -247,7 +247,8 @@ codex_controles() {
   local cfg="$CODEX_HOME_GEKOZEN/config.toml" uit
   eigen_worktree || fout "--vendor codex eist een eigen worktree als --map (git worktree add), niet de hoofdcheckout of een map zonder eigen worktree: $map"
   command -v "$BUN" >/dev/null 2>&1 || fout "--vendor codex heeft bun nodig om de grenzen-hook in $cfg te controleren"
-  uit=$("$BUN" "$HIER/hooks/codex-controle.ts" "$cfg" 2>&1) || fout "Codex-config niet in orde, de grenzen zouden niet gelden: $uit"
+  # In T3 kan hosted web search niet per thread uit (geen -c); dan moet de config het zelf niet aanzetten (--web-search).
+  uit=$("$BUN" "$HIER/hooks/codex-controle.ts" "$cfg" $([ "$t3" != 1 ] || echo --web-search) 2>&1) || fout "Codex-config niet in orde, de grenzen zouden niet gelden: $uit"
 }
 
 t3_controleer_map() {
@@ -371,6 +372,9 @@ if [ "$vendor" = codex ]; then
   codex_home_q=" CODEX_HOME=$(printf '%q' "$CODEX_HOME_GEKOZEN")"
   cmd="env LAB_AGENT_NAAM=$naam LAB_AGENT_ROL=$rol LAB_LEAD_NAAM=$lead LAB_OPDRACHT=$opdracht_q LAB_SPAWN_ID=$spawn_id$staat_q$codex_home_q codex -C $(printf '%q' "$map")"
   [ -z "$model" ] || cmd="$cmd -m $model"
+  # Hosted web search uit voor werkers (de uitkomst loopt langs geen hook); --search nooit meegeven. In T3 kan dit niet per
+  # thread: codex_controles weigert daar als de config het aanzet. Het -c zet de TUI in embedded mode (zoals de MCP-c's).
+  [ "$t3" = 1 ] || cmd="$cmd -c 'web_search=\"disabled\"'"
   # De peers-MCP alleen voor deze sessie (-c), nooit globaal in ~/.codex.
   server="${LAB_PEERS_SERVER:-$HIER/peers/server.ts}"
   bun_abs=$(command -v "$BUN" 2>/dev/null || true)

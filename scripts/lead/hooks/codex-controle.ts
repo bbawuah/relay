@@ -132,9 +132,33 @@ export function controleerGrenzen(configPad: string, bronMap = import.meta.dir):
   return reden;
 }
 
+/**
+ * Hosted web search staat uit voor werkers (het resultaat komt zonder hook binnen). In tmux zet spawn.sh dat met
+ * `-c web_search="disabled"`; een T3-thread krijgt geen `-c`, dus daar eist spawn dat de config het niet aanzet.
+ * null = niet aan gezet in de config, anders de reden. Gemeten op codex-cli 0.164.0: `web_search = "disabled"` haalt de
+ * tool uit het verzoek; zonder sleutel stuurt Codex hem niet bij elk model (niet bij de modellen van de bundelcatalogus).
+ * Gecontroleerd: `web_search` ("live" of "cached"), `tools.web_search` en `features.web_search_request|web_search_cached`.
+ * Niet gecontroleerd: profielen, project-configs en een `--search` van Brian zelf.
+ */
+export function controleerWebSearch(configPad: string): string | null {
+  if (!existsSync(configPad)) return `${configPad} bestaat niet`;
+  let toml: { web_search?: unknown; tools?: { web_search?: unknown }; features?: Record<string, unknown> };
+  try {
+    toml = Bun.TOML.parse(readFileSync(configPad, "utf8")) as typeof toml;
+  } catch (e) {
+    return `${configPad} is geen geldige TOML (${(e as Error).message.split("\n")[0]})`;
+  }
+  const aan: string[] = [];
+  if (toml.web_search === "live" || toml.web_search === "cached") aan.push(`web_search = "${toml.web_search}"`);
+  if (toml.tools?.web_search === true || (typeof toml.tools?.web_search === "object" && toml.tools?.web_search !== null)) aan.push("tools.web_search");
+  for (const k of ["web_search_request", "web_search_cached"]) if (toml.features?.[k] === true) aan.push(`features.${k}`);
+  if (aan.length === 0) return null;
+  return `hosted web search staat aan in ${configPad} (${aan.join(", ")}); een T3-thread kan dat niet per thread uitzetten. Zet daar web_search = "disabled" (bovenaan, buiten een [sectie]) of verwijder de regel`;
+}
+
 if (import.meta.main) {
-  const pad = process.argv[2] || join(process.env.CODEX_HOME || join(process.env.HOME || homedir(), ".codex"), "config.toml");
-  const r = controleerGrenzen(pad);
+  const pad = process.argv.slice(2).find((a) => !a.startsWith("--")) || join(process.env.CODEX_HOME || join(process.env.HOME || homedir(), ".codex"), "config.toml");
+  const r = controleerGrenzen(pad) ?? (process.argv.includes("--web-search") ? controleerWebSearch(pad) : null);
   if (r) {
     process.stderr.write(`${r}\nDraai: bun scripts/lead/hooks/codex-installeer.ts (eerst met --droog)\n`);
     process.exit(1);
