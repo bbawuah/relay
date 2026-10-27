@@ -1431,7 +1431,7 @@ exit 1
     writeFileSync(join(wt, "node_modules/p/package.json"), "{\"x\":1}");
     expect(codex(["--map", wt], env).code).toBe(0);
     expect(installLog()).toContain("install install");
-  });
+  }, 60_000); // spawn.sh draait hier meerdere keren; 5 s is te krap onder belasting
 
   test("MOET-2: kan origin/main niet bepaald worden, dan geen install buiten de sandbox", () => {
     writeFileSync(join(dir, "pane.txt"), "Ask Codex\n• Ran ls\n");
@@ -1441,7 +1441,7 @@ exit 1
     expect(r.code).toBe(1);
     expect(r.fout).toMatch(/kon origin\/main niet ophalen.*--netwerk/);
     expect(installLog()).toBe("");
-  });
+  }, 60_000); // spawn.sh draait hier meerdere keren; 5 s is te krap onder belasting
 
   test("M1 (echte bun): een postinstall in de worktree draait niet; zonder --ignore-scripts zou hij wel draaien", () => {
     writeFileSync(join(dir, "pane.txt"), "Ask Codex\n• Ran ls\n");
