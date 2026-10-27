@@ -56,6 +56,10 @@ describe("codex-adapter (pure)", () => {
     expect(sendAfgeleverd("niet verstuurd (onbekend): x")).toBe(false);
     expect(sendAfgeleverd(JSON.stringify(mcp("niet verstuurd (x): y", true)))).toBe(false);
     expect(sendAfgeleverd(mcp("vastgehouden m-2"))).toBe(false);
+    // h) positief: alleen een tekst die met afgeleverd of dubbel begint telt; een andere (onverwachte) tekst niet
+    expect(sendAfgeleverd(mcp("iets onverwachts"))).toBe(false);
+    expect(sendAfgeleverd(mcp("afgeleverdx m-1"))).toBe(false);
+    expect(sendAfgeleverd("  afgeleverd m-3")).toBe(true);
     expect(sendAfgeleverd(undefined)).toBe(true);
     expect(sendAfgeleverd(null)).toBe(true);
     expect(sendAfgeleverd({ iets: "anders" })).toBe(true);
@@ -103,7 +107,7 @@ describe("hook.ts met Codex-invoer (echte fixtures uit de spike)", () => {
     const e = env();
     await verwerk("SessionStart", fixture("SessionStart"), e, opt());
     await verwerk("PreToolUse", fixture("PreToolUse-Bash"), e, opt());
-    const send = (naar: string, tekst: string) => ({ ...fixture("PostToolUse-Bash"), tool_name: "mcp__peers__send", tool_input: { naar, tekst } });
+    const send = (naar: string, tekst: string) => ({ ...fixture("PostToolUse-Bash"), tool_name: "mcp__peers__send", tool_response: "afgeleverd m-1", tool_input: { naar, tekst } });
     await verwerk("PostToolUse", send("iemand-anders", "hoi"), e, opt());
     expect(leesRecord(staat, SID)?.rapport_in_beurt).toBe(false);
     await verwerk("PostToolUse", send("lead", "PR 1, groen"), e, opt());
@@ -117,7 +121,7 @@ describe("hook.ts met Codex-invoer (echte fixtures uit de spike)", () => {
     const e = env();
     await verwerk("SessionStart", fixture("SessionStart"), e, opt());
     await verwerk("PreToolUse", fixture("PreToolUse-Bash"), e, opt());
-    await verwerk("PostToolUse", { ...fixture("PostToolUse-Bash"), tool_name: "mcp__peers__send", tool_input: { naar: "lead", tekst: "GEHEIME-INHOUD\nvrij" } }, e, opt());
+    await verwerk("PostToolUse", { ...fixture("PostToolUse-Bash"), tool_name: "mcp__peers__send", tool_response: "afgeleverd m-1", tool_input: { naar: "lead", tekst: "GEHEIME-INHOUD\nvrij" } }, e, opt());
     const stop = await verwerk("Stop", fixture("Stop"), e, opt());
     expect(stop.stdout).toBe("");
     const ruw = readFileSync(join(staat, "register", `${SID}.json`), "utf8");

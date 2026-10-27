@@ -12,6 +12,7 @@
 // Zonder identiteitsbestand gaan de identiteitssleutels uit de omgeving (de daemon-omgeving is van een andere sessie; Brians eigen
 // Codex draait dan als Brian: hook.sh stopt zonder rol en grenzen.sh past de rolregels niet toe). Faalt open op eigen fouten.
 // Zonder bun faalt de wrapper luid bij PreToolUse (exit 2): zonder wrapper geen identiteit en dus geen rolregels in grenzen.sh.
+// Hetzelfde voor een commando dat ontbreekt of niet uitvoerbaar is (exit 2 bij PreToolUse, anders exit 1).
 
 import { type Omgeving, staatMap, zoekIdentiteit } from "./register";
 
@@ -60,7 +61,21 @@ async function main(): Promise<void> {
   } catch {
     // faalt open: de omgeving ongewijzigd
   }
-  const p = Bun.spawn(cmd, { env, stdin: new TextEncoder().encode(ruw), stdout: "inherit", stderr: "inherit" });
+  let p: ReturnType<typeof Bun.spawn>;
+  try {
+    p = Bun.spawn(cmd, { env, stdin: new TextEncoder().encode(ruw), stdout: "inherit", stderr: "inherit" });
+  } catch (e) {
+    // Het commando ontbreekt of is niet uitvoerbaar. Exit 1 telt in Codex als een niet-blokkerende fout (fail-open): bij
+    // PreToolUse is dat een grenzen.sh die stil niet draait, dus daar exit 2 (de tool-aanroep wordt geweigerd).
+    let event = "";
+    try {
+      event = String(JSON.parse(ruw).hook_event_name ?? "");
+    } catch {
+      // geen JSON
+    }
+    process.stderr.write(`codex-wrap: kon ${cmd[0]} niet starten (${(e as Error).message}); draai codex-installeer.ts opnieuw\n`);
+    process.exit(event === "PreToolUse" ? 2 : 1);
+  }
   process.exit(await p.exited);
 }
 
