@@ -29,6 +29,7 @@ const NIET_IN_LAB: Record<string, string> = {
   "scripts/lab.ts": "de ingang zelf",
   "scripts/lead/leadnaam.ts": "hulp voor spawn.sh",
   "scripts/lead/spawn-crash.ts": "hulp voor tests",
+  "scripts/lead/push-werker.sh": "alleen voor de lead, met rol en argumenten (<worktree> <sha> <tak>); bewust geen algemeen commando (besluit Brian 27 okt, #683)",
 };
 
 const tijdelijk = mkdtempSync(path.join(tmpdir(), "lab-test-"));
