@@ -27,6 +27,8 @@ const NIET_IN_LAB: Record<string, string> = {
   "scripts/prive-server.ts": "de dienst zelf; draait als LaunchAgent via `bun lab installeer prive-server` (twijfelgeval, Brian beslist)",
   "scripts/site-shots.ts": "shots van lab-b.dev bij een packages-merge (twijfelgeval, Brian beslist)",
   "scripts/lab.ts": "de ingang zelf",
+  "scripts/lead/git-hard.ts": "geharde git-helper voor de lead-tooling, geen commando",
+  "scripts/lead/git-hard.testhulp.ts": "hulp voor git-hard.test.ts (mutatietests), geen commando",
   "scripts/lead/leadnaam.ts": "hulp voor spawn.sh",
   "scripts/lead/spawn-crash.ts": "hulp voor tests",
 };

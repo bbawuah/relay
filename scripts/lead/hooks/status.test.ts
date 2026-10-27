@@ -130,18 +130,19 @@ describe("--git", () => {
     git(wc, "add", ".");
     git(wc, "commit", "-m", "twee");
 
-    expect(gitInfo(wc)).toEqual({ bestaat: true, schoon: true, tak: "tak", in_main: false });
+    expect(gitInfo(wc, wc)).toEqual({ bestaat: true, schoon: true, tak: "tak", in_main: false });
     git(wc, "push", "origin", "tak:main");
     git(wc, "fetch", "origin");
     writeFileSync(join(wc, "c"), "3");
-    expect(gitInfo(wc)).toEqual({ bestaat: true, schoon: false, tak: "tak", in_main: true });
-    expect(gitInfo(join(dir, "weg"))).toEqual({ bestaat: false, schoon: null, tak: null, in_main: null });
+    expect(gitInfo(wc, wc)).toEqual({ bestaat: true, schoon: false, tak: "tak", in_main: true });
+    expect(gitInfo(join(dir, "weg"), wc)).toEqual({ bestaat: false, schoon: null, tak: null, in_main: null });
 
     maak("w2", { cwd: wc, toestand: "vrij" });
     maak("w3", { cwd: join(dir, "weg") });
-    const rijen = json(["--git"], T0);
+    const gitFn = (c: string) => gitInfo(c, wc);
+    const rijen: Rij[] = JSON.parse(status(["--json", "--git"], env(), T0, gitFn).stdout);
     expect(rijen.find((r) => r.id === "w2")?.git?.in_main).toBe(true);
-    const tekst = status(["--git"], env(), T0).stdout;
+    const tekst = status(["--git"], env(), T0, gitFn).stdout;
     expect(tekst).toContain("vuil tak in main");
     expect(tekst).toContain("worktree weg");
     // zonder --git geen git-veld
