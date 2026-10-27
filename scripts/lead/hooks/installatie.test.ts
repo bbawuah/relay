@@ -75,6 +75,7 @@ describe("codex-controle: rooktoets", () => {
     const doel = join(home, "hooks", "lab-lead-hooks");
     await installeer({ droog: false, verwijder: false, codexHome: home, doel, bun: process.execPath, codex: "codex", bron: BRON }, { start: nep });
     expect(controleerGrenzen(join(home, "config.toml"))).not.toContain("start niet"); // hier alleen: niet vertrouwd (de nep legt niets vast)
+    // het geïnstalleerde grenzen-commando draait met een onschuldige PreToolUse (rc 0): dat zit in de rooktoets
     // codex-adapter.ts staat niet in GELIJK_AAN_REPO maar hook.ts importeert het statisch: alleen de rooktoets ziet dit
     rmSync(join(doel, "codex-adapter.ts"));
     expect(controleerGrenzen(join(home, "config.toml"))).toMatch(/geïnstalleerde hook\.ts start niet \(exit 1\): .*codex-adapter/);
