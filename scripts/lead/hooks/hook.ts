@@ -13,11 +13,15 @@
 // Omgeving (gezet door spawn.sh): LAB_AGENT_NAAM, LAB_AGENT_ROL (lead|agent|sublead|vervolg),
 // LAB_LEAD_NAAM, LAB_OPDRACHT. Staat: ${LAB_LEAD_STAAT:-~/.local/state/lab-lead}.
 //
+// Codex: hook.sh --bron codex <event>; de invoer is bijna gelijk (codex-adapter.ts). Het record krijgt vendor, host,
+// thread_id en codex_home (Codex) of socket (Claude), en herkomst (`extern` na WebFetch/WebSearch/MCP buiten peers).
+//
 // Alleen H6, H7 en H11 mogen blokkeren/wekken; alles faalt open (exit 0, geen uitvoer).
 // Nooit opgeslagen: prompt, tool_input (behalve SendMessage.to en een boolean "vrij"),
 // last_assistant_message, transcripts. Geen netwerk, geen git, geen gh.
 
-import { type Omgeving, type Rec, dubbeleLeads, eigenLeadNaam, inboxGrootte, inboxMelding, leesOfMaak, leesRecord, lopendeSubagents, isKindProces, meldAdres, nieuwRecord, pakOngelezen, regelsTekst, schrijfRecord, staatMap, tmuxPanes, voorgangerInPane, zetToestand } from "./register";
+import { type Bron, PEERS_SEND, herkomstNa, leesBron, peerVelden, sendAfgeleverd } from "./codex-adapter";
+import { type Omgeving, type Rec, dubbeleLeads, eigenLeadNaam, inboxGrootte, inboxMelding, leesOfMaak, leesRecord, lopendeSubagents, isKindProces, meldAdres, nieuwRecord, pakOngelezen, regelsTekst, schrijfRecord, staatMap, tmuxPanes, voorgangerInPane, ververseIdentiteit, wisExternMarkering, wisIdentiteit, zetToestand } from "./register";
 
 export type Uitslag = { code: number; stdout: string; stderr: string };
 export type Opties = {
@@ -28,6 +32,8 @@ export type Opties = {
   wekkerMax?: number;
   /** Pane-ids die tmux kent (null = onbekend); injecteerbaar voor tests. */
   panes?: () => Set<string> | null;
+  /** Wie de hook aanroept; bepaalt vendor, thread_id en socket in het record. Standaard claude. */
+  bron?: Bron;
 };
 
 export const MAX_BLOKKADES = 3;
@@ -74,11 +80,12 @@ export function wachtTot(bericht: string, t: number): number | null {
   return null;
 }
 
-export function gateReden(lead: string): string {
+export function gateReden(lead: string, bron: Bron = "claude"): string {
+  const stuur = bron === "codex" ? `mcp__peers__send(naar: ${lead}, tekst: …)` : `SendMessage(to: ${lead})`;
   return (
-    `Je stopt zonder rapport aan ${lead}. Stuur eerst SendMessage(to: ${lead}) met PR, sha, uitslag en open punten. ` +
+    `Je stopt zonder rapport aan ${lead}. Stuur eerst ${stuur} met PR, sha, uitslag en open punten. ` +
     "Het is ook een geldig antwoord om in één zin te zeggen waarop je wacht (bijvoorbeeld een vraag aan Brian): " +
-    `stuur die zin als SendMessage aan ${lead}, of zeg hem in je antwoord en stop dan opnieuw; de tweede stop wordt doorgelaten.`
+    `stuur die zin met ${bron === "codex" ? "mcp__peers__send" : "SendMessage"} aan ${lead}, of zeg hem in je antwoord en stop dan opnieuw; de tweede stop wordt doorgelaten.`
   );
 }
 
@@ -99,7 +106,13 @@ export async function verwerk(event: string, invoer: Invoer, env: Omgeving, opti
   const agentId = tekst(invoer.agent_id);
   const t = nu();
 
-  const laad = (): Rec => leesOfMaak(staat, sessieId, env, cwd, t);
+  const bron = opties.bron ?? "claude";
+  const laad = (): Rec => {
+    const r = leesOfMaak(staat, sessieId, env, cwd, t);
+    const m = r.vendor ? r : { ...r, ...peerVelden(bron, env, sessieId) };
+    // spawn.sh --t3 kent het thread-id pas na de start van de thread: de identiteit krijgt het erbij, dus het volgende event vult het aan.
+    return env.LAB_T3_THREAD && m.t3_thread !== env.LAB_T3_THREAD ? { ...m, host: "t3" as const, t3_thread: env.LAB_T3_THREAD } : m;
+  };
   const naamVan = (r: Rec) => r.naam || env.LAB_AGENT_NAAM || sessieId.slice(0, 8);
   const meld = (r: Rec, txt: string) => {
     if (!isLead && lead) inboxMelding(staat, lead, naamVan(r), txt, t);
@@ -109,9 +122,15 @@ export async function verwerk(event: string, invoer: Invoer, env: Omgeving, opti
     case "SessionStart": {
       // H1
       const oud = laad();
+      // De bus markeert een sessie die externe inhoud las met <staat>/peers/extern/<naam>. Alleen een verse start of /clear is weer
+      // schoon; bij resume (en compact) staat de oude context er nog en blijft de herkomst `extern`.
+      const bronStart = tekst(invoer.source);
+      const schoon = bronStart === "startup" || bronStart === "clear" || bronStart === "";
       const vers = nieuwRecord(sessieId, env, cwd, t);
       // naam en lead uit het bestaande record (resume na hernoem.ts); env alleen de eerste keer
-      const r: Rec = { ...vers, start: oud.start, blokkades: oud.blokkades, naam: rec0 ? oud.naam : vers.naam, lead: rec0 ? oud.lead : vers.lead };
+      // Peer-velden worden bij elke start ververst (een socket of thread kan veranderen); `inbound` is een keuze van Brian en blijft.
+      const velden = peerVelden(bron, env, sessieId);
+      const r: Rec = { ...vers, ...velden, ...(schoon ? {} : { herkomst: oud.herkomst ?? velden.herkomst }), ...(oud.inbound ? { inbound: oud.inbound } : {}), start: oud.start, blokkades: oud.blokkades, naam: rec0 ? oud.naam : vers.naam, lead: rec0 ? oud.lead : vers.lead };
       if (!rec0) {
         const vg = voorgangerInPane(staat, vers.pane, isLead, sessieId, t);
         if (vg) {
@@ -121,6 +140,7 @@ export async function verwerk(event: string, invoer: Invoer, env: Omgeving, opti
         }
       }
       schrijfRecord(staat, r);
+      if (schoon) wisExternMarkering(staat, r.naam);
       if (isLead) {
         const dubbel = dubbeleLeads(staat, r.naam, r.id, (opties.panes ?? tmuxPanes)());
         // Het register kent de naam, Claude Code pas na `-n` of `/rename`. Een model kan geen /rename uitvoeren: de lead
@@ -141,6 +161,7 @@ export async function verwerk(event: string, invoer: Invoer, env: Omgeving, opti
     }
     case "UserPromptSubmit": {
       // H2
+      ververseIdentiteit(staat, cwd, env.LAB_SPAWN_ID || "", t);
       const r = laad();
       zetToestand(r, "bezig", t);
       r.tools_in_beurt = 0;
@@ -182,16 +203,24 @@ export async function verwerk(event: string, invoer: Invoer, env: Omgeving, opti
       return LEEG;
     }
     case "PostToolUse": {
-      // H4: alleen SendMessage aan de eigen lead; niets van de tekst zelf, alleen of "vrij" erin staat.
-      if (agentId || isLead || tekst(invoer.tool_name) !== "SendMessage") return LEEG;
+      if (agentId) return LEEG;
+      const tool = tekst(invoer.tool_name);
+      // Herkomst: na externe inhoud (WebFetch, WebSearch, een MCP-tool buiten `peers`) blijft de sessie `extern` tot SessionStart.
+      const extern = herkomstNa(tool, undefined) === "extern";
+      // H4: een bericht aan de eigen lead: SendMessage (to) of peers.send (naar); niets van de tekst zelf, alleen of "vrij" erin staat.
       const inv = (invoer.tool_input && typeof invoer.tool_input === "object" ? invoer.tool_input : {}) as Invoer;
-      if (!lead || tekst(inv.to) !== lead) return LEEG;
+      // Een peers.send telt alleen als hij gelukt is (een geweigerde of vastgehouden send is geen rapport); SendMessage meldt geen mislukking aan de hook.
+      const aanLead = !isLead && !!lead && (tool === "SendMessage" ? tekst(inv.to) === lead : tool === PEERS_SEND && tekst(inv.naar) === lead && sendAfgeleverd(invoer.tool_response));
+      if (!extern && !aanLead) return LEEG;
       const r = laad();
-      r.rapport_om = t;
-      r.rapport_in_beurt = true;
-      const bericht = tekst(inv.message);
-      if (isVrijRegel(bericht)) r.vrij = true;
-      r.wacht_tot = wachtTot(bericht, t);
+      if (extern) r.herkomst = "extern";
+      if (aanLead) {
+        r.rapport_om = t;
+        r.rapport_in_beurt = true;
+        const bericht = tekst(tool === "SendMessage" ? inv.message : inv.tekst);
+        if (isVrijRegel(bericht)) r.vrij = true;
+        r.wacht_tot = wachtTot(bericht, t);
+      }
       schrijfRecord(staat, r);
       return LEEG;
     }
@@ -210,7 +239,8 @@ export async function verwerk(event: string, invoer: Invoer, env: Omgeving, opti
       return LEEG;
     }
     case "Stop":
-      return stop(staat, laad(), invoer, isLead, lead, naamVan, t);
+      ververseIdentiteit(staat, cwd, env.LAB_SPAWN_ID || "", t);
+      return stop(staat, laad(), invoer, isLead, lead, naamVan, t, bron);
     case "StopFailure": {
       // H8
       const r = laad();
@@ -243,6 +273,8 @@ export async function verwerk(event: string, invoer: Invoer, env: Omgeving, opti
       zetToestand(r, "weg", t);
       r.einde = t;
       schrijfRecord(staat, r);
+      // De identiteit van deze spawn (codex-wrap) is niet meer nodig; een nieuwe spawn in dezelfde checkout blijft staan.
+      wisIdentiteit(staat, cwd, env.LAB_SPAWN_ID || "", t);
       return LEEG;
     }
     default:
@@ -256,7 +288,7 @@ function leesSub(staat: string, agentId: string, ouder: string, env: Omgeving, i
   return { ...oud, soort: "subagent", rol: "subagent", ouder, agent_type: tekst(invoer.agent_type) || oud.agent_type, naam: env.LAB_AGENT_NAAM || oud.naam, lead: ouderRec?.lead || oud.lead };
 }
 
-function stop(staat: string, r: Rec, invoer: Invoer, isLead: boolean, lead: string, naamVan: (r: Rec) => string, t: number): Uitslag {
+function stop(staat: string, r: Rec, invoer: Invoer, isLead: boolean, lead: string, naamVan: (r: Rec) => string, t: number, bron: Bron): Uitslag {
   const actief = invoer.stop_hook_active === true;
 
   if (isLead) {
@@ -285,7 +317,7 @@ function stop(staat: string, r: Rec, invoer: Invoer, isLead: boolean, lead: stri
     if (r.blokkades < MAX_BLOKKADES) {
       r.blokkades += 1;
       schrijfRecord(staat, r);
-      return { code: 0, stdout: JSON.stringify({ decision: "block", reason: gateReden(lead) }), stderr: "" };
+      return { code: 0, stdout: JSON.stringify({ decision: "block", reason: gateReden(lead, bron) }), stderr: "" };
     }
     inboxMelding(staat, lead, naam, `${naam} stopte ${MAX_BLOKKADES}× zonder rapport`, t);
     stopte3 = true;
@@ -330,7 +362,8 @@ function getalEnv(v: string | undefined): number | undefined {
 async function main(): Promise<void> {
   process.umask(0o077);
   try {
-    const arg = process.argv[2] || "";
+    const { bron, rest } = leesBron(process.argv.slice(2));
+    const arg = rest[0] || "";
     let invoer: Invoer = {};
     try {
       const ruw = await Bun.stdin.text();
@@ -341,6 +374,7 @@ async function main(): Promise<void> {
     }
     const event = arg || tekst(invoer.hook_event_name);
     const u = await verwerk(event, invoer, process.env, {
+      bron,
       wekkerInterval: getalEnv(process.env.LAB_WEKKER_INTERVAL_MS),
       wekkerMax: getalEnv(process.env.LAB_WEKKER_MAX_MS),
     });

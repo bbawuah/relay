@@ -130,6 +130,7 @@ describe("register (H1-H5, H8-H10)", () => {
       id: "s1", soort: "sessie", naam: "w2", rol: "agent", lead: "lead", opdracht: "/x/OPDRACHT.md", cwd: "/w/w2", pane: "%7",
       toestand: "bezig", sinds: T0, start: T0, einde: null, laatste_tool: null, laatste_tool_om: null, tools_in_beurt: 0,
       rapport_om: null, rapport_in_beurt: false, vrij: false, blokkades: 0, ouder: null, agent_type: null,
+      vendor: "claude", host: "tui", herkomst: "schoon",
     });
     expect(statSync(staat).mode & 0o077).toBe(0);
     expect(statSync(join(staat, "register", "s1.json")).mode & 0o077).toBe(0);

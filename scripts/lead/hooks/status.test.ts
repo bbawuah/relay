@@ -64,7 +64,7 @@ describe("lead status", () => {
     maak("f", { toestand: "idle", sinds: T0 - 300 * MIN });
     const v = Object.fromEntries(json([], T0).map((r) => [r.id, r.vastgelopen]));
     expect(v).toEqual({ a: true, b: false, c: true, d: false, e: false, f: false });
-    expect(status([], env(), T0).stdout).toMatch(/a\s+agent\s+lead\s+bezig \?/);
+    expect(status([], env(), T0).stdout).toMatch(/a\s+agent\s+claude\s+lead\s+bezig \?/);
   });
 
   test("--lead filtert; onbekende optie geeft exit 1", () => {
@@ -75,6 +75,18 @@ describe("lead status", () => {
     expect(u.code).toBe(1);
     expect(u.stderr).toContain("onbekende optie");
     expect(status(["--lead"], env(), T0).code).toBe(1);
+  });
+
+  test("kolom vendor: codex als het record het zegt, claude voor een record zonder vendor; --json draagt het veld mee", () => {
+    maak("cx", { vendor: "codex", host: "tui", thread_id: "t-1", toestand: "bezig" });
+    maak("oudrecord", { toestand: "idle" });
+    const u = status([], env(), T0).stdout;
+    const kop = u.split("\n")[0];
+    expect(kop.split(/\s+/).slice(0, 4)).toEqual(["naam", "rol", "vendor", "lead"]);
+    const rij = (naam: string) => u.split("\n").find((l) => l.startsWith(naam)) ?? "";
+    expect(rij("cx").split(/\s+/)[2]).toBe("codex");
+    expect(rij("oudrecord").split(/\s+/)[2]).toBe("claude");
+    expect(json([], T0).find((r) => r.id === "cx")).toMatchObject({ vendor: "codex", thread_id: "t-1" });
   });
 
   test("ruimt records met toestand weg ouder dan 24 u op, laat jongere staan; kapotte records geven geen crash", () => {
