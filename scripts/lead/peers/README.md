@@ -131,7 +131,7 @@ Tests gebruiken een tijdelijke staatmap, een nep-wekker en een injecteerbare klo
 |---|---|---|
 | claude / tui | één regel `{"type":"user","message":{"role":"user","content":"<seintje>"}}` naar `socket` (unix-socket, geen auth-regel). Het pad moet na `realpath` van de map `/tmp/cc-socks/<cijfers>.sock` of `$TMPDIR/cc-socks/<cijfers>.sock` zijn en `lstat` moet een socket zijn (een symlink telt niet); anders niet gewekt | 2 s |
 | codex / tui | `codex queue --thread=<thread_id> --message <seintje>`, met `CODEX_HOME=<codex_home van het doel>` als gezet (nooit die van de afzender); de TUI haalt de wachtrij elke 10 s op | 5 s |
-| t3 (beide vendors) | `t3 thread show <t3_thread> --json`; alleen bij `pendingRequestCount` 0 daarna `t3 thread send <t3_thread> <seintje>` (open vraag, ontbrekend veld of kapotte JSON: niet sturen, T3 #15517) | 10 s voor show + send samen |
+| t3 (beide vendors) | `t3 thread show <t3_thread> --json`; alleen bij `thread.pendingRequestCount` 0 daarna `t3 thread send <t3_thread> <seintje>` (open vraag, ontbrekend veld of kapotte JSON: niet sturen, T3 #15517) | 10 s voor show + send samen |
 | acp | niet gewekt, `route: "acp"`, melding "niet in fase 1" | |
 | host `geen`, of een doel zonder `socket`/`thread_id`/`t3_thread` | niet gewekt, met reden in `melding` | |
 
