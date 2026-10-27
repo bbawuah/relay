@@ -1195,6 +1195,8 @@ exit 1
     // ~/.codex als geheel dicht, met een paar leesmappen erin weer open (een diepere regel wint)
     expect(regels.some((x) => x.endsWith("/.codex=none"))).toBe(true);
     expect(regels.some((x) => x.endsWith("/.codex/skills=read"))).toBe(true);
+    // de standalone codex-binary staat in ~/.codex/packages; dicht laat de sandboxhelper van Codex hem niet starten (echte demo, 27 okt)
+    expect(regels.some((x) => x.endsWith("/.codex/packages=read"))).toBe(true);
     expect(regels.some((x) => x.endsWith("/.codex/sessions=none") || x.endsWith("/.codex/auth.json=none"))).toBe(false);
   });
 
