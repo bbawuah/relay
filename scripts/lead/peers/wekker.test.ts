@@ -164,7 +164,7 @@ describe("t3", () => {
   });
 
   test("pendingRequestCount 0: show, daarna send met seintje", async () => {
-    const { calls, run } = nepRun((a) => (a.args[1] === "show" ? { stdout: '{"pendingRequestCount":0}' } : {}));
+    const { calls, run } = nepRun((a) => (a.args[1] === "show" ? { stdout: '{"messages":[],"thread":{"pendingRequestCount":0}}' } : {}));
     const u = await maakWekker({ env, run }).wek(doel, 4);
     expect(u).toEqual({ gewekt: true, route: "t3" });
     expect(calls.map((c) => [c.cmd, ...c.args])).toEqual([
@@ -173,8 +173,9 @@ describe("t3", () => {
     ]);
   });
 
-  test("open vraag, ontbrekend veld of kapotte JSON: niet sturen", async () => {
-    for (const stdout of ['{"pendingRequestCount":1}', "{}", "geen json"]) {
+  test("open vraag, ontbrekend veld, oude top-level vorm of kapotte JSON: niet sturen", async () => {
+    // De top-level vorm bestaat niet in echte t3-uitvoer (gemeten 27 okt: keys messages en thread); hij telt als ontbrekend.
+    for (const stdout of ['{"messages":[],"thread":{"pendingRequestCount":1}}', '{"pendingRequestCount":0}', '{"thread":{}}', "{}", "geen json"]) {
       const { calls, run } = nepRun(() => ({ stdout }));
       const u = await maakWekker({ env, run }).wek(doel, 1);
       expect(u.gewekt).toBe(false);
@@ -184,7 +185,7 @@ describe("t3", () => {
 
   test("show faalt of send faalt", async () => {
     expect((await maakWekker({ env, run: nepRun(() => ({ code: 1 })).run }).wek(doel, 1)).gewekt).toBe(false);
-    const run = nepRun((a) => (a.args[1] === "show" ? { stdout: '{"pendingRequestCount":0}' } : { code: 2 })).run;
+    const run = nepRun((a) => (a.args[1] === "show" ? { stdout: '{"messages":[],"thread":{"pendingRequestCount":0}}' } : { code: 2 })).run;
     expect(await maakWekker({ env, run }).wek(doel, 1)).toMatchObject({ gewekt: false, route: "t3" });
   });
 
@@ -204,7 +205,7 @@ describe("t3", () => {
     let klok = 0;
     const { calls, run } = nepRun((a) => {
       if (a.args[1] === "show") klok += 6_000;
-      return a.args[1] === "show" ? { stdout: '{"pendingRequestCount":0}' } : {};
+      return a.args[1] === "show" ? { stdout: '{"messages":[],"thread":{"pendingRequestCount":0}}' } : {};
     });
     const timeouts: number[] = [];
     const run2: Run = async (c, a, o) => (timeouts.push(o.timeoutMs), run(c, a, o));
@@ -216,7 +217,7 @@ describe("t3", () => {
 
   test("budget op na show: niet sturen", async () => {
     let klok = 0;
-    const { calls, run } = nepRun(() => ((klok += 10_000), { stdout: '{"pendingRequestCount":0}' }));
+    const { calls, run } = nepRun(() => ((klok += 10_000), { stdout: '{"messages":[],"thread":{"pendingRequestCount":0}}' }));
     const u = await maakWekker({ env, run, nu: () => klok }).wek(doel, 1);
     expect(u.gewekt).toBe(false);
     expect(calls).toHaveLength(1);
@@ -224,7 +225,7 @@ describe("t3", () => {
 
   test("beide vendors gaan via t3", async () => {
     for (const vendor of ["claude", "codex"] as const) {
-      const { calls, run } = nepRun((a) => (a.args[1] === "show" ? { stdout: '{"pendingRequestCount":0}' } : {}));
+      const { calls, run } = nepRun((a) => (a.args[1] === "show" ? { stdout: '{"messages":[],"thread":{"pendingRequestCount":0}}' } : {}));
       expect((await maakWekker({ env, run }).wek({ ...doel, vendor }, 1)).route).toBe("t3");
       expect(calls).toHaveLength(2);
     }
@@ -234,7 +235,7 @@ describe("t3", () => {
     const bin = join(dir, "bin");
     mkdirSync(bin);
     const log = join(dir, "log");
-    writeFileSync(join(bin, "t3"), `#!/bin/sh\necho "$@" >> "${log}"\n[ "$2" = show ] && echo '{"pendingRequestCount":0}'\nexit 0\n`);
+    writeFileSync(join(bin, "t3"), `#!/bin/sh\necho "$@" >> "${log}"\n[ "$2" = show ] && echo '{"messages":[],"thread":{"pendingRequestCount":0}}'\nexit 0\n`);
     chmodSync(join(bin, "t3"), 0o755);
     const u = await maakWekker({ env: { PATH: `${bin}:/usr/bin:/bin` } }).wek(doel, 1);
     expect(u.gewekt).toBe(true);
