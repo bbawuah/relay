@@ -23,6 +23,7 @@ let origin: string;
 // Een Codex-lead draait deze suite in zijn eigen sandbox (CODEX_SANDBOX=seatbelt). Tests die zelf een sandbox, sockets of een
 // bun-installatie opzetten, kunnen daar niet en worden overgeslagen; CI en de poort van de lead draaien ze altijd.
 const inCodexSandbox = process.env.CODEX_SANDBOX === "seatbelt";
+const testEchteCodex = process.env.RELAY_E2E_CODEX === "1";
 // test-weg: scripts/lead/lead.test.ts: vijf tests via test.skipIf(inCodexSandbox), alleen overgeslagen binnen de Codex-sandbox; de test hieronder bewaakt dat CI ze draait
 
 test("CI draait de sandbox-tests (CODEX_SANDBOX staat daar niet op seatbelt)", () => {
@@ -1636,7 +1637,7 @@ exit 1
   // test-weg: 'netwerk uit (echte codex): unix-socket, tmux-socket en uitgaand TCP geven EPERM' en 'profiel (echte codex): .git, HEAD en refs/replace zijn read-only' toetsten het runtime-sandboxprofiel van spawn.sh (seatbelt, network={enabled=false}); dat profiel is weg (E2: de werker draait met danger-full-access via ~/.codex-werker), dus er is niets meer te toetsen
   // spawn.sh draait meerdere keren; 5 s standaard is te krap onder belasting (27 okt, load 13)
   // test-weg: niet binnen de Codex-sandbox (geen geneste sandbox, sockets of bun-cache); CI en de poort van de lead draaien hem wel
-  test.skipIf(inCodexSandbox)("hooks in de werker-home (echte codex, wegwerp-HOME met .codex-werker): SessionStart/UserPromptSubmit/PreToolUse draaien en grenzen.sh weigert een verboden aanroep", async () => {
+  test.skipIf(inCodexSandbox || !testEchteCodex)("hooks in de werker-home (echte codex, wegwerp-HOME met .codex-werker): SessionStart/UserPromptSubmit/PreToolUse draaien en grenzen.sh weigert een verboden aanroep", async () => {
     // Alleen lokaal gemeten (macOS met de echte codex). De hooks draaien buiten de shell-tool (app-server); dit toont dat de
     // hooks uit codex-installeer in de werker-home de beleidslaag echt aanzetten. Alles in een wegwerp-HOME, nooit het echte ~/.codex*.
     const codexBin = Bun.which("codex");
