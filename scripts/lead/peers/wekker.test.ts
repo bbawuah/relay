@@ -189,7 +189,10 @@ describe("t3", () => {
     const u = await maakWekker({ env, run }).wek(doel, 1);
     expect(u).toMatchObject({ gewekt: false, route: "t3" });
     expect(u.melding).toContain("open vraag");
+    expect(u.melding).toContain('onbekend ("0")');
     expect(calls).toHaveLength(1);
+    const leeg = await maakWekker({ env, run: nepRun(() => ({ stdout: '{"thread":{}}' })).run }).wek(doel, 1);
+    expect(leeg.melding).toContain("onbekend (ontbreekt)");
   });
 
   test("show faalt of send faalt", async () => {
