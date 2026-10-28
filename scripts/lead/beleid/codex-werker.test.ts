@@ -29,6 +29,11 @@ describe("Codex-werkerprofiel", () => {
   test("netwerk schrijft alleen de bun-cache bij en de installatie blijft zonder scripts", () => {
     const c = spawnCArgs({ ...o, netwerk: true });
     expect(c[1]).toContain('"/thuis/brian/.bun/install/cache"="write"');
+    expect(c).toEqual([
+      'default_permissions="lab-werker"',
+      spawnCArgs(o)[1]!.replace(',"/werk/wt/.codex"', ',"/thuis/brian/.bun/install/cache"="write","/werk/wt/.codex"'),
+      'permissions.lab-werker.network={enabled=true}',
+    ]);
     expect(CODEX_WERKER_BUN_INSTALL_ARGS).toEqual(["install", "--ignore-scripts", "--frozen-lockfile"]);
   });
 

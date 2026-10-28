@@ -171,10 +171,11 @@ fi
 HIER=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 BUN="${LAB_LEAD_BUN:-bun}"
 BELEID_BUN=$(command -v bun 2>/dev/null || true)
+veilig_bun() ( cd "$HIER" && env -u BUN_OPTIONS -u NODE_OPTIONS "$BUN" "$@"; )
 # De beleidsgenerator draait vanuit $HIER zonder BUN_OPTIONS/NODE_OPTIONS: een bunfig.toml (preload) in de werkmap van de
 # aanroeper (vaak de worktree van een werker) of een geërfde --preload mag het sandboxprofiel niet veranderen (opus-review C).
 if [ -z "$lead" ] && command -v "$BUN" >/dev/null 2>&1; then
-  lead=$("$BUN" "$HIER/leadnaam.ts" eigen 2>/dev/null || true)
+  lead=$(veilig_bun "$HIER/leadnaam.ts" eigen 2>/dev/null || true)
 fi
 [ -n "$lead" ] || lead="${LAB_LEAD_NAAM:-}"
 
@@ -201,13 +202,13 @@ fi
 if command -v "$BUN" >/dev/null 2>&1; then
   # exit 3 = dubbele naam (blokkeert); elke andere fout: waarschuwing en doorgaan (fail-open)
   rc=0
-  dubbel=$("$BUN" "$HIER/leadnaam.ts" dubbel "$lead" 2>&1 >/dev/null) || rc=$?
+  dubbel=$(veilig_bun "$HIER/leadnaam.ts" dubbel "$lead" 2>&1 >/dev/null) || rc=$?
   if [ "$rc" = 3 ]; then echo "$dubbel" >&2; exit 1; fi
   [ "$rc" = 0 ] || echo "spawn: waarschuwing: controle op dubbele leadnaam mislukt (exit $rc); ga door. $dubbel" >&2
   # Controle 2: --lead (of LAB_LEAD_NAAM) moet een levende lead in het register zijn, anders komt elk rapport van de werker nergens aan
   # (27 okt: lead zonder LAB_AGENT_ROL gestart, peers.send gaf "onbekend"). exit 4 = onbekend (blokkeert); andere fout: waarschuwing.
   rc=0
-  onbekend=$("$BUN" "$HIER/leadnaam.ts" bekend "$lead" 2>&1 >/dev/null) || rc=$?
+  onbekend=$(veilig_bun "$HIER/leadnaam.ts" bekend "$lead" 2>&1 >/dev/null) || rc=$?
   if [ "$rc" = 4 ]; then echo "$onbekend" >&2; exit 1; fi
   [ "$rc" = 0 ] || echo "spawn: waarschuwing: controle op de leadnaam in het register mislukt (exit $rc); ga door. $onbekend" >&2
 fi
@@ -299,7 +300,10 @@ codex_sandbox() {
   # paden en quoting; de generator krijgt alleen al gevalideerde argumenten.
   WERKTMP="$t/lab-werker-$naam"
   SANDBOX_C_ARGS=()
-  while IFS= read -r regel; do SANDBOX_C_ARGS+=("$regel"); done < <(cd "$HIER" && env -u BUN_OPTIONS -u NODE_OPTIONS "$BELEID_BUN" "$HIER/beleid/codex-werker.ts" spawn-c-args "$m" "$c" "$e" "$h" "$t" "$naam" "$ch" "$([ "$netwerk" = 0 ] && echo false || echo true)")
+  # Uitvoer in een variabele, zodat de exitcode telt (geen mktemp: GNU mktemp faalt als TMPDIR niet bestaat).
+  gen=$(cd "$HIER" && env -u BUN_OPTIONS -u NODE_OPTIONS "$BELEID_BUN" "$HIER/beleid/codex-werker.ts" spawn-c-args "$m" "$c" "$e" "$h" "$t" "$naam" "$ch" "$([ "$netwerk" = 0 ] && echo false || echo true)") ||
+    fout "Codex-werkerprofielgenerator faalde"
+  while IFS= read -r regel; do SANDBOX_C_ARGS+=("$regel"); done <<<"$gen"
   net=false; [ "$netwerk" = 0 ] || net=true
   [ "${#SANDBOX_C_ARGS[@]}" = 3 ] && [ "${SANDBOX_C_ARGS[0]}" = 'default_permissions="lab-werker"' ] &&
     [ "${SANDBOX_C_ARGS[2]}" = "permissions.lab-werker.network={enabled=$net}" ] || fout "kon het Codex-werkerprofiel niet genereren"
