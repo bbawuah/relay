@@ -35,6 +35,7 @@ const NIET_IN_LAB: Record<string, string> = {
   "scripts/lead/spawn-crash.ts": "hulp voor tests",
   "scripts/lead/push-werker.sh": "alleen voor de lead, met rol en argumenten (<worktree> <sha> <tak>); bewust geen algemeen commando (besluit Brian 27 okt, #683)",
   "scripts/lead/push-werker.ts": "logica achter push-werker.sh (alleen de lead, #683); bewust geen algemeen commando",
+  "scripts/lead/relay.ts": "eigen relay-CLI (bin/relay na uitrol), geen bun-lab-subcommando",
   "scripts/lead/beleid/beleid.ts": "beleidsbron voor de hookgenerator, geen los lab-commando",
   "scripts/lead/beleid/claude.ts": "pure Claude-beleidsgenerator, gebruikt door installeer-hooks",
   "scripts/lead/beleid/codex-werker.ts": "pure Codex-werkerprofielgenerator, gebruikt door spawn en uitrolconcepten",

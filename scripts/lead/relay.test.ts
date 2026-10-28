@@ -94,6 +94,21 @@ describe("relay", () => {
     expect(n.aanroepen[0]!.argv.join(" ")).not.toContain("tmux");
   });
 
+  test("wist preload-omgevingen voor ieder kindproces", async () => {
+    const n = opnemer(); const root = nepRoot();
+    const oudBun = process.env.BUN_OPTIONS; const oudNode = process.env.NODE_OPTIONS;
+    process.env.BUN_OPTIONS = "--preload /tmp/nep-bunfig";
+    process.env.NODE_OPTIONS = "--require /tmp/nep-node";
+    try {
+      await draai(["send", "andere", "bericht"], { root, uitvoer: n.run });
+      expect(n.aanroepen[0]!.env?.BUN_OPTIONS).toBeUndefined();
+      expect(n.aanroepen[0]!.env?.NODE_OPTIONS).toBeUndefined();
+    } finally {
+      if (oudBun === undefined) delete process.env.BUN_OPTIONS; else process.env.BUN_OPTIONS = oudBun;
+      if (oudNode === undefined) delete process.env.NODE_OPTIONS; else process.env.NODE_OPTIONS = oudNode;
+    }
+  });
+
   test("ls en status zijn leesroutes en behouden een weigering", async () => {
     const n = opnemer(); const root = nepRoot();
     await draai(["ls"], { root, uitvoer: n.run });

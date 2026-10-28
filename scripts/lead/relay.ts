@@ -19,8 +19,17 @@ const gebruik = `Gebruik:
 
 const naamGeldig = (naam: string) => /^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$/.test(naam);
 
+export function kindOmgeving(extra: Record<string, string | undefined> = {}): Record<string, string | undefined> {
+  const omgeving = { ...process.env, ...extra };
+  // Een bunfig-preload van de aanroeper mag geen kindproces buiten het beleid
+  // laten lezen; hetzelfde geldt voor Node-preloads in alle relay-routes.
+  delete omgeving.BUN_OPTIONS;
+  delete omgeving.NODE_OPTIONS;
+  return omgeving;
+}
+
 async function echtUitvoeren(argv: string[], cwd: string, env?: Record<string, string | undefined>): Promise<number> {
-  const kind = Bun.spawn(argv, { cwd, env: { ...process.env, ...env }, stdio: ["inherit", "inherit", "inherit"] });
+  const kind = Bun.spawn(argv, { cwd, env: kindOmgeving(env), stdio: ["inherit", "inherit", "inherit"] });
   const code = await kind.exited;
   return kind.signalCode ? 128 : code;
 }
@@ -50,6 +59,7 @@ export async function draai(args: string[], opties: Opties = {}): Promise<number
   const root = opties.root ?? repoWortel();
   const cwd = opties.cwd ?? process.cwd();
   const run = opties.uitvoer ?? echtUitvoeren;
+  const voerUit = (argv: string[], env?: Record<string, string | undefined>) => run(argv, cwd, kindOmgeving(env));
   const [vendorOfOpdracht, vorm, ...rest] = args;
   const spawn = pad(root, "scripts/lead/spawn.sh");
   const codexLead = pad(root, "scripts/lead/lead-codex.sh");
@@ -64,12 +74,12 @@ export async function draai(args: string[], opties: Opties = {}): Promise<number
   if (vendorOfOpdracht === "claude" || vendorOfOpdracht === "codex") {
     if (vorm === "-w") {
       const werk = werkerArgs(vendorOfOpdracht, rest);
-      return typeof werk === "string" ? fout(werk) : run(["bash", spawn, ...werk], cwd);
+      return typeof werk === "string" ? fout(werk) : voerUit(["bash", spawn, ...werk]);
     }
     if (vorm !== "-l") return fout(`${vendorOfOpdracht} verwacht -l of -w\n${gebruik}`);
     if (vendorOfOpdracht === "codex") {
       if (rest.length > 1 || rest[0]?.startsWith("-")) return fout("codex -l staat hoogstens één gewone prompt toe");
-      return run(["bash", codexLead, ...rest], cwd);
+      return voerUit(["bash", codexLead, ...rest]);
     }
     // De Claude-lead heeft nog geen starter-script. Dit is precies de gedocumenteerde
     // startregel (README.md), zonder extra policy of tmux-route toe te voegen.
@@ -77,24 +87,24 @@ export async function draai(args: string[], opties: Opties = {}): Promise<number
     const naam = process.env.LAB_AGENT_NAAM ?? "";
     const lead = process.env.LAB_LEAD_NAAM ?? naam;
     if (!naamGeldig(naam) || lead !== naam) return fout("claude -l vereist gelijke, geldige LAB_AGENT_NAAM en LAB_LEAD_NAAM");
-    return run(["claude", "-n", naam], cwd, { LAB_LEAD: "1", LAB_AGENT_ROL: "lead", LAB_AGENT_NAAM: naam, LAB_LEAD_NAAM: naam });
+    return voerUit(["claude", "-n", naam], { LAB_LEAD: "1", LAB_AGENT_ROL: "lead", LAB_AGENT_NAAM: naam, LAB_LEAD_NAAM: naam });
   }
 
   if (vendorOfOpdracht === "send") {
     if (vorm === undefined || rest.length !== 1) return fout(`send verwacht <naam> <tekst>\n${gebruik}`);
-    return run([process.execPath, peers, "send", vorm, rest[0]!], cwd);
+    return voerUit([process.execPath, peers, "send", vorm, rest[0]!]);
   }
   if (vendorOfOpdracht === "ls") {
     if (vorm !== undefined) return fout(`ls heeft geen argumenten\n${gebruik}`);
-    const code = await run([process.execPath, peers, "list"], cwd);
-    return code === 0 ? run(["bash", status, "--git"], cwd) : code;
+    const code = await voerUit([process.execPath, peers, "list"]);
+    return code === 0 ? voerUit(["bash", status, "--git"]) : code;
   }
   if (vendorOfOpdracht === "status") {
     if (vorm !== undefined) return fout(`status heeft geen argumenten\n${gebruik}`);
-    const sporen = await run(["bash", status, "--json", "--git"], cwd);
+    const sporen = await voerUit(["bash", status, "--json", "--git"]);
     if (sporen !== 0) return sporen;
     // `gh pr list` leest alleen open PR's; de takken staan al in status.sh --git.
-    return run(["gh", "pr", "list", "--state", "open", "--limit", "20"], cwd);
+    return voerUit(["gh", "pr", "list", "--state", "open", "--limit", "20"]);
   }
   return fout(gebruik);
 }
