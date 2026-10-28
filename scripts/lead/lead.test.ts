@@ -1413,7 +1413,12 @@ exit 1
   test("sandbox: een falende profielgenerator weigert droog zonder -c-uitvoer", () => {
     const kopie = join(dir, "lead-kopie");
     cpSync(import.meta.dir, kopie, { recursive: true });
-    writeFileSync(join(kopie, "beleid", "codex-werker.ts"), "process.exit(1);\n");
+    writeFileSync(join(kopie, "beleid", "codex-werker.ts"), `
+console.log('default_permissions="lab-werker"');
+console.log('permissions.lab-werker.filesystem={"/"="read"}');
+console.log('permissions.lab-werker.network={enabled=false}');
+process.exit(1);
+`);
     const r = draai(join(kopie, "spawn.sh"), ["--naam", "cx1", "--opdracht", opdracht(), "--lead", "lead-x", "--vendor", "codex", "--map", wt, "--droog"], basis({ TMPDIR: join(dir, "sbtmp") }));
     expect(r.code).not.toBe(0);
     expect(r.uit).not.toContain(" -c '");
