@@ -21,12 +21,14 @@ fout() { echo "lead-codex: $*" >&2; exit 1; }
 command -v "$BUN" >/dev/null 2>&1 || fout "bun ontbreekt"
 command -v "$CODEX" >/dev/null 2>&1 || fout "codex ontbreekt"
 
-for arg in "$@"; do
-  case $arg in
-    -c|--config|--config=*|--sandbox|--sandbox=*|-s|-s*|--dangerously*|-a|--ask-for-approval|--ask-for-approval=*)
-      fout "eigen Codex-configuratie of permissievlaggen zijn niet toegestaan; het lead-profiel bepaalt het beleid" ;;
+# De starter heeft precies één vrije invoer: een gewone prompt. Alle Codex-vlaggen
+# (ook -C/--cd en --add-dir) zouden de gecontroleerde cwd of het profiel omzeilen.
+[ "$#" -le 1 ] || fout "alleen één prompt is toegestaan; Codex-vlaggen zijn niet toegestaan"
+if [ "$#" = 1 ]; then
+  case $1 in
+    -*) fout "alleen één prompt is toegestaan; Codex-vlaggen zijn niet toegestaan" ;;
   esac
-done
+fi
 
 git_hard() {
   git -c core.fsmonitor= -c core.hooksPath=/dev/null -c core.untrackedCache=false -c diff.ignoreSubmodules=all -C "$MAP" "$@"
@@ -51,7 +53,10 @@ IDENTITEIT="$IDENTITEIT_MAP/$SLEUTEL.json"
 SPAWN_ID="lead-proef-$(date +%s)-$$"
 TIJD=$(( $(date +%s) * 1000 ))
 TMP=$(mktemp "$IDENTITEIT.XXXXXX")
-cleanup() { rm -f "$TMP" "$IDENTITEIT"; }
+cleanup() {
+  rm -f "$TMP"
+  [ -f "$IDENTITEIT" ] && [ "$(jq -r '.spawn_id // ""' "$IDENTITEIT" 2>/dev/null || true)" = "$SPAWN_ID" ] && rm -f "$IDENTITEIT"
+}
 trap cleanup EXIT HUP INT TERM
 
 jq -n --arg naam "$NAAM" --arg spawn_id "$SPAWN_ID" --argjson ts "$TIJD" \
@@ -61,5 +66,5 @@ chmod 600 "$TMP"
 mv "$TMP" "$IDENTITEIT"
 
 # Geen -c, --sandbox of approval-vlag: config.toml is de vooraf beoordeelde beleidsbron.
-env CODEX_HOME="$CODEX_HOME_LEAD" LAB_AGENT_NAAM="$NAAM" LAB_AGENT_ROL=lead-proef LAB_LEAD_NAAM="$NAAM" LAB_LEAD_STAAT="$STAAT" \
+env CODEX_HOME="$CODEX_HOME_LEAD" LAB_AGENT_NAAM="$NAAM" LAB_AGENT_ROL=lead-proef LAB_LEAD_NAAM="$NAAM" LAB_LEAD_STAAT="$STAAT" LAB_SPAWN_ID="$SPAWN_ID" \
   "$CODEX" -C "$WERKRUIMTE" "$@"

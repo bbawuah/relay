@@ -68,10 +68,13 @@ describe("identiteitEnv", () => {
       schrijfIdentiteit(staat, werk, { ...ident, rol });
       expect(identiteitEnv({ LAB_LEAD_STAAT: staat }, werk)).toEqual({});
     }
-    for (const rol of ["agent", "sublead", "vervolg", "lead-proef"]) {
+    for (const rol of ["agent", "sublead", "vervolg"]) {
       schrijfIdentiteit(staat, werk, { ...ident, rol });
       expect(identiteitEnv({ LAB_LEAD_STAAT: staat }, werk)).toMatchObject({ LAB_AGENT_ROL: rol });
     }
+    schrijfIdentiteit(staat, werk, { ...ident, rol: "lead-proef", sessie_id: "lead-sessie" });
+    expect(identiteitEnv({ LAB_LEAD_STAAT: staat }, werk, Date.now(), "lead-sessie")).toMatchObject({ LAB_AGENT_ROL: "lead-proef" });
+    expect(identiteitEnv({ LAB_LEAD_STAAT: staat }, werk, Date.now(), "andere-sessie")).toEqual({});
     schrijfIdentiteit(staat, werk, { ...ident, naam: "" });
     expect(leesIdentiteit(staat, werk)).toBeNull();
     schrijfIdentiteit(staat, werk, { ...ident, ts: Date.now() + 3600_000 });

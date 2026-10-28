@@ -83,6 +83,11 @@ describe("grenzen.sh: lead-proef kan niet escaleren tot merge of push-lead", () 
   test("laat alleen de droge mergecontrole door", () => {
     expect(bashAlsRol("scripts/lead/merge.sh --droog 700", "lead-proef").code).toBe(0);
   });
+
+  test("laat leesacties op merge- en pushwerkercode door", () => {
+    expect(bashAlsRol("cat scripts/lead/merge.sh", "lead-proef").code).toBe(0);
+    expect(bashAlsRol("git log -- scripts/lead/push-werker.sh", "lead-proef").code).toBe(0);
+  });
 });
 
 const WEIGER = [
