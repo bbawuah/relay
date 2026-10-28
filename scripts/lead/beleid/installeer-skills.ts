@@ -6,7 +6,6 @@ export const REPO_SKILLS = ["lead", "retro", "grill-me"] as const;
 export const LOKALE_SKILLS = ["naar-mod", "tailnet", "vault", "scrawl"] as const;
 
 export type Opties = { doel: string; repo?: string; lokaal?: string; droog?: boolean; controle?: boolean };
-const veilig = (n: string) => /^[a-z][a-z0-9-]*$/.test(n) && n !== ".system" && n !== "synced";
 function geenSymlink(p: string): void { const s = lstatSync(p); if (s.isSymbolicLink()) throw new Error(`${p}: symlinks zijn niet toegestaan`); if (s.isDirectory()) for (const e of readdirSync(p)) geenSymlink(join(p, e)); }
 function kopieer(bron: string, doel: string, droog: boolean, regels: string[]) {
   if (!existsSync(join(bron, "SKILL.md"))) throw new Error(`${bron}: SKILL.md ontbreekt`);
@@ -25,7 +24,7 @@ export function installeer(o: Opties) {
   const lokaal = o.lokaal ?? join(process.env.HOME ?? "", "vault-b-status/skills");
   const regels: string[] = [];
   for (const n of REPO_SKILLS) kopieer(join(repo, n), join(o.doel, n), !!o.droog, regels);
-  for (const n of LOKALE_SKILLS) if (veilig(n) && existsSync(join(lokaal, n))) kopieer(join(lokaal, n), join(o.doel, n), !!o.droog, regels);
+  for (const n of LOKALE_SKILLS) if (existsSync(join(lokaal, n))) kopieer(join(lokaal, n), join(o.doel, n), !!o.droog, regels);
   if (o.controle) for (const n of readdirSync(o.doel, { withFileTypes: true }).filter((e) => e.isDirectory()).map((e) => e.name)) if ((REPO_SKILLS as readonly string[]).includes(n) && !existsSync(join(o.doel, n, MARKER))) throw new Error(`${n}: marker ontbreekt`);
   return regels;
 }

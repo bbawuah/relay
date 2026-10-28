@@ -158,4 +158,4 @@ def main():
     a = ap.parse_args()
     zoek(a) if a.cmd == "zoek" else samenvat(a)
 
-main()
+if __name__ == "__main__": main()
