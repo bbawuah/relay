@@ -98,14 +98,27 @@ describe("installeer-skills", () => {
     expect(r.join("\n")).toContain("lead");
     expect(readFileSync(join(claude, "lead", "SKILL.md"), "utf8")).toBe(voor);
   });
-  test("controle meldt een onbeheerde skillmap zonder te schrijven", () => {
+  test("controle meldt een eigen ongemarkeerde skillmap als info, zonder drift of schrijven", () => {
     installeer(opties(claude));
     mkdirSync(join(claude, "oude-skill")); writeFileSync(join(claude, "oude-skill", "SKILL.md"), "eigen\n");
     const voor = readFileSync(join(claude, "oude-skill", "SKILL.md"), "utf8");
     const r = installeer(opties(claude, { controle: true })).join("\n");
-    expect(r).toContain("oude-skill");
-    expect(r).toContain("onbeheerde skillmap");
+    expect(r).toContain("info onbeheerd oude-skill");
+    expect(r).not.toContain("drift");
     expect(readFileSync(join(claude, "oude-skill", "SKILL.md"), "utf8")).toBe(voor);
+  });
+  test("controle-CLI laat eigen ongemarkeerde map door, maar weigert een vreemde gemarkeerde map", () => {
+    const doel = join(dir, "cli", "skills");
+    installeer({ doel, repo: join(import.meta.dir, "../../..", "agents/skills"), lokaal: join(dir, "lege-vault") });
+    mkdirSync(join(doel, "react-grab"));
+    const info = cliControle(doel);
+    expect(info.exitCode).toBe(0);
+    expect(info.stdout.toString()).toContain("info onbeheerd react-grab");
+    mkdirSync(join(doel, "vreemd")); writeFileSync(join(doel, "vreemd", marker), "{}\n");
+    const drift = cliControle(doel);
+    expect(drift.exitCode).not.toBe(0);
+    expect(drift.stdout.toString()).toContain("drift");
+    expect(drift.stdout.toString()).toContain("vreemd");
   });
   test("controle-CLI is nul bij gelijkheid en niet-nul met skillnaam bij drift, zonder schrijven", () => {
     const doel = join(dir, "cli", "skills");

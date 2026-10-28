@@ -75,7 +75,11 @@ export function installeer(o: Opties, deps: InstalleerDeps = {}) {
       const beheerd = new Set(bronnen.map(([, doel]) => basename(doel)));
       for (const naam of readdirSync(o.doel)) {
         if (naam === ".system" || naam === "synced" || beheerd.has(naam)) continue;
-        regels.push(`drift ${join(o.doel, naam)}: onbeheerde skillmap`);
+        const pad = join(o.doel, naam);
+        const isMap = lstatSync(pad).isDirectory();
+        const marker = join(pad, MARKER);
+        if (isMap && (/\.voor-beleid/.test(naam) || existsSync(marker))) regels.push(`drift ${pad}: onbeheerde beheerde skillmap`);
+        else regels.push(`info onbeheerd ${naam}`);
       }
     }
     return regels;
@@ -99,5 +103,5 @@ if (import.meta.main) {
   const controle = a.includes("--controle");
   const regels = installeer({ doel, droog: a.includes("--droog"), controle });
   for (const r of regels) console.log(`${a.includes("--droog") ? "DROOG" : controle ? "CONTROLE" : "OK"} ${r}`);
-  if (controle && regels.length) process.exit(1);
+  if (controle && regels.some((r) => r.startsWith("drift "))) process.exit(1);
 }
