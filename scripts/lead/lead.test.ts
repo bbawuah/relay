@@ -22,6 +22,11 @@ let origin: string;
 // Een Codex-lead draait deze suite in zijn eigen sandbox (CODEX_SANDBOX=seatbelt). Tests die zelf een sandbox, sockets of een
 // bun-installatie opzetten, kunnen daar niet en worden overgeslagen; CI en de poort van de lead draaien ze altijd.
 const inCodexSandbox = process.env.CODEX_SANDBOX === "seatbelt";
+// test-weg: scripts/lead/lead.test.ts: vijf tests via test.skipIf(inCodexSandbox), alleen overgeslagen binnen de Codex-sandbox; de test hieronder bewaakt dat CI ze draait
+
+test("CI draait de sandbox-tests (CODEX_SANDBOX staat daar niet op seatbelt)", () => {
+  if (process.env.CI) expect(inCodexSandbox).toBe(false);
+});
 
 const schrijfBin = (naam: string, tekst: string) => {
   const pad = join(bin, naam);
