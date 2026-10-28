@@ -23,6 +23,7 @@ const NIET_IN_LAB: Record<string, string> = {
   "scripts/werk-commentaar.ts": "poortstap, draait via `bun lab poort`",
   "scripts/typen-modules.d.ts": "typedeclaratie (pngjs) voor scripts/tsconfig.json, geen script",
   "scripts/scripts-tests-veilig.ts": "poorthulp (allowlist van de stap scripts-tests), gebruikt door poort.ts",
+  "scripts/skills-poort.ts": "poortstap voor de git-skills, draait via bun lab poort",
   "scripts/stiltevenster.ts": "hulpmodule en check voor hooks en poort, geen commando voor de hand",
   "scripts/prive-server.ts": "de dienst zelf; draait als LaunchAgent via `bun lab installeer prive-server` (twijfelgeval, Brian beslist)",
   "scripts/site-shots.ts": "shots van lab-b.dev bij een packages-merge (twijfelgeval, Brian beslist)",
