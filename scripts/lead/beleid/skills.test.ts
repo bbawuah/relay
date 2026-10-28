@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { installeer } from "./installeer-skills";
@@ -28,6 +28,16 @@ beforeEach(() => {
 afterEach(() => rmSync(dir, { recursive: true, force: true }));
 
 describe("installeer-skills", () => {
+  test("weigert een symlink in de bron (marker of genest) en schrijft nooit buiten het doel", () => {
+    const buiten = join(dir, "buiten.txt");
+    for (const link of [join(repo, "lead", marker), join(repo, "retro", "references", "link.md")]) {
+      writeFileSync(buiten, "ORIGINEEL\n");
+      symlinkSync(buiten, link);
+      expect(() => installeer(opties(claude))).toThrow(/symlink/i);
+      expect(readFileSync(buiten, "utf8")).toBe("ORIGINEEL\n");
+      rmSync(link);
+    }
+  });
   test("droog toont wijzigingen maar schrijft niets", () => {
     const r = installeer(opties(claude, { droog: true }));
     expect(r.join("\n")).toContain("lead");
