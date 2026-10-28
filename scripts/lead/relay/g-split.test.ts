@@ -71,6 +71,9 @@ exec "${Bun.which("git")}" "$@"
   const backup = readdirSync(home).find((naam) => naam.startsWith("relay.voor-split-"));
   expect(backup).toContain(".voor-split-");
   expect(readFileSync(join(home, backup!, "oud.txt"), "utf8")).toBe("oude relay\n");
+  // De gegenereerde poort moet met de echte bun slagen; de nep-bun hierboven bewijst dat niet.
+  const poort = Bun.spawnSync([process.execPath, "run", "poort"], { cwd: doel, env: envZonderGit() });
+  expect(poort.exitCode, poort.stderr.toString()).toBe(0);
 });
 
 test("weigert een bestaande ~/relay zonder eigen marker zonder iets te overschrijven", () => {
