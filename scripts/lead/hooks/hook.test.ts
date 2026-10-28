@@ -9,6 +9,7 @@ import { type Rec, gelezenOffset, inboxMelding, inboxPad, leesRecord, schrijfRec
 
 const HOOK_SH = join(import.meta.dir, "hook.sh");
 const T0 = 1_700_000_000_000;
+const inCodexSandbox = process.env.CODEX_SANDBOX === "seatbelt";
 
 let dir: string;
 let staat: string;
@@ -134,6 +135,50 @@ describe("register (H1-H5, H8-H10)", () => {
     });
     expect(statSync(staat).mode & 0o077).toBe(0);
     expect(statSync(join(staat, "register", "s1.json")).mode & 0o077).toBe(0);
+  });
+
+  test("H1 zet vendor, naam en agent-markering op de eigen pane; H10 wist alleen de eigen sessie", async () => {
+    const aanroepen: string[][] = [];
+    const tmux = (args: string[]) => {
+      aanroepen.push(args);
+      return args.at(-1) === "@agent_sessie" ? "s1\n" : "";
+    };
+    const env = omgeving({ TMUX: "/wegwerp/socket,1,0", TMUX_PANE: "%7" });
+    await verwerk("SessionStart", inv(), env, { ...opt, tmux });
+    expect(aanroepen).toEqual([
+      ["set-option", "-p", "-t", "%7", "@vendor", "claude"],
+      ["set-option", "-p", "-t", "%7", "@agent", "claude"],
+      ["set-option", "-p", "-t", "%7", "@agent_naam", "w2"],
+      ["set-option", "-p", "-t", "%7", "@agent_sessie", "s1"],
+    ]);
+    aanroepen.length = 0;
+    await verwerk("SessionEnd", inv(), env, { ...opt, tmux });
+    expect(aanroepen).toEqual([
+      ["show-options", "-p", "-t", "%7", "-v", "@agent_sessie"],
+      ["set-option", "-p", "-t", "%7", "-u", "@vendor"],
+      ["set-option", "-p", "-t", "%7", "-u", "@agent"],
+      ["set-option", "-p", "-t", "%7", "-u", "@agent_naam"],
+      ["set-option", "-p", "-t", "%7", "-u", "@agent_sessie"],
+    ]);
+  });
+
+  // test-weg: scripts/lead/hooks/hook.test.ts: deze test start een wegwerp-tmux en slaat alleen de Codex-sandbox over; CI draait hem.
+  test.skipIf(inCodexSandbox)("H1/H10 werken in een wegwerp-tmux, nooit op de standaardserver", async () => {
+    const sok = `test-h-${process.pid}-${Date.now()}`;
+    const tmux = (...args: string[]) => Bun.spawnSync(["tmux", "-L", sok, "-f", "/dev/null", ...args], { env: { ...process.env, TMUX: "", TMUX_PANE: "" } });
+    try {
+      expect(tmux("new-session", "-d", "-s", "h", "sleep 20").exitCode).toBe(0);
+      const pane = tmux("list-panes", "-t", "h", "-F", "#{pane_id}").stdout.toString().trim();
+      const pad = tmux("display-message", "-p", "-t", "h", "#{socket_path}").stdout.toString().trim();
+      const env = omgeving({ TMUX: `${pad},0,0`, TMUX_PANE: pane });
+      await verwerk("SessionStart", inv(), env, opt);
+      expect(tmux("show-options", "-p", "-t", pane, "-v", "@vendor").stdout.toString().trim()).toBe("claude");
+      expect(tmux("show-options", "-p", "-t", pane, "-v", "@agent_naam").stdout.toString().trim()).toBe("w2");
+      await verwerk("SessionEnd", inv(), env, opt);
+      expect(tmux("show-options", "-p", "-t", pane, "-v", "@vendor").exitCode).not.toBe(0);
+    } finally {
+      tmux("kill-server");
+    }
   });
 
   test("H3 PreToolUse telt tools en onthoudt alleen de toolnaam; een kapot record wordt overschreven", async () => {
