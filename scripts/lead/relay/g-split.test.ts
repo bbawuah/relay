@@ -91,3 +91,26 @@ test("droog schrijft niets, ook niet zonder uitvoervlag", () => {
   expect(existsSync(join(home, "relay"))).toBe(false);
   expect(run.stdout.toString()).toContain("geen bestanden geschreven");
 });
+
+test("weigert vóór backup of clone duidelijk wanneer git filter-repo ontbreekt", () => {
+  const home = map("geen-filter");
+  const bin = join(home, "bin");
+  const doel = join(home, "relay");
+  mkdirSync(bin);
+  mkdirSync(doel);
+  writeFileSync(join(doel, ".relay-split-marker"), "gemaakt-door=g-split.sh\n");
+  writeFileSync(join(doel, "oud.txt"), "behouden\n");
+  const zonderFilter = join(bin, "git");
+  writeFileSync(zonderFilter, `#!/usr/bin/env bash
+for a in "$@"; do [ "$a" = filter-repo ] && exit 1; done
+exec "${Bun.which("git")}" "$@"
+`);
+  chmodSync(zonderFilter, 0o755);
+  const run = Bun.spawnSync(["bash", SCRIPT], {
+    env: { ...envZonderGit(), HOME: home, CONCEPT_UITVOEREN: "JA", RELAY_GIT: zonderFilter },
+  });
+  expect(run.exitCode).not.toBe(0);
+  expect(run.stderr.toString()).toContain("git filter-repo ontbreekt");
+  expect(readFileSync(join(doel, "oud.txt"), "utf8")).toBe("behouden\n");
+  expect(readdirSync(home).filter((naam) => naam.startsWith("relay.voor-split-")).length).toBe(0);
+});
