@@ -32,6 +32,8 @@ test("bouwt in een tijdelijk HOME uit een clone, zonder remote, en vervangt alle
   mkdirSync(join(bron, "agents", "skills"), { recursive: true });
   writeFileSync(join(bron, "scripts", "lead", "hooks", "grenzen.sh"), "#!/usr/bin/env bash\n");
   writeFileSync(join(bron, "scripts", "lead", "hooks", "hook.sh"), "#!/usr/bin/env bash\n");
+  // `bun test tests` is een naamfilter, geen pad: dit bestand buiten tests/ mag de relay-poort niet raken.
+  writeFileSync(join(bron, "scripts", "lead", "kapot-tests.test.ts"), 'import { test } from "bun:test";\ntest("buiten tests/", () => { throw new Error("hoort niet in de poort"); });\n');
   git(dir, "init", "-q", "--bare", "-b", "main", origin);
   git(bron, "init", "-q", "-b", "main");
   git(bron, "add", ".");
