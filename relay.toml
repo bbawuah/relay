@@ -1,0 +1,6 @@
+# Ontwerp: dit bestand hoort uiteindelijk in het project dat relay gebruikt.
+version = 1
+[project]
+default_branch = "main"
+[checks]
+full_gate = ["bun", "run", "poort"]
