@@ -79,12 +79,13 @@ describe("installeer-skills", () => {
     expect(existsSync(join(claude, ".system"))).toBe(true);
     expect(existsSync(join(claude, "synced"))).toBe(true);
   });
-  test("vervangt alleen een eigen gemarkeerde map met backup .voor-beleid en laat bronnen ongemoeid", () => {
+  test("vervangt alleen een eigen gemarkeerde map met backup buiten skills en laat bronnen ongemoeid", () => {
     installeer(opties(claude));
     writeFileSync(join(claude, "lead", "SKILL.md"), "oud\n");
     const bron = readFileSync(join(repo, "lead", "SKILL.md"), "utf8");
     installeer(opties(claude));
-    expect(existsSync(join(claude, "lead.voor-beleid", "SKILL.md"))).toBe(true);
+    expect(existsSync(join(claude, "lead.voor-beleid"))).toBe(false);
+    expect(readFileSync(join(dir, "claude", ".lab-beleid-backups", "lead", "SKILL.md"), "utf8")).toBe("oud\n");
     expect(readFileSync(join(claude, "lead", "SKILL.md"), "utf8")).toBe(bron);
     expect(readFileSync(join(repo, "lead", "SKILL.md"), "utf8")).toBe(bron);
   });
