@@ -11,12 +11,32 @@ let dir: string;
 let bin: string;
 let staat: string;
 let log: string;
+let repo: string;
+let werkboom: string;
+
+function git(cwd: string, ...args: string[]) {
+  const p = Bun.spawnSync(["git", ...args], {
+    cwd,
+    env: { ...schoneEnv(), GIT_AUTHOR_NAME: "test", GIT_AUTHOR_EMAIL: "test@example.invalid", GIT_COMMITTER_NAME: "test", GIT_COMMITTER_EMAIL: "test@example.invalid" },
+    stdout: "pipe",
+    stderr: "pipe",
+  });
+  if (p.exitCode !== 0) throw new Error(`git ${args.join(" ")}: ${p.stderr.toString()}`);
+}
 
 beforeEach(() => {
   dir = mkdtempSync(join(tmpdir(), "lead-codex-test-"));
   bin = join(dir, "bin");
   staat = join(dir, "staat");
   log = join(dir, "codex.log");
+  repo = join(dir, "hoofdcheckout");
+  werkboom = join(dir, "lead-worktree");
+  mkdirSync(repo);
+  git(repo, "init", "-q", "-b", "main");
+  writeFileSync(join(repo, "README.md"), "test\n");
+  git(repo, "add", ".");
+  git(repo, "commit", "-q", "-m", "init");
+  git(repo, "worktree", "add", "-q", "-b", "lead/test", werkboom);
   Bun.spawnSync(["mkdir", bin]);
   writeFileSync(join(bin, "bun"), "#!/bin/sh\nexit ${FAKE_BUN_CODE:-0}\n");
   chmodSync(join(bin, "bun"), 0o755);
@@ -32,26 +52,30 @@ printf 'home=%s\\nrole=%s\\nnaam=%s\\nlead=%s\\nargs=%s\\n' "$CODEX_HOME" "$LAB_
 });
 afterEach(() => rmSync(dir, { recursive: true, force: true }));
 
-const run = (extra: Record<string, string> = {}, args = ["start-opdracht"]) =>
-  Bun.spawnSync(["bash", STARTER, ...args], {
-    cwd: process.cwd(),
-    env: { ...schoneEnv(), PATH: `${bin}:${process.env.PATH}`, HOME: dir, LAB_LEAD_STAAT: staat, FAKE_LOG: log, ...extra },
+const run = (extra: Record<string, string> = {}, args = ["start-opdracht"]) => {
+  // Een CI-run kan zelf LAB_*-variabelen erven. De startertest moet uitsluitend
+  // zijn eigen tijdelijke lead-sessie meten, nooit die van de aanroeper.
+  const schoon = Object.fromEntries(Object.entries(schoneEnv()).filter(([k]) => !k.startsWith("LAB_")));
+  return Bun.spawnSync(["bash", STARTER, ...args], {
+    cwd: werkboom,
+    env: { ...schoon, PATH: `${bin}:${process.env.PATH}`, HOME: dir, LAB_LEAD_STAAT: staat, FAKE_LOG: log, ...extra },
     stdout: "pipe",
     stderr: "pipe",
   });
+};
 
 describe("lead-codex.sh", () => {
   test("controleert het profiel en de inlog, start met lead-proef-identiteit en ruimt die daarna op", () => {
     const r = run({ CODEX_HOME: "/onveilig-profiel" });
     expect(r.exitCode).toBe(0);
     const regels = readFileSync(log, "utf8");
-    const werkruimte = dirname(process.cwd());
+    const werkruimte = realpathSync(dirname(werkboom));
     expect(regels).toContain(identiteitPad(staat, werkruimte));
     expect(regels).toContain(`home=${join(dir, ".codex-lead")}`);
     expect(regels).toContain("role=lead-proef");
     expect(regels).toContain("naam=codex-lead");
     expect(regels).toContain("lead=codex-lead");
-    expect(regels).toContain(`args=-C ${dirname(process.cwd())} start-opdracht`);
+    expect(regels).toContain(`args=-C ${realpathSync(dirname(werkboom))} start-opdracht`);
     const pad = identiteitPad(staat, werkruimte);
     expect(existsSync(pad)).toBe(false);
     expect(readdirSync(join(staat, "identiteit"))).toEqual([]);
@@ -99,7 +123,7 @@ describe("lead-codex.sh", () => {
   });
 
   test("weigert een bestaande werkruimte-identiteit", () => {
-    schrijfIdentiteit(staat, dirname(process.cwd()), { naam: "andere-lead", rol: "lead-proef", lead: "andere-lead", opdracht: "", spawn_id: "oud", ts: Date.now() });
+    schrijfIdentiteit(staat, realpathSync(dirname(werkboom)), { naam: "andere-lead", rol: "lead-proef", lead: "andere-lead", opdracht: "", spawn_id: "oud", ts: Date.now() });
     const bestaand = run();
     expect(bestaand.exitCode).toBe(1);
     expect(bestaand.stderr.toString()).toContain("identiteit bestaat al");

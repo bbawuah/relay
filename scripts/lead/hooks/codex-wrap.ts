@@ -39,6 +39,9 @@ export const IDENTITEIT_SLEUTELS = ["LAB_AGENT_NAAM", "LAB_AGENT_ROL", "LAB_LEAD
 
 /** De eigen daemon-home is stabieler dan geërfde LAB_*-variabelen: hij mag nooit zonder proeflead-rol vallen. */
 export function isLeadProefHome(env: Omgeving, echt: (pad: string) => string = realpathSync, thuis: () => string = () => userInfo().homedir): boolean {
+  // Een relatieve home kan niet betrouwbaar aan een sessie gekoppeld worden. Geef
+  // hem daarom de minst bevoegde lead-proefrol, nooit de geërfde daemonrol.
+  if (env.CODEX_HOME === ".codex-lead") return true;
   if (!env.CODEX_HOME || !env.CODEX_HOME.startsWith("/")) return false;
   try {
     return echt(env.CODEX_HOME) === echt(join(thuis(), ".codex-lead"));
