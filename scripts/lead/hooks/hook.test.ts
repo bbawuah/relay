@@ -137,6 +137,20 @@ describe("register (H1-H5, H8-H10)", () => {
     expect(statSync(join(staat, "register", "s1.json")).mode & 0o077).toBe(0);
   });
 
+  test("lead-proef registreert als Codex-lead met thread voor de queue-wekker", async () => {
+    const env = omgeving({ LAB_AGENT_NAAM: "codex-lead", LAB_AGENT_ROL: "lead-proef", LAB_LEAD_NAAM: "codex-lead", CODEX_HOME: "/h/.codex-lead" });
+    await verwerk("SessionStart", inv({ session_id: "codex-thread-1" }), env, { ...opt, bron: "codex" });
+    expect(leesRecord(staat, "codex-thread-1")).toMatchObject({
+      naam: "codex-lead",
+      rol: "lead-proef",
+      lead: "codex-lead",
+      vendor: "codex",
+      host: "tui",
+      thread_id: "codex-thread-1",
+      codex_home: "/h/.codex-lead",
+    });
+  });
+
   test("H1 zet vendor, naam en agent-markering op de eigen pane; H10 wist alleen de eigen sessie", async () => {
     const aanroepen: string[][] = [];
     const tmux = (args: string[]) => {
