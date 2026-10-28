@@ -149,7 +149,7 @@ const omgeving = (extra: Record<string, string> = {}) => ({
 });
 
 const draai = (script: string, args: string[], extra: Record<string, string> = {}, cwd = repo) => {
-  // merge.sh merget alleen als lead; de rol-tests zetten LAB_AGENT_ROL zelf via extra.
+  // merge.sh merget alleen als lead of lead-proef; de rol-tests zetten LAB_AGENT_ROL zelf via extra.
   const r = Bun.spawnSync([...(script.endsWith("merge.sh") ? ["/bin/bash", "-p"] : ["bash"]), script, ...args], { cwd, env: omgeving(script === MERGE ? { LAB_AGENT_ROL: "lead", ...extra } : extra) });
   return { code: r.exitCode, uit: r.stdout.toString(), fout: r.stderr.toString() };
 };
@@ -305,18 +305,20 @@ describe("merge.sh", () => {
     expect(remoteTakken()).toContain("lead/test-tak");
   });
 
-  test("alleen de lead merget: zonder LAB_AGENT_ROL=lead geweigerd, --droog mag wel", () => {
+  test("alleen lead en lead-proef mergen: andere rollen weigeren, --droog mag wel", () => {
     pr();
-    writeFileSync(join(dir, "merge-werkt"), "");
     for (const rol of ["", "agent", "sublead", "vervolg", "Lead"]) {
       const r = draai(MERGE, ["71"], { LAB_AGENT_ROL: rol });
       expect(r.code).toBe(1);
-      expect(r.fout).toContain("merge: geweigerd: alleen de lead merget (LAB_AGENT_ROL=lead)");
+      expect(r.fout).toContain("merge: geweigerd: alleen de lead merget (LAB_AGENT_ROL=lead of lead-proef)");
     }
     expect(log("gh.log")).toBe("");
     expect(draai(MERGE, ["71", "--droog"], { LAB_AGENT_ROL: "agent" }).code).toBe(0);
-    expect(log("gh.log")).not.toContain("pr merge");
-    expect(remoteTakken()).toContain("lead/test-tak");
+    writeFileSync(join(dir, "merge-werkt"), "");
+    const proef = draai(MERGE, ["71"], { LAB_AGENT_ROL: "lead-proef" });
+    expect(proef.code).toBe(0);
+    expect(log("gh.log")).toContain("pr merge");
+    expect(remoteTakken()).not.toContain("lead/test-tak");
   });
 
   test("lead.conf wordt niet ge-sourcet: alleen CI_WORKFLOW= en GH_REPO= worden gelezen", () => {
@@ -683,6 +685,8 @@ describe("spawn.sh", () => {
     expect(cfg.mcpServers.peers.args).toEqual([server]);
     expect(cfg.mcpServers.peers.command).toMatch(/bun$/);
     expect(cfg.mcpServers.peers.env).toEqual({ LAB_AGENT_NAAM: "w1", LAB_LEAD_NAAM: "lead-x", LAB_LEAD_STAAT: staat });
+    // Ook de sessie zelf (dus haar hooks) krijgt de staat: de pane erft de omgeving van de tmux-server, niet die van spawn.
+    expect(r.uit).toMatch(new RegExp(`LAB_SPAWN_ID=\\S+ LAB_LEAD_STAAT=${staat} claude -n w1`));
     const zonder = draai(SPAWN, ["--naam", "w1", "--opdracht", opdracht(), "--lead", "lead-x", "--droog"], basis({ LAB_PEERS_SERVER: join(dir, "bestaat-niet.ts") }));
     expect(zonder.code).toBe(0);
     expect(zonder.fout).toMatch(/peers-MCP .* ontbreekt/);
@@ -693,6 +697,7 @@ describe("spawn.sh", () => {
     // Zonder LAB_LEAD_STAAT geen sleutel; een quote in het serverpad geeft geen vlag (nooit uit de quotes breken).
     const geenStaat = draai(SPAWN, ["--naam", "w1", "--opdracht", opdracht(), "--lead", "lead-x", "--droog"], basis({ LAB_PEERS_SERVER: server, LAB_LEAD_STAAT: "", HOME: dir })); // HOME in de wegwerpmap: de standaard-staat is niet het echte register
     expect(JSON.parse(geenStaat.uit.match(/--mcp-config '([^']+)'/)![1]).mcpServers.peers.env).toEqual({ LAB_AGENT_NAAM: "w1", LAB_LEAD_NAAM: "lead-x" });
+    expect(geenStaat.uit).not.toMatch(/LAB_LEAD_STAAT=\S* claude -n/);
     const quote = join(dir, "q'uote.ts");
     writeFileSync(quote, "// nep\n");
     const metQuote = draai(SPAWN, ["--naam", "w1", "--opdracht", opdracht(), "--lead", "lead-x", "--droog"], basis({ LAB_PEERS_SERVER: quote }));
@@ -910,7 +915,7 @@ describe("spawn.sh", () => {
   test("het commando krijgt het env-voorvoegsel voor de hooks, per rol; --droog toont het", () => {
     const o = opdracht();
     const zonderId = (t: string) => t.replace(/ LAB_SPAWN_ID=[\w-]+/, "");
-    const voor = (rol: string) => `env LAB_AGENT_NAAM=w1 LAB_AGENT_ROL=${rol} LAB_LEAD_NAAM=lead-x LAB_OPDRACHT=${o} claude -n w1`;
+    const voor = (rol: string) => `env LAB_AGENT_NAAM=w1 LAB_AGENT_ROL=${rol} LAB_LEAD_NAAM=lead-x LAB_OPDRACHT=${o} LAB_LEAD_STAAT=${join(dir, "staat")} claude -n w1`;
     const a = draai(SPAWN, ["--naam", "w1", "--opdracht", o, "--lead", "lead-x", "--droog"], basis());
     expect(zonderId(a.uit)).toContain(`"${voor("agent")}`);
     expect(a.uit).toContain("@agent_rol agent");
@@ -927,7 +932,7 @@ describe("spawn.sh", () => {
     const spatie = join(dir, "met spatie.md");
     writeFileSync(spatie, "x");
     const r = draai(SPAWN, ["--naam", "w1", "--opdracht", spatie, "--lead", "l", "--droog"], basis());
-    expect(r.uit.replace(/ LAB_SPAWN_ID=[\w-]+/, "")).toContain(`LAB_OPDRACHT='${spatie}' claude -n w1`);
+    expect(r.uit.replace(/ LAB_SPAWN_ID=[\w-]+/, "")).toContain(`LAB_OPDRACHT='${spatie}' LAB_LEAD_STAAT=${join(dir, "staat")} claude -n w1`);
   });
 
   test("het commando bevat een eenmalig LAB_SPAWN_ID, per sessie anders", () => {

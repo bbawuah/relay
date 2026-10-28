@@ -511,7 +511,12 @@ opdracht_q=$opdracht
 case $opdracht_q in *[!A-Za-z0-9_/.:+=@-]*) opdracht_q="'$opdracht_q'" ;; esac
 # Eenmalig id: een kindproces dat deze omgeving erft (claude -p) herkent de hook er aan dat het geen eigen sessie is.
 spawn_id="$(date +%s)-$$-$RANDOM"
-cmd="env LAB_AGENT_NAAM=$naam LAB_AGENT_ROL=$rol LAB_LEAD_NAAM=$lead LAB_OPDRACHT=$opdracht_q LAB_SPAWN_ID=$spawn_id claude -n $naam"
+# LAB_LEAD_STAAT mee als hij gezet is, zodat de hooks en de peers-MCP hetzelfde register zien als deze aanroep: de pane erft de
+# omgeving van de tmux-server, niet die van deze aanroep (28 okt: een Claude-werker uit een sessie met een tijdelijke staat
+# registreerde zich in het standaardregister en was onbekend op de bus).
+staat_q=""
+[ -z "${LAB_LEAD_STAAT:-}" ] || staat_q=" LAB_LEAD_STAAT=$(printf '%q' "$LAB_LEAD_STAAT")"
+cmd="env LAB_AGENT_NAAM=$naam LAB_AGENT_ROL=$rol LAB_LEAD_NAAM=$lead LAB_OPDRACHT=$opdracht_q LAB_SPAWN_ID=$spawn_id$staat_q claude -n $naam"
 if [ -n "$model" ]; then cmd="$cmd --model $model"; fi
 server="${LAB_PEERS_SERVER:-$HIER/peers/server.ts}"
 bun_abs=$(command -v "$BUN" 2>/dev/null || true)
@@ -529,9 +534,6 @@ if [ "$vendor" = claude ] && [ "$t3" = 0 ]; then
 fi
 if [ "$vendor" = codex ]; then
   # LAB_AGENT_ROL staat altijd in de omgeving (grenzen.sh past de hoofdcheckout-regel alleen toe met een rol; Codex stuurt geen agent_id).
-  # LAB_LEAD_STAAT mee als hij gezet is, zodat de hooks en de peers-MCP hetzelfde register zien als deze aanroep.
-  staat_q=""
-  [ -z "${LAB_LEAD_STAAT:-}" ] || staat_q=" LAB_LEAD_STAAT=$(printf '%q' "$LAB_LEAD_STAAT")"
   # CODEX_HOME vast in het startcommando: de pane erft de omgeving van de tmux-server, niet die van deze aanroep, en
   # codex_controles heeft juist de config van dit pad gecontroleerd. (Een T3-thread draait onder T3's eigen CODEX_HOME.)
   codex_home_q=" CODEX_HOME=$(printf '%q' "$CODEX_HOME_GEKOZEN")"

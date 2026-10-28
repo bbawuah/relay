@@ -28,10 +28,10 @@ function draai(invoer: unknown, hook = HOOK) {
   return { code: p.exitCode, stderr: p.stderr.toString() };
 }
 const bash = (command: string, hook = HOOK) => draai({ tool_name: "Bash", tool_input: { command } }, hook);
-const bashAlsRol = (command: string, rol: string, pane = "%eigen") => {
-  const env = { ...schoneEnv(), HOME: "/nonexistent-grenzen-test", LAB_GRENS_MERGE: "", LAB_AGENT_ROL: rol, TMUX_PANE: pane };
+const bashAlsRol = (command: string, rol: string, pane = "%eigen", hook = HOOK) => {
+  const env = { ...schoneEnv(), HOME: "/nonexistent-grenzen-test", LAB_GRENS_MERGE: "", LAB_AGENT_ROL: rol, TMUX_PANE: pane, LAB_HOOFDCHECKOUT: EIGEN_TAK };
   const invoer = { tool_name: "Bash", tool_input: { command }, cwd: EIGEN_TAK };
-  const p = Bun.spawnSync(["bash", HOOK], { stdin: new TextEncoder().encode(JSON.stringify(invoer)), env, stdout: "pipe", stderr: "pipe" });
+  const p = Bun.spawnSync(["bash", hook], { stdin: new TextEncoder().encode(JSON.stringify(invoer)), env, stdout: "pipe", stderr: "pipe" });
   return { code: p.exitCode, stderr: p.stderr.toString() };
 };
 // Elke hook-aanroep is een eigen bash-proces (met jq en git erin): ~0,1 s onbelast, een veelvoud onder
@@ -68,10 +68,47 @@ describe("grenzen.sh: lead-proef blijft in de eigen pane en uit de Claude-socket
   });
 });
 
-describe("grenzen.sh: lead-proef kan niet escaleren tot merge of push-lead", () => {
-  test("weigert merge, push-werker, gh pr merge en een roltoewijzing", () => {
+describe("grenzen.sh: lead-proef merge via het gecontroleerde pad, niet via push of gh", () => {
+  const MERGE_OMWEGEN = [
+    ["bash ervoor", "bash scripts/lead/merge.sh 700"],
+    ["../x/merge.sh", "../x/merge.sh 700"],
+    ["/tmp/merge.sh", "/tmp/merge.sh 700"],
+    ["puntkomma", "scripts/lead/merge.sh 700; true"],
+    ["&&", "scripts/lead/merge.sh 700 && true"],
+    ["pipe", "scripts/lead/merge.sh 700 | cat"],
+    ["command substitution", "echo $(scripts/lead/merge.sh 700)"],
+  ] as const;
+
+  test("laat alleen de vaste merge.sh vanaf de hoofdcheckout door", () => {
+    expect(bashAlsRol("scripts/lead/merge.sh 700", "lead-proef").code).toBe(0);
+    expect(bashAlsRol("scripts/lead/merge.sh --droog 700", "lead-proef").code).toBe(0);
+    expect(bashAlsRol(`${EIGEN_TAK}/scripts/lead/merge.sh 700`, "lead-proef").code).toBe(0);
+  });
+
+  for (const [naam, command] of MERGE_OMWEGEN)
+    test(`weigert merge-omweg: ${naam}`, () => {
+      const r = bashAlsRol(command, "lead-proef");
+      expect(r.code).toBe(2);
+      expect(r.stderr).toContain("alleen scripts/lead/merge.sh");
+    });
+
+  test("mutatie: zonder de mergepadcheck wordt elke merge-omweg open", () => {
+    const map = mkdtempSync(join(tmpdir(), "grenzen-mergepad-mutatie-"));
+    const kopie = join(map, "grenzen.sh");
+    try {
+      const bron = readFileSync(HOOK, "utf8");
+      expect(bron).toContain("merge_bezwaar = merge_proef_bezwaar(w, basis, cz)");
+      writeFileSync(kopie, bron.replace("        if lead_proef:\n            merge_bezwaar = merge_proef_bezwaar(w, basis, cz)\n            if merge_bezwaar:\n                weiger(merge_bezwaar)\n", "        if lead_proef:\n            pass\n"));
+      for (const [naam, command] of MERGE_OMWEGEN) {
+        expect(bashAlsRol(command, "lead-proef", "%eigen", kopie).code, naam).toBe(0);
+      }
+    } finally {
+      rmSync(map, { recursive: true, force: true });
+    }
+  });
+
+  test("weigert push-werker, gh pr merge en een roltoewijzing", () => {
     for (const command of [
-      "scripts/lead/merge.sh 700",
       "LAB_AGENT_ROL=lead scripts/lead/merge.sh 700",
       "scripts/lead/push-werker.sh werk/tak",
       "gh pr merge 700",
@@ -80,8 +117,13 @@ describe("grenzen.sh: lead-proef kan niet escaleren tot merge of push-lead", () 
       expect(bashAlsRol(command, "lead-proef").code).toBe(2);
   });
 
-  test("laat alleen de droge mergecontrole door", () => {
-    expect(bashAlsRol("scripts/lead/merge.sh --droog 700", "lead-proef").code).toBe(0);
+  test("weigert rauwe gh- en curl-mergepaden ook voor de gewone lead", () => {
+    for (const command of [
+      "gh pr merge 700",
+      "gh api repos/o/r/pulls/700/merge -f merge_method=squash",
+      "curl -X PUT https://api.github.com/repos/o/r/pulls/700/merge",
+    ])
+      expect(bashAlsRol(command, "lead").code).toBe(2);
   });
 
   test("laat leesacties op merge- en pushwerkercode door", () => {

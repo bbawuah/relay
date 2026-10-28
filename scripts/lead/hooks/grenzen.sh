@@ -505,6 +505,22 @@ if tool == "Bash":
             if j < len(w):
                 uit.append((glob, w[j], w[j + 1:]))
         return uit
+    def merge_proef_bezwaar(w, basis, commando):
+        # lead-proef draait uitsluitend de vaste kopie in de hoofdcheckout. Een
+        # relatief pad telt alleen vanuit die checkout; zo kan een eigen
+        # worktree geen aangepaste merge.sh als geautoriseerde route aanbieden.
+        if not any(re.search(r"(^|/)merge\.sh$", x) for x in w):
+            return None
+        e = eerste(w)
+        echte_paden = {os.path.realpath(os.path.join(h, "scripts/lead/merge.sh")) for h in hoofd_paden}
+        keten = re.search(r";|&&|\||\$\(", commando)
+        if e in LEZEN and not keten:
+            return None
+        relatief_ok = e == "scripts/lead/merge.sh" and is_hoofd(basis)
+        absoluut_ok = os.path.isabs(e) and os.path.realpath(e) in echte_paden
+        if keten or not (relatief_ok or absoluut_ok):
+            return "lead-proef mag alleen scripts/lead/merge.sh vanuit de hoofdcheckout draaien, zonder shell-wrapper of commandoketen."
+        return None
     def push_bezwaar(a):
         # geeft (melding of None, lijst positionele argumenten: remote en refspecs)
         k, pos = 0, []
@@ -583,7 +599,7 @@ if tool == "Bash":
             a = w[i + 1:]
             pos = gh_posities(a)
             namen = [y for _, y in pos]
-            if namen[:2] == ["pr", "merge"] and merge_aan:
+            if namen[:2] == ["pr", "merge"] and rauwe_merge_dicht:
                 return "mergen gaat alleen via scripts/lead/merge.sh <pr> (controleert review, poort en state)."
             if namen[:1] == ["alias"] and namen[1:2] in (["set"], ["import"]):
                 return "gh alias set|import mag niet: een alias kan een merge of push verstoppen. Vraag het Brian."
@@ -613,6 +629,15 @@ if tool == "Bash":
         return None
     merge_aan = os.environ.get("LAB_GRENS_MERGE") == "1" or os.path.exists(os.path.expanduser("~/.claude/hooks/grenzen.merge"))
     lead_proef = os.environ.get("LAB_AGENT_ROL") == "lead-proef"
+    # Ook de gewone lead gaat alleen via merge.sh: die route controleert review,
+    # CLEAN en verplichte groene checks. Een rauwe CLI/API-merge is nooit een
+    # alternatief, ook niet nadat lead-proef merge.sh mag gebruiken.
+    rauwe_merge_dicht = merge_aan or os.environ.get("LAB_AGENT_ROL") in ("lead", "lead-proef")
+    def curl_merge_bezwaar(w):
+        for i, x in enumerate(w):
+            if re.fullmatch(r"(\S*/)?curl", x) and any(re.search(r"https?://api\.github\.com/.*/merge(?:[?#]|$)", y) for y in w[i + 1:]):
+                return "de GitHub-merge-API gaat alleen via scripts/lead/merge.sh <pr> (controleert review, poort en state)."
+        return None
     is_subagent = bool(d.get("agent_id") or d.get("agent_type"))
     basis = str(d.get("cwd") or procmap())
     hier = basis
@@ -626,18 +651,24 @@ if tool == "Bash":
             continue
         if e in TEKST:
             continue
-        # De proeflead is bewust geen merge-lead. Dit toetst de hook-rol, niet een
-        # mogelijke `LAB_AGENT_ROL=lead` in het commando: Codex kan die env zelf
-        # zetten, maar niet de identiteit waarmee de hook start.
+        curl_bezwaar = curl_merge_bezwaar(w)
+        if curl_bezwaar:
+            weiger(curl_bezwaar)
+        # Dit toetst de hook-rol, niet een mogelijke `LAB_AGENT_ROL=lead` in het
+        # commando: Codex kan die env zelf zetten, maar niet de identiteit waarmee
+        # de hook start. De proeflead mag wel via merge.sh mergen (Brian, 28 okt),
+        # maar niet de werker-push of een rauwe gh-merge omzeilen.
         if lead_proef:
             if any(re.fullmatch(r"LAB_AGENT_ROL=.*", x) for x in w):
                 weiger("lead-proef mag LAB_AGENT_ROL niet in een commando zetten; de hook-rol is leidend.")
             for glob, sub, args in git_aanroepen(w):
                 if any(o == "-c" for o, _ in glob):
                     weiger("lead-proef mag git -c niet gebruiken; een git-config kan een extern commando of merge starten.")
+        if lead_proef:
+            merge_bezwaar = merge_proef_bezwaar(w, basis, cz)
+            if merge_bezwaar:
+                weiger(merge_bezwaar)
         if lead_proef and e not in LEZEN:
-            if any(re.search(r"(^|/)merge\.sh$", x) for x in w) and "--droog" not in w:
-                weiger("lead-proef merget niet; alleen scripts/lead/merge.sh --droog is toegestaan.")
             if any(re.search(r"(^|/)push-werker\.sh$", x) for x in w):
                 weiger("lead-proef pusht geen werkertakken; laat de lead dat buiten de sandbox doen.")
             for i, x in enumerate(w):
@@ -1176,7 +1207,7 @@ if tool == "Bash":
     if datetime.time(5, 0) <= nu < datetime.time(7, 15):
         if re.search(r"bun run (poort|bekijk|test:tmux|test:e2e)|playwright", c):
             weiger("stiltevenster 05:00–07:15: geen poort, e2e of bekijk. Plan het na 07:15.")
-    if merge_aan and re.search(r"\bgh\s+pr\s+merge\b", cz):
+    if rauwe_merge_dicht and re.search(r"\bgh\s+pr\s+merge\b", cz):
         weiger("mergen gaat alleen via scripts/lead/merge.sh <pr> (controleert review, poort en state).")
 sys.exit(0)
 PY

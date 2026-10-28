@@ -43,6 +43,8 @@ export type Opties = {
   bus?: Bus | null;
   /** Tijdsgrens voor idleGemeld (de hook heeft een eigen timeout); injecteerbaar zodat tests niet op de echte klok wachten. */
   budget?: (ms: number) => Promise<void>;
+  /** Tmux-aanroep voor de pane-badge; tests kunnen dit vervangen zonder een echte server. */
+  tmux?: (args: string[], env: Omgeving) => string;
 };
 
 /** idleGemeld wacht op de wekker van de bus (≤ 5 s); de hook heeft 5 s (Stop) of 1 s (SessionEnd). Een afgebroken wek (ook een "nu"-wek: die legt `open` met de pid van de hook vast) neemt een volgende `list()` over zodra die pid dood is. */
@@ -50,15 +52,57 @@ export const IDLE_BUDGET_STOP_MS = 1000;
 export const IDLE_BUDGET_EINDE_MS = 500;
 
 export const MAX_BLOKKADES = 3;
-const ROLLEN = ["lead", "agent", "sublead", "vervolg"];
+const ROLLEN = ["lead", "lead-proef", "agent", "sublead", "vervolg"];
+const isLeadRol = (rol: string): boolean => rol === "lead" || rol === "lead-proef";
 const LEEG: Uitslag = { code: 0, stdout: "", stderr: "" };
 
 type Invoer = { [k: string]: unknown };
 const tekst = (v: unknown): string => (typeof v === "string" ? v : "");
 
+/**
+ * Pane-metadata hoort bij de sessie, niet bij spawn.sh: ook een handmatig
+ * gestarte Claude- of Codex-sessie krijgt zo een vendor-badge. Zonder een
+ * actuele tmux-omgeving doen we niets; een losse hook mag nooit de
+ * standaardserver van Brian raken.
+ */
+function tmuxUitvoer(args: string[], env: Omgeving, opties: Opties): string {
+  if (!env.TMUX || !env.TMUX_PANE) return "";
+  if (opties.tmux) return opties.tmux(args, env);
+  try {
+    const p = Bun.spawnSync(["tmux", ...args], {
+      env: { ...process.env, TMUX: env.TMUX, TMUX_PANE: env.TMUX_PANE },
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+    return p.exitCode === 0 ? p.stdout.toString() : "";
+  } catch {
+    return "";
+  }
+}
+
+function zetPaneVendor(env: Omgeving, sessieId: string, bron: Bron, naam: string, opties: Opties): void {
+  if (!env.TMUX || !env.TMUX_PANE) return;
+  const doel = env.TMUX_PANE;
+  tmuxUitvoer(["set-option", "-p", "-t", doel, "@vendor", bron], env, opties);
+  // @agent blijft de niet-lege markering voor C-j/C-k en agent-status.sh.
+  tmuxUitvoer(["set-option", "-p", "-t", doel, "@agent", bron], env, opties);
+  tmuxUitvoer(["set-option", "-p", "-t", doel, "@agent_naam", naam], env, opties);
+  tmuxUitvoer(["set-option", "-p", "-t", doel, "@agent_sessie", sessieId], env, opties);
+}
+
+/** Wis alleen metadata die deze sessie zelf zette; een opvolger in dezelfde pane blijft zichtbaar. */
+function wisPaneVendor(env: Omgeving, sessieId: string, opties: Opties): void {
+  if (!env.TMUX || !env.TMUX_PANE) return;
+  const doel = env.TMUX_PANE;
+  if (tmuxUitvoer(["show-options", "-p", "-t", doel, "-v", "@agent_sessie"], env, opties).trim() !== sessieId) return;
+  for (const optie of ["@vendor", "@agent", "@agent_naam", "@agent_sessie"]) {
+    tmuxUitvoer(["set-option", "-p", "-t", doel, "-u", optie], env, opties);
+  }
+}
+
 // Het register is de bron: env geeft alleen de beginwaarde (bij het eerste record).
 function leadNaamVan(env: Omgeving, rec: Rec | null): string {
-  return env.LAB_AGENT_ROL === "lead" ? eigenLeadNaam(rec, env) : meldAdres(rec, env);
+  return isLeadRol(env.LAB_AGENT_ROL || "") ? eigenLeadNaam(rec, env) : meldAdres(rec, env);
 }
 
 /** Laatste niet-lege regel zonder opmaaktekens aan de randen (`**vrij**`, `- vrij`, `> vrij.`). */
@@ -159,7 +203,7 @@ export async function verwerk(event: string, invoer: Invoer, env: Omgeving, opti
   if (event === "wekker") return rol === "lead" ? wekker(staat, leadNaamVan(env, rec0), nu, opties) : LEEG;
   if (!sessieId) return LEEG;
   const cwd = tekst(invoer.cwd) || process.cwd();
-  const isLead = rol === "lead";
+  const isLead = isLeadRol(rol);
   const lead = leadNaamVan(env, rec0);
   const agentId = tekst(invoer.agent_id);
   const t = nu();
@@ -203,6 +247,7 @@ export async function verwerk(event: string, invoer: Invoer, env: Omgeving, opti
         }
       }
       schrijfRecord(staat, r);
+      zetPaneVendor(env, sessieId, bron, naamVan(r), opties);
       if (schoon) wisExternMarkering(staat, r.naam);
       if (isLead) {
         const dubbel = dubbeleLeads(staat, r.naam, r.id, (opties.panes ?? tmuxPanes)());
@@ -340,6 +385,7 @@ export async function verwerk(event: string, invoer: Invoer, env: Omgeving, opti
       zetToestand(r, "weg", t);
       r.einde = t;
       schrijfRecord(staat, r);
+      wisPaneVendor(env, sessieId, opties);
       // De identiteit van deze spawn (codex-wrap) is niet meer nodig; een nieuwe spawn in dezelfde checkout blijft staan.
       wisIdentiteit(staat, cwd, env.LAB_SPAWN_ID || "", t);
       await idleGemeld(bus, naamVan(r), "weg", IDLE_BUDGET_EINDE_MS, opties);
