@@ -15,8 +15,9 @@
 // Hetzelfde voor een commando dat ontbreekt of niet uitvoerbaar is (exit 2 bij PreToolUse, anders exit 1).
 
 import { bindLeadProefSessie, type Omgeving, staatMap, zoekIdentiteit } from "./register";
-import { homedir } from "node:os";
-import { resolve } from "node:path";
+import { userInfo } from "node:os";
+import { realpathSync } from "node:fs";
+import { join } from "node:path";
 
 // afgeleide-naam ligt in de repo op ../peers en geïnstalleerd op ./peers (zie peers-kopie.ts). Een statische import zou
 // geïnstalleerd falen en elke Codex-hook laten crashen (#685); faalt het laden, dan is er geen afgeleide naam en werkt de rest.
@@ -37,9 +38,13 @@ const afgeleide = await laadAfgeleideNaam();
 export const IDENTITEIT_SLEUTELS = ["LAB_AGENT_NAAM", "LAB_AGENT_ROL", "LAB_LEAD_NAAM", "LAB_OPDRACHT", "LAB_SPAWN_ID", "LAB_T3_THREAD", "LAB_LEAD_STAAT"];
 
 /** De eigen daemon-home is stabieler dan geërfde LAB_*-variabelen: hij mag nooit zonder proeflead-rol vallen. */
-function isLeadProefHome(env: Omgeving): boolean {
-  if (!env.CODEX_HOME) return false;
-  return resolve(env.CODEX_HOME) === resolve(env.HOME || homedir(), ".codex-lead");
+export function isLeadProefHome(env: Omgeving, echt: (pad: string) => string = realpathSync, thuis: () => string = () => userInfo().homedir): boolean {
+  if (!env.CODEX_HOME || !env.CODEX_HOME.startsWith("/")) return false;
+  try {
+    return echt(env.CODEX_HOME) === echt(join(thuis(), ".codex-lead"));
+  } catch {
+    return false;
+  }
 }
 
 /**
@@ -47,15 +52,13 @@ function isLeadProefHome(env: Omgeving): boolean {
  * eruit, want de daemon-omgeving is van de sessie die hem startte (bijvoorbeeld een dode werker A) en niet van deze sessie
  * (anders registreert Brians eigen Codex-TUI zich als die werker).
  */
-export function hookOmgeving(env: Omgeving, cwd: string, nu = Date.now(), sessieId = "", gebeurtenis = ""): Record<string, string> {
+export function hookOmgeving(env: Omgeving, cwd: string, nu = Date.now(), sessieId = "", gebeurtenis = "", leadHome: (env: Omgeving) => boolean = isLeadProefHome): Record<string, string> {
   const uit: Record<string, string> = {};
   for (const [k, v] of Object.entries(env)) if (typeof v === "string") uit[k] = v;
   if (gebeurtenis === "SessionStart") bindLeadProefSessie(staatMap(env), cwd, env.LAB_SPAWN_ID ?? "", sessieId, nu);
+  if (leadHome(env)) return { ...uit, LAB_AGENT_NAAM: "codex-lead", LAB_AGENT_ROL: "lead-proef", LAB_LEAD_NAAM: "codex-lead" };
   const i = identiteitEnv(env, cwd, nu, sessieId);
   if (Object.keys(i).length > 0) return { ...uit, ...i };
-  if (isLeadProefHome(env)) {
-    return { ...uit, LAB_AGENT_NAAM: "codex-lead", LAB_AGENT_ROL: "lead-proef", LAB_LEAD_NAAM: "codex-lead" };
-  }
   // Brians eigen Codex-sessie (geen identiteitsbestand, geen naam of rol in de omgeving): een afgeleide naam uit het sessie-id,
   // dezelfde als die van de peers-server (CONTRACT.md, "Wijziging 27 okt"). Rol en lead blijven leeg.
   const afgeleid = afgeleide?.magAfleiden(env, staatMap(env), cwd) ? afgeleide.afgeleideNaam(sessieId) : null;

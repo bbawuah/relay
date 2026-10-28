@@ -3,7 +3,7 @@ import { chmodSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, 
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { schoneEnv } from "../../test-integriteit";
-import { IDENTITEIT_SLEUTELS, cwdUitInvoer, hookOmgeving, identiteitEnv, sessieUitInvoer } from "./codex-wrap";
+import { IDENTITEIT_SLEUTELS, cwdUitInvoer, hookOmgeving, identiteitEnv, isLeadProefHome, sessieUitInvoer } from "./codex-wrap";
 import { IDENTITEIT_MAX_MS, identiteitPad, leesIdentiteit, schrijfIdentiteit, ververseIdentiteit, wisIdentiteit } from "./register";
 
 const WRAP = join(import.meta.dir, "codex-wrap.sh");
@@ -139,14 +139,27 @@ describe("identiteitEnv", () => {
   test("lead-proef-home faalt dicht bij een oude daemon, /new en een kind dat eerst bindt", () => {
     const home = join(dir, "lead-home");
     const env = { PATH: "/bin", HOME: home, CODEX_HOME: join(home, ".codex-lead"), LAB_LEAD_STAAT: staat, LAB_SPAWN_ID: "oud" };
-    expect(hookOmgeving(env, werk, Date.now(), "nieuw").LAB_AGENT_ROL).toBe("lead-proef");
+    const leadHome = () => true;
+    expect(hookOmgeving(env, werk, Date.now(), "nieuw", "", leadHome).LAB_AGENT_ROL).toBe("lead-proef");
     schrijfIdentiteit(staat, werk, { ...ident, rol: "lead-proef", spawn_id: "huidig" });
     const juist = { ...env, LAB_SPAWN_ID: "huidig" };
-    expect(hookOmgeving(juist, werk, Date.now(), "kind", "SessionStart").LAB_AGENT_ROL).toBe("lead-proef");
-    expect(hookOmgeving(juist, werk, Date.now(), "lead-na-new", "SessionStart").LAB_AGENT_ROL).toBe("lead-proef");
+    expect(hookOmgeving(juist, werk, Date.now(), "kind", "SessionStart", leadHome).LAB_AGENT_ROL).toBe("lead-proef");
+    expect(hookOmgeving(juist, werk, Date.now(), "lead-na-new", "SessionStart", leadHome).LAB_AGENT_ROL).toBe("lead-proef");
     wisIdentiteit(staat, werk, "huidig");
     expect(leesIdentiteit(staat, werk)?.rol).toBe("lead-proef");
-    expect(hookOmgeving({ PATH: "/bin", HOME: home, CODEX_HOME: join(home, ".andere-home"), LAB_LEAD_STAAT: staat }, join(dir, "geen")).LAB_AGENT_ROL).toBeUndefined();
+    expect(hookOmgeving({ PATH: "/bin", HOME: home, CODEX_HOME: join(home, ".andere-home"), LAB_LEAD_STAAT: staat }, join(dir, "geen"), Date.now(), "", "", () => false).LAB_AGENT_ROL).toBeUndefined();
+  });
+  test("lead-proef-home vergelijkt echte paden met de systeembasis, niet HOME of relatieve tekst", () => {
+    const thuis = join(dir, "systeem-home");
+    const echt = join(thuis, ".codex-lead");
+    const link = join(dir, "link-naar-lead");
+    mkdirSync(echt, { recursive: true });
+    symlinkSync(echt, link);
+    const basis = { CODEX_HOME: echt, HOME: join(dir, "andere-home") };
+    expect(isLeadProefHome(basis, realpathSync, () => thuis)).toBe(true);
+    expect(isLeadProefHome({ ...basis, CODEX_HOME: link }, realpathSync, () => thuis)).toBe(true);
+    expect(isLeadProefHome({ ...basis, HOME: join(dir, "foute-home") }, realpathSync, () => thuis)).toBe(true);
+    expect(isLeadProefHome({ ...basis, CODEX_HOME: ".codex-lead" }, realpathSync, () => thuis)).toBe(false);
   });
   test("sessieUitInvoer", () => {
     expect(sessieUitInvoer('{"session_id":"abc"}')).toBe("abc");
