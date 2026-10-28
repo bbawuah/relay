@@ -84,6 +84,15 @@ describe("grenzen.sh: lead-proef merge via het gecontroleerde pad, niet via push
       expect(bashAlsRol(command, "lead-proef").code).toBe(2);
   });
 
+  test("weigert rauwe gh- en curl-mergepaden ook voor de gewone lead", () => {
+    for (const command of [
+      "gh pr merge 700",
+      "gh api repos/o/r/pulls/700/merge -f merge_method=squash",
+      "curl -X PUT https://api.github.com/repos/o/r/pulls/700/merge",
+    ])
+      expect(bashAlsRol(command, "lead").code).toBe(2);
+  });
+
   test("laat leesacties op merge- en pushwerkercode door", () => {
     expect(bashAlsRol("cat scripts/lead/merge.sh", "lead-proef").code).toBe(0);
     expect(bashAlsRol("git log -- scripts/lead/push-werker.sh", "lead-proef").code).toBe(0);

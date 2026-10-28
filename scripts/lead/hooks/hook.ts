@@ -50,7 +50,8 @@ export const IDLE_BUDGET_STOP_MS = 1000;
 export const IDLE_BUDGET_EINDE_MS = 500;
 
 export const MAX_BLOKKADES = 3;
-const ROLLEN = ["lead", "agent", "sublead", "vervolg"];
+const ROLLEN = ["lead", "lead-proef", "agent", "sublead", "vervolg"];
+const isLeadRol = (rol: string): boolean => rol === "lead" || rol === "lead-proef";
 const LEEG: Uitslag = { code: 0, stdout: "", stderr: "" };
 
 type Invoer = { [k: string]: unknown };
@@ -58,7 +59,7 @@ const tekst = (v: unknown): string => (typeof v === "string" ? v : "");
 
 // Het register is de bron: env geeft alleen de beginwaarde (bij het eerste record).
 function leadNaamVan(env: Omgeving, rec: Rec | null): string {
-  return env.LAB_AGENT_ROL === "lead" ? eigenLeadNaam(rec, env) : meldAdres(rec, env);
+  return isLeadRol(env.LAB_AGENT_ROL || "") ? eigenLeadNaam(rec, env) : meldAdres(rec, env);
 }
 
 /** Laatste niet-lege regel zonder opmaaktekens aan de randen (`**vrij**`, `- vrij`, `> vrij.`). */
@@ -159,7 +160,7 @@ export async function verwerk(event: string, invoer: Invoer, env: Omgeving, opti
   if (event === "wekker") return rol === "lead" ? wekker(staat, leadNaamVan(env, rec0), nu, opties) : LEEG;
   if (!sessieId) return LEEG;
   const cwd = tekst(invoer.cwd) || process.cwd();
-  const isLead = rol === "lead";
+  const isLead = isLeadRol(rol);
   const lead = leadNaamVan(env, rec0);
   const agentId = tekst(invoer.agent_id);
   const t = nu();
