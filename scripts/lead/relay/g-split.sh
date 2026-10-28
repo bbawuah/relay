@@ -76,7 +76,7 @@ rm -rf "$tmp"
 mkdir -p "$DOEL/.github/workflows" "$DOEL/tests"
 printf 'gemaakt-door=g-split.sh\nbron=origin/main\n' > "$DOEL/$MARKER"
 cat > "$DOEL/package.json" <<'EOF'
-{"name":"relay","private":true,"scripts":{"poort":"bun test tests && bash tests/hook-canaries.sh","test":"bun run poort"}}
+{"name":"relay","private":true,"scripts":{"poort":"bun test ./tests && bash tests/hook-canaries.sh","test":"bun run poort"}}
 EOF
 cat > "$DOEL/tests/hook-canaries.sh" <<'EOF'
 #!/usr/bin/env bash
@@ -85,7 +85,8 @@ test -f scripts/lead/hooks/grenzen.sh
 test -f scripts/lead/hooks/hook.sh
 EOF
 chmod 755 "$DOEL/tests/hook-canaries.sh"
-# `bun test tests` faalt zonder testbestand; deze rooktest houdt de poort van de nieuwe repo echt.
+# `bun test ./tests` faalt zonder testbestand; deze rooktest houdt de poort van de nieuwe repo echt. Het pad heeft `./`
+# nodig: `bun test tests` is een naamfilter en draait elk bestand met "tests" in de naam (ook buiten tests/).
 cat > "$DOEL/tests/structuur.test.ts" <<'EOF'
 import { expect, test } from "bun:test";
 import { existsSync } from "node:fs";
