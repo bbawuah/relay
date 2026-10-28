@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { installeer } from "./installeer-skills";
@@ -38,6 +38,30 @@ describe("installeer-skills", () => {
       expect(readFileSync(buiten, "utf8")).toBe("ORIGINEEL\n");
       rmSync(link);
     }
+  });
+  test("valideert alle bronnen vóór ook maar één staging-kopie", () => {
+    const link = join(repo, "retro", "references", "link.md");
+    symlinkSync(join(repo, "lead", "SKILL.md"), link);
+    let staged = 0;
+    expect(() => installeer(opties(claude), { voorStageer: () => staged++ })).toThrow(/symlink/i);
+    expect(staged).toBe(0);
+    expect(existsSync(join(claude, "lead"))).toBe(false);
+  });
+  test("kopieerfout in de laatste skill laat bestaande doelen ongemoeid en ruimt staging op", () => {
+    installeer(opties(claude));
+    const voorLead = readFileSync(join(claude, "lead", "SKILL.md"));
+    const voorRetro = readFileSync(join(claude, "retro", "SKILL.md"));
+    rmSync(join(claude, "grill-me"), { recursive: true, force: true });
+    const onleesbaar = join(repo, "grill-me", "references", "hulp.md");
+    chmodSync(onleesbaar, 0);
+    try { expect(() => installeer(opties(claude))).toThrow(); }
+    finally { chmodSync(onleesbaar, 0o644); }
+    expect(readFileSync(join(claude, "lead", "SKILL.md")).equals(voorLead)).toBe(true);
+    expect(readFileSync(join(claude, "retro", "SKILL.md")).equals(voorRetro)).toBe(true);
+    expect(existsSync(join(claude, "grill-me"))).toBe(false);
+    expect(readdirSync(join(dir, "claude")).some((n) => n.includes("beleid-staging"))).toBe(false);
+    expect(() => installeer(opties(claude))).not.toThrow();
+    expect(existsSync(join(claude, "grill-me", marker))).toBe(true);
   });
   test("droog toont wijzigingen maar schrijft niets", () => {
     const r = installeer(opties(claude, { droog: true }));

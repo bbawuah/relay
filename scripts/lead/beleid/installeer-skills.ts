@@ -1,4 +1,4 @@
-import { cpSync, existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { cpSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
 
 export const MARKER = ".lab-beleid-skill.json";
@@ -6,6 +6,7 @@ export const REPO_SKILLS = ["lead", "retro", "grill-me"] as const;
 export const LOKALE_SKILLS = ["naar-mod", "tailnet", "vault", "scrawl"] as const;
 
 export type Opties = { doel: string; repo?: string; lokaal?: string; droog?: boolean; controle?: boolean };
+export type InstalleerDeps = { voorStageer?: (bron: string) => void };
 const veilig = (n: string) => /^[a-z][a-z0-9-]*$/.test(n) && n !== ".system" && n !== "synced";
 function geenSymlink(p: string): void { const s = lstatSync(p); if (s.isSymbolicLink()) throw new Error(`${p}: symlinks zijn niet toegestaan`); if (s.isDirectory()) for (const e of readdirSync(p)) geenSymlink(join(p, e)); }
 function afwijkingen(bron: string, doel: string, relatief = ""): string[] {
@@ -17,19 +18,19 @@ function afwijkingen(bron: string, doel: string, relatief = ""): string[] {
   const namen = new Set([...readdirSync(bron), ...readdirSync(doel)]);
   return [...namen].filter((n) => n !== MARKER).flatMap((n) => afwijkingen(join(bron, n), join(doel, n), relatief ? join(relatief, n) : n));
 }
-function kopieer(bron: string, doel: string, backupMap: string, droog: boolean, regels: string[]) {
-  if (!existsSync(join(bron, "SKILL.md"))) throw new Error(`${bron}: SKILL.md ontbreekt`);
-  geenSymlink(bron);
-  if (lstatSync(bron).isSymbolicLink() || lstatSync(join(bron, "SKILL.md")).isSymbolicLink()) throw new Error(`${bron}: symlinks zijn niet toegestaan`);
-  if (existsSync(doel) && (!existsSync(join(doel, MARKER)) || lstatSync(join(doel, MARKER)).isSymbolicLink())) throw new Error(`${doel}: niet door beleid gemarkeerd of marker is symlink`);
+function plan(bron: string, doel: string, droog: boolean, regels: string[]) {
   regels.push(`${existsSync(doel) ? "vervang" : "installeer"} ${doel}`);
   if (droog) { if (existsSync(join(doel, "SKILL.md")) && readFileSync(join(bron, "SKILL.md"), "utf8") !== readFileSync(join(doel, "SKILL.md"), "utf8")) regels.push(`--- ${join(doel, "SKILL.md")}\n+++ ${join(bron, "SKILL.md")}\n- ${readFileSync(join(doel, "SKILL.md"), "utf8").trim()}\n+ ${readFileSync(join(bron, "SKILL.md"), "utf8").trim()}`); return; }
-  if (existsSync(doel)) { const back = join(backupMap, basename(doel)); rmSync(back, { recursive: true, force: true }); mkdirSync(backupMap, { recursive: true }); renameSync(doel, back); }
-  mkdirSync(doel, { recursive: true });
+}
+function stageer(bron: string, doel: string) {
   cpSync(bron, doel, { recursive: true, filter: (p) => !p.endsWith(".system") && !p.includes("/synced/") });
   writeFileSync(join(doel, MARKER), JSON.stringify({ bron: "beleid" }) + "\n", { mode: 0o600 });
 }
-export function installeer(o: Opties) {
+function vervang(staging: string, doel: string, backupMap: string) {
+  if (existsSync(doel)) { const back = join(backupMap, basename(doel)); rmSync(back, { recursive: true, force: true }); mkdirSync(backupMap, { recursive: true }); renameSync(doel, back); }
+  renameSync(staging, doel);
+}
+export function installeer(o: Opties, deps: InstalleerDeps = {}) {
   const repo = o.repo ?? join(import.meta.dir, "../../..", "agents/skills");
   const lokaal = o.lokaal ?? join(process.env.HOME ?? "", "vault-b-status/skills");
   const regels: string[] = [];
@@ -44,9 +45,17 @@ export function installeer(o: Opties) {
     }
     return regels;
   }
-  const backupMap = join(dirname(o.doel), ".lab-beleid-backups");
-  for (const [bron, doel] of bronnen) kopieer(bron, doel, backupMap, !!o.droog, regels);
-  if (o.controle) for (const n of readdirSync(o.doel, { withFileTypes: true }).filter((e) => e.isDirectory()).map((e) => e.name)) if ((REPO_SKILLS as readonly string[]).includes(n) && !existsSync(join(o.doel, n, MARKER))) throw new Error(`${n}: marker ontbreekt`);
+  for (const [bron, doel] of bronnen) plan(bron, doel, !!o.droog, regels);
+  if (o.droog) return regels;
+  const ouder = dirname(o.doel); mkdirSync(ouder, { recursive: true });
+  const staging = mkdtempSync(join(ouder, `.${basename(o.doel)}.beleid-staging-`));
+  try {
+    const staged = bronnen.map(([bron, doel]) => [bron, doel, join(staging, basename(doel))] as const);
+    for (const [bron, , stageDoel] of staged) { deps.voorStageer?.(bron); stageer(bron, stageDoel); }
+    mkdirSync(o.doel, { recursive: true });
+    const backupMap = join(ouder, ".lab-beleid-backups");
+    for (const [, doel, stageDoel] of staged) vervang(stageDoel, doel, backupMap);
+  } finally { rmSync(staging, { recursive: true, force: true }); }
   return regels;
 }
 if (import.meta.main) {
