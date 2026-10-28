@@ -171,6 +171,8 @@ fi
 HIER=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 BUN="${LAB_LEAD_BUN:-bun}"
 BELEID_BUN=$(command -v bun 2>/dev/null || true)
+# De beleidsgenerator draait vanuit $HIER zonder BUN_OPTIONS/NODE_OPTIONS: een bunfig.toml (preload) in de werkmap van de
+# aanroeper (vaak de worktree van een werker) of een geërfde --preload mag het sandboxprofiel niet veranderen (opus-review C).
 if [ -z "$lead" ] && command -v "$BUN" >/dev/null 2>&1; then
   lead=$("$BUN" "$HIER/leadnaam.ts" eigen 2>/dev/null || true)
 fi
@@ -297,7 +299,7 @@ codex_sandbox() {
   # paden en quoting; de generator krijgt alleen al gevalideerde argumenten.
   WERKTMP="$t/lab-werker-$naam"
   SANDBOX_C_ARGS=()
-  while IFS= read -r regel; do SANDBOX_C_ARGS+=("$regel"); done < <("$BELEID_BUN" "$HIER/beleid/codex-werker.ts" spawn-c-args "$m" "$c" "$e" "$h" "$t" "$naam" "$ch" "$([ "$netwerk" = 0 ] && echo false || echo true)")
+  while IFS= read -r regel; do SANDBOX_C_ARGS+=("$regel"); done < <(cd "$HIER" && env -u BUN_OPTIONS -u NODE_OPTIONS "$BELEID_BUN" "$HIER/beleid/codex-werker.ts" spawn-c-args "$m" "$c" "$e" "$h" "$t" "$naam" "$ch" "$([ "$netwerk" = 0 ] && echo false || echo true)")
   net=false; [ "$netwerk" = 0 ] || net=true
   [ "${#SANDBOX_C_ARGS[@]}" = 3 ] && [ "${SANDBOX_C_ARGS[0]}" = 'default_permissions="lab-werker"' ] &&
     [ "${SANDBOX_C_ARGS[2]}" = "permissions.lab-werker.network={enabled=$net}" ] || fout "kon het Codex-werkerprofiel niet genereren"
@@ -654,7 +656,7 @@ if [ "$vendor" = codex ]; then
     rm -rf "$bron"
     [ -z "$afwijking" ] || fout "$afwijking in $map wijkt af van origin/main (of is nieuw, of een symlink): bun install buiten de sandbox zou hem volgen. Herstel het bestand, of start met --netwerk: dan draait de werker zelf bun install in de sandbox"
     BUN_INSTALL_ARGS=()
-    while IFS= read -r regel; do BUN_INSTALL_ARGS+=("$regel"); done < <("$BELEID_BUN" "$HIER/beleid/codex-werker.ts" bun-install-args)
+    while IFS= read -r regel; do BUN_INSTALL_ARGS+=("$regel"); done < <(cd "$HIER" && env -u BUN_OPTIONS -u NODE_OPTIONS "$BELEID_BUN" "$HIER/beleid/codex-werker.ts" bun-install-args)
     [ "${BUN_INSTALL_ARGS[*]}" = 'install --ignore-scripts --frozen-lockfile' ] || fout "kon de bun-installatie voor het Codex-werkerprofiel niet genereren"
     (cd "$map" && "$BUN" "${BUN_INSTALL_ARGS[@]}" >&2) || fout "bun install --ignore-scripts --frozen-lockfile in $map mislukte; de werker heeft zonder netwerk geen installatie. Los het op of start met --netwerk"
   fi

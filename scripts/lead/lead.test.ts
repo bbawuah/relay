@@ -1395,6 +1395,21 @@ exit 1
     }
   });
 
+  test("sandbox: een bunfig.toml of BUN_OPTIONS in de werkmap van de aanroeper raakt de beleidsgenerator niet", () => {
+    const marker = join(dir, "preload-gedraaid");
+    const preload = join(dir, "preload.ts");
+    // Alleen de generator telt; andere bun-aanroepen van spawn.sh vallen buiten deze test.
+    writeFileSync(preload, `if (process.argv.some((a) => a.includes("codex-werker"))) require("node:fs").writeFileSync(${JSON.stringify(marker)}, "ja");\n`);
+    writeFileSync(join(repo, "bunfig.toml"), `preload = [${JSON.stringify(preload)}]\n`);
+    try {
+      const r = codex(["--map", wt, "--droog"], { TMPDIR: join(dir, "sbtmp"), BUN_OPTIONS: `--preload ${preload}`, NODE_OPTIONS: `--require ${preload}` });
+      expect(r.uit).toContain("default_permissions");
+      expect(existsSync(marker)).toBe(false);
+    } finally {
+      rmSync(join(repo, "bunfig.toml"), { force: true });
+    }
+  });
+
   test("sandbox: een pad met een quote of backslash weigert spawn (nooit een halve sandbox)", () => {
     const slecht = join(dir, "slecht'pad");
     mkdirSync(slecht);
