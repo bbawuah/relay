@@ -685,6 +685,8 @@ describe("spawn.sh", () => {
     expect(cfg.mcpServers.peers.args).toEqual([server]);
     expect(cfg.mcpServers.peers.command).toMatch(/bun$/);
     expect(cfg.mcpServers.peers.env).toEqual({ LAB_AGENT_NAAM: "w1", LAB_LEAD_NAAM: "lead-x", LAB_LEAD_STAAT: staat });
+    // Ook de sessie zelf (dus haar hooks) krijgt de staat: de pane erft de omgeving van de tmux-server, niet die van spawn.
+    expect(r.uit).toMatch(new RegExp(`LAB_SPAWN_ID=\\S+ LAB_LEAD_STAAT=${staat} claude -n w1`));
     const zonder = draai(SPAWN, ["--naam", "w1", "--opdracht", opdracht(), "--lead", "lead-x", "--droog"], basis({ LAB_PEERS_SERVER: join(dir, "bestaat-niet.ts") }));
     expect(zonder.code).toBe(0);
     expect(zonder.fout).toMatch(/peers-MCP .* ontbreekt/);
@@ -695,6 +697,7 @@ describe("spawn.sh", () => {
     // Zonder LAB_LEAD_STAAT geen sleutel; een quote in het serverpad geeft geen vlag (nooit uit de quotes breken).
     const geenStaat = draai(SPAWN, ["--naam", "w1", "--opdracht", opdracht(), "--lead", "lead-x", "--droog"], basis({ LAB_PEERS_SERVER: server, LAB_LEAD_STAAT: "", HOME: dir })); // HOME in de wegwerpmap: de standaard-staat is niet het echte register
     expect(JSON.parse(geenStaat.uit.match(/--mcp-config '([^']+)'/)![1]).mcpServers.peers.env).toEqual({ LAB_AGENT_NAAM: "w1", LAB_LEAD_NAAM: "lead-x" });
+    expect(geenStaat.uit).not.toMatch(/LAB_LEAD_STAAT=\S* claude -n/);
     const quote = join(dir, "q'uote.ts");
     writeFileSync(quote, "// nep\n");
     const metQuote = draai(SPAWN, ["--naam", "w1", "--opdracht", opdracht(), "--lead", "lead-x", "--droog"], basis({ LAB_PEERS_SERVER: quote }));
