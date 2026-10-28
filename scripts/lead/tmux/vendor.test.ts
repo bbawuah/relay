@@ -25,6 +25,10 @@ test.skipIf(inCodexSandbox || !tmuxBeschikbaar)("vendor.conf laadt in een wegwer
     expect(tmux("start-server").exitCode).toBe(0);
     expect(tmux("new-session", "-d", "-s", "vendor", "sleep 20").exitCode).toBe(0);
     expect(tmux("show-options", "-g", "pane-border-format").stdout.toString()).toContain("@vendor");
+    // Het huidige venster moet dezelfde badge tonen als een ander venster (niet leeg: #{window_status_format} bestaat niet).
+    tmux("set-option", "-p", "-t", "vendor:0.0", "@vendor", "codex");
+    tmux("set-option", "-p", "-t", "vendor:0.0", "@agent_naam", "cx1");
+    expect(tmux("display-message", "-p", "-t", "vendor:0", "#{E:window-status-current-format}").stdout.toString()).toContain("⬢ cx1");
   } finally {
     tmux("kill-server");
   }
