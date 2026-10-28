@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { installeer } from "./installeer-skills";
@@ -18,6 +18,7 @@ const schrijf = (root: string, naam: string, tekst = "---\nname: x\n---\n# x\n")
   writeFileSync(join(d, "references", "hulp.md"), "hulp\n");
 };
 const opties = (doel: string, extra: Record<string, unknown> = {}) => ({ doel, repo, lokaal, droog: false, controle: false, ...extra });
+const cliControle = (doel: string) => Bun.spawnSync([process.execPath, join(import.meta.dir, "installeer-skills.ts"), "--doel", doel, "--controle"], { env: { ...process.env, HOME: dir } });
 
 beforeEach(() => {
   dir = mkdtempSync(join(tmpdir(), "beleid-skills-"));
@@ -38,11 +39,64 @@ describe("installeer-skills", () => {
       rmSync(link);
     }
   });
+  test("valideert alle bronnen vóór ook maar één staging-kopie", () => {
+    const link = join(repo, "retro", "references", "link.md");
+    symlinkSync(join(repo, "lead", "SKILL.md"), link);
+    let staged = 0;
+    expect(() => installeer(opties(claude), { voorStageer: () => staged++ })).toThrow(/symlink/i);
+    expect(staged).toBe(0);
+    expect(existsSync(join(claude, "lead"))).toBe(false);
+  });
+  test("kopieerfout in de laatste skill laat bestaande doelen ongemoeid en ruimt staging op", () => {
+    installeer(opties(claude));
+    const voorLead = readFileSync(join(claude, "lead", "SKILL.md"));
+    const voorRetro = readFileSync(join(claude, "retro", "SKILL.md"));
+    rmSync(join(claude, "grill-me"), { recursive: true, force: true });
+    const onleesbaar = join(repo, "grill-me", "references", "hulp.md");
+    chmodSync(onleesbaar, 0);
+    try { expect(() => installeer(opties(claude))).toThrow(); }
+    finally { chmodSync(onleesbaar, 0o644); }
+    expect(readFileSync(join(claude, "lead", "SKILL.md")).equals(voorLead)).toBe(true);
+    expect(readFileSync(join(claude, "retro", "SKILL.md")).equals(voorRetro)).toBe(true);
+    expect(existsSync(join(claude, "grill-me"))).toBe(false);
+    expect(readdirSync(join(dir, "claude")).some((n) => n.includes("beleid-staging"))).toBe(false);
+    expect(() => installeer(opties(claude))).not.toThrow();
+    expect(existsSync(join(claude, "grill-me", marker))).toBe(true);
+  });
   test("droog toont wijzigingen maar schrijft niets", () => {
     const r = installeer(opties(claude, { droog: true }));
     expect(r.join("\n")).toContain("lead");
     expect(existsSync(join(claude, "lead"))).toBe(false);
     expect(existsSync(join(codex, "lead"))).toBe(false);
+  });
+  test("droog toont een diff van gewijzigde SKILL.md zonder het doel te wijzigen", () => {
+    installeer(opties(claude));
+    writeFileSync(join(claude, "lead", "SKILL.md"), "oud\n");
+    const voor = readFileSync(join(claude, "lead", "SKILL.md"), "utf8");
+    const r = installeer(opties(claude, { droog: true }));
+    expect(r.join("\n")).toContain("---");
+    expect(r.join("\n")).toContain("+ ");
+    expect(readFileSync(join(claude, "lead", "SKILL.md"), "utf8")).toBe(voor);
+  });
+  test("controle meldt drift zonder te installeren", () => {
+    installeer(opties(claude));
+    writeFileSync(join(claude, "lead", "SKILL.md"), "afwijkend\n");
+    const voor = readFileSync(join(claude, "lead", "SKILL.md"), "utf8");
+    const r = installeer(opties(claude, { controle: true }));
+    expect(r.join("\n")).toContain("drift");
+    expect(r.join("\n")).toContain("lead");
+    expect(readFileSync(join(claude, "lead", "SKILL.md"), "utf8")).toBe(voor);
+  });
+  test("controle-CLI is nul bij gelijkheid en niet-nul met skillnaam bij drift, zonder schrijven", () => {
+    const doel = join(dir, "cli", "skills");
+    installeer({ doel, repo: join(import.meta.dir, "../../..", "agents/skills"), lokaal: join(dir, "lege-vault") });
+    expect(cliControle(doel).exitCode).toBe(0);
+    writeFileSync(join(doel, "lead", "SKILL.md"), "drift\n");
+    const voor = readFileSync(join(doel, "lead", "SKILL.md"), "utf8");
+    const drift = cliControle(doel);
+    expect(drift.exitCode).not.toBe(0);
+    expect(drift.stdout.toString()).toContain("lead");
+    expect(readFileSync(join(doel, "lead", "SKILL.md"), "utf8")).toBe(voor);
   });
   test("installeert repo- en lokale allowlist naar beide hosts, gemarkeerd", () => {
     for (const doel of [claude, codex]) installeer(opties(doel));
@@ -61,12 +115,13 @@ describe("installeer-skills", () => {
     expect(existsSync(join(claude, ".system"))).toBe(true);
     expect(existsSync(join(claude, "synced"))).toBe(true);
   });
-  test("vervangt alleen een eigen gemarkeerde map met backup .voor-beleid en laat bronnen ongemoeid", () => {
+  test("vervangt alleen een eigen gemarkeerde map met backup buiten skills en laat bronnen ongemoeid", () => {
     installeer(opties(claude));
     writeFileSync(join(claude, "lead", "SKILL.md"), "oud\n");
     const bron = readFileSync(join(repo, "lead", "SKILL.md"), "utf8");
     installeer(opties(claude));
-    expect(existsSync(join(claude, "lead.voor-beleid", "SKILL.md"))).toBe(true);
+    expect(existsSync(join(claude, "lead.voor-beleid"))).toBe(false);
+    expect(readFileSync(join(dir, "claude", ".lab-beleid-backups", "lead", "SKILL.md"), "utf8")).toBe("oud\n");
     expect(readFileSync(join(claude, "lead", "SKILL.md"), "utf8")).toBe(bron);
     expect(readFileSync(join(repo, "lead", "SKILL.md"), "utf8")).toBe(bron);
   });
