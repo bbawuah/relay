@@ -913,8 +913,6 @@ describe("spawn.sh", () => {
     const voor = (rol: string) => `env LAB_AGENT_NAAM=w1 LAB_AGENT_ROL=${rol} LAB_LEAD_NAAM=lead-x LAB_OPDRACHT=${o} claude -n w1`;
     const a = draai(SPAWN, ["--naam", "w1", "--opdracht", o, "--lead", "lead-x", "--droog"], basis());
     expect(zonderId(a.uit)).toContain(`"${voor("agent")}`);
-    expect(a.uit).toContain("@agent claude");
-    expect(a.uit).toContain("@vendor claude");
     expect(a.uit).toContain("@agent_rol agent");
     expect(a.uit).toContain("@agent_naam w1");
     const s = draai(SPAWN, ["--naam", "w1", "--opdracht", o, "--lead", "lead-x", "--sublead", "--droog"], basis());
@@ -939,7 +937,7 @@ describe("spawn.sh", () => {
     expect(id("w1")).not.toBe(id("w2"));
   });
 
-  test("zet na het starten vendor, @agent_rol en @agent_naam op de pane (nep-tmux)", () => {
+  test("zet na het starten @agent_rol en @agent_naam op de pane (nep-tmux)", () => {
     writeFileSync(join(dir, "pane.txt"), "Claude Code\n  auto mode on (shift+tab)\n");
     writeFileSync(join(dir, "reageert"), "");
     const map = join(dir, "werkmap");
@@ -949,8 +947,6 @@ describe("spawn.sh", () => {
     const t = log("tmux.log");
     expect(t).toContain("tmux set -p -t %7 @agent_rol sublead");
     expect(t).toContain("tmux set -p -t %7 @agent_naam s1");
-    expect(t).toContain("tmux set -p -t %7 @agent claude");
-    expect(t).toContain("tmux set -p -t %7 @vendor claude");
     expect(t.indexOf("@agent_rol")).toBeLessThan(t.indexOf("send-keys"));
     expect(log("spawn.log")).toContain("LAB_AGENT_ROL=sublead");
   });
