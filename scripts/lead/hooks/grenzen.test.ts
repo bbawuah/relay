@@ -68,20 +68,20 @@ describe("grenzen.sh: lead-proef blijft in de eigen pane en uit de Claude-socket
   });
 });
 
-describe("grenzen.sh: lead-proef kan niet escaleren tot merge of push-lead", () => {
-  test("weigert merge, push-werker, gh pr merge en een roltoewijzing", () => {
+describe("grenzen.sh: lead-proef merge via het gecontroleerde pad, niet via push of gh", () => {
+  test("laat merge.sh door, ook zonder --droog", () => {
+    expect(bashAlsRol("scripts/lead/merge.sh 700", "lead-proef").code).toBe(0);
+    expect(bashAlsRol("scripts/lead/merge.sh --droog 700", "lead-proef").code).toBe(0);
+  });
+
+  test("weigert push-werker, gh pr merge en een roltoewijzing", () => {
     for (const command of [
-      "scripts/lead/merge.sh 700",
       "LAB_AGENT_ROL=lead scripts/lead/merge.sh 700",
       "scripts/lead/push-werker.sh werk/tak",
       "gh pr merge 700",
       "LAB_AGENT_ROL=lead true",
     ])
       expect(bashAlsRol(command, "lead-proef").code).toBe(2);
-  });
-
-  test("laat alleen de droge mergecontrole door", () => {
-    expect(bashAlsRol("scripts/lead/merge.sh --droog 700", "lead-proef").code).toBe(0);
   });
 
   test("laat leesacties op merge- en pushwerkercode door", () => {
