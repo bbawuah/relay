@@ -915,7 +915,7 @@ describe("spawn.sh", () => {
   test("het commando krijgt het env-voorvoegsel voor de hooks, per rol; --droog toont het", () => {
     const o = opdracht();
     const zonderId = (t: string) => t.replace(/ LAB_SPAWN_ID=[\w-]+/, "");
-    const voor = (rol: string) => `env LAB_AGENT_NAAM=w1 LAB_AGENT_ROL=${rol} LAB_LEAD_NAAM=lead-x LAB_OPDRACHT=${o} claude -n w1`;
+    const voor = (rol: string) => `env LAB_AGENT_NAAM=w1 LAB_AGENT_ROL=${rol} LAB_LEAD_NAAM=lead-x LAB_OPDRACHT=${o} LAB_LEAD_STAAT=${join(dir, "staat")} claude -n w1`;
     const a = draai(SPAWN, ["--naam", "w1", "--opdracht", o, "--lead", "lead-x", "--droog"], basis());
     expect(zonderId(a.uit)).toContain(`"${voor("agent")}`);
     expect(a.uit).toContain("@agent_rol agent");
@@ -932,7 +932,7 @@ describe("spawn.sh", () => {
     const spatie = join(dir, "met spatie.md");
     writeFileSync(spatie, "x");
     const r = draai(SPAWN, ["--naam", "w1", "--opdracht", spatie, "--lead", "l", "--droog"], basis());
-    expect(r.uit.replace(/ LAB_SPAWN_ID=[\w-]+/, "")).toContain(`LAB_OPDRACHT='${spatie}' claude -n w1`);
+    expect(r.uit.replace(/ LAB_SPAWN_ID=[\w-]+/, "")).toContain(`LAB_OPDRACHT='${spatie}' LAB_LEAD_STAAT=${join(dir, "staat")} claude -n w1`);
   });
 
   test("het commando bevat een eenmalig LAB_SPAWN_ID, per sessie anders", () => {
