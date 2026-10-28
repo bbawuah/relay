@@ -45,7 +45,7 @@
 //   --base <ref>     vergelijk met deze ref in plaats van origin/main
 //   --ci             voor .github/workflows/ci.yml: sla de taken over die in
 //                    uitzonderingen.ci van de baseline staan (alleen op de mini)
-//   --alleen <s,…>   alleen deze stappen (sherif,boundaries,ds-regels,werk-commentaar,echte-klok,git-scrub,test-tenant,mollie-sleutels,gc-data-laag,test-integriteit,rood-op-basis,scripts-tests,scripts-typen,python-tests,biome,taken,build,e2e)
+//   --alleen <s,…>   alleen deze stappen (sherif,boundaries,ds-regels,werk-commentaar,echte-klok,git-scrub,test-tenant,mollie-sleutels,gc-data-laag,skills,test-integriteit,rood-op-basis,scripts-tests,scripts-typen,python-tests,biome,taken,build,e2e)
 //   --zelftest       bewijs dat elke stap afkeurt: per stap een bewuste fout in een
 //                    tijdelijke kopie van de werkkopie; de poort moet daar rood worden
 //   --baseline       schrijf de huidige sherif-, boundaries- en ds-regels-schendingen naar de
@@ -72,6 +72,7 @@ import { beoordeelBare, beschrijf as gsBeschrijf, nieuweTreffers as gsNieuw, OPL
 import { leesPr } from "./bewijs-pr";
 import { dockerBereikbaar, dockerOntbreekt, omgevingVoor, pakkettenVanTaken } from "./db-verplicht";
 import { isVeilig, SCRIPTS_TESTS_VEILIG } from "./scripts-tests-veilig";
+import { controleerSkills } from "./skills-poort";
 import { logCommando, openLog, zetActief } from "./poort-log";
 import { inStiltevenster } from "./stiltevenster";
 import { leesContext as roLees, stap as roStap } from "./rood-op-basis";
@@ -80,7 +81,7 @@ import { JUISTE_VORM, sleutel as wcSleutel, zoek as wcZoek } from "./werk-commen
 
 const ROOT = path.resolve(import.meta.dir, "..");
 const BASELINE_PAD = path.join(ROOT, "scripts/poort-baseline.json");
-const STAPPEN = ["sherif", "boundaries", "ds-regels", "werk-commentaar", "echte-klok", "git-scrub", "test-tenant", "mollie-sleutels", "gc-data-laag", "test-integriteit", "rood-op-basis", "scripts-tests", "scripts-typen", "python-tests", "biome", "taken", "build", "e2e"] as const;
+const STAPPEN = ["sherif", "boundaries", "ds-regels", "werk-commentaar", "echte-klok", "git-scrub", "test-tenant", "mollie-sleutels", "gc-data-laag", "skills", "test-integriteit", "rood-op-basis", "scripts-tests", "scripts-typen", "python-tests", "biome", "taken", "build", "e2e"] as const;
 type Stap = (typeof STAPPEN)[number];
 
 // ── Opties ──────────────────────────────────────────────────────────────────
@@ -364,6 +365,14 @@ export function stapGcDataLaag(treffers = gdZoek(), bekendUit?: string[]): Resul
   const nieuw = gdNieuw(treffers, bekend).map((t) => `     ${gdBeschrijf(t)}`);
   return { ...r, uitleg: `${r.uitleg}${nieuw.length ? `\n${nieuw.join("\n")}` : ""}
      Oplossing: ${GD_OPLOSSING}` };
+}
+
+/** Skills in git moeten draagbaar zijn: geen links, sleutelsporen of machine-infra. */
+function stapSkills(): Resultaat {
+  const fouten = controleerSkills();
+  return fouten.length
+    ? { status: "FOUT", detail: `${fouten.length} skillproble(e)m(en)`, uitleg: fouten.map((f) => `     ${f}`).join("\n") }
+    : { status: "OK", detail: "skills draagbaar" };
 }
 
 /**
@@ -715,6 +724,7 @@ async function poort(o: Opties): Promise<number> {
       : s === "test-tenant" ? stapTestTenant()
       : s === "mollie-sleutels" ? stapMollieSleutels()
       : s === "gc-data-laag" ? stapGcDataLaag()
+      : s === "skills" ? stapSkills()
       : s === "test-integriteit" ? stapTestIntegriteit(stapBase())
       : s === "rood-op-basis" ? stapRoodOpBasis(stapBase(), o.ci)
       : s === "scripts-tests" ? stapScriptsTests(o, stapBase)
@@ -977,6 +987,12 @@ export const KANARIES: Kanarie[] = [
       if (nieuw === oud) throw new Error("kanarie mollie-sleutels: de ^test_-regel staat niet in " + p);
       schrijf(m, p, nieuw);
     },
+  },
+  {
+    stap: "skills",
+    wat: "een tijdelijke skill zonder verplichte name-frontmatter",
+    verwacht: /FOUT skills .*1 skillproble/,
+    zet: (m) => schrijf(m, "agents/skills/kanarie/SKILL.md", "---\ndescription: kanarie\n---\n# kanarie\n"),
   },
   {
     stap: "gc-data-laag",

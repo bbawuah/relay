@@ -6,7 +6,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { bestand, type Commando, help, LAB, ROOT, voerUit, zoek } from "./lab";
 
-/** Scripts in scripts/ en scripts/lead/ die bewust geen lab-commando zijn. */
+/** Scripts in scripts/, scripts/lead/ en scripts/lead/beleid/ die bewust geen lab-commando zijn. */
 const NIET_IN_LAB: Record<string, string> = {
   "scripts/bewijs-pr.ts": "CI-check in GitHub Actions (bewijs-pr), niet voor de hand",
   "scripts/db-verplicht.ts": "poorthulp, gebruikt door poort.ts",
@@ -23,6 +23,7 @@ const NIET_IN_LAB: Record<string, string> = {
   "scripts/werk-commentaar.ts": "poortstap, draait via `bun lab poort`",
   "scripts/typen-modules.d.ts": "typedeclaratie (pngjs) voor scripts/tsconfig.json, geen script",
   "scripts/scripts-tests-veilig.ts": "poorthulp (allowlist van de stap scripts-tests), gebruikt door poort.ts",
+  "scripts/skills-poort.ts": "poortstap voor de git-skills, draait via bun lab poort",
   "scripts/stiltevenster.ts": "hulpmodule en check voor hooks en poort, geen commando voor de hand",
   "scripts/prive-server.ts": "de dienst zelf; draait als LaunchAgent via `bun lab installeer prive-server` (twijfelgeval, Brian beslist)",
   "scripts/site-shots.ts": "shots van lab-b.dev bij een packages-merge (twijfelgeval, Brian beslist)",
@@ -34,14 +35,20 @@ const NIET_IN_LAB: Record<string, string> = {
   "scripts/lead/spawn-crash.ts": "hulp voor tests",
   "scripts/lead/push-werker.sh": "alleen voor de lead, met rol en argumenten (<worktree> <sha> <tak>); bewust geen algemeen commando (besluit Brian 27 okt, #683)",
   "scripts/lead/push-werker.ts": "logica achter push-werker.sh (alleen de lead, #683); bewust geen algemeen commando",
+  "scripts/lead/beleid/beleid.ts": "beleidsbron voor de hookgenerator, geen los lab-commando",
+  "scripts/lead/beleid/claude.ts": "pure Claude-beleidsgenerator, gebruikt door installeer-hooks",
+  "scripts/lead/beleid/codex-werker.ts": "pure Codex-werkerprofielgenerator, gebruikt door spawn en uitrolconcepten",
+  "scripts/lead/beleid/hosts.ts": "hostafhankelijke beleidsgegevens voor generators, geen commando",
+  "scripts/lead/beleid/installeer-skills.ts": "skillinstaller achter de beleidsuitrol, bewust geen algemeen lab-commando",
+  "scripts/lead/beleid/typen.ts": "gedeelde beleidstypen, geen uitvoerbaar commando",
 };
 
 const tijdelijk = mkdtempSync(path.join(tmpdir(), "lab-test-"));
 afterAll(() => rmSync(tijdelijk, { recursive: true, force: true }));
 
 describe("tabel", () => {
-  test("elk script in scripts/ en scripts/lead/ staat in de tabel of in NIET_IN_LAB met reden", () => {
-    const scripts = ["scripts/*.{ts,sh}", "scripts/lead/*.{ts,sh}"]
+  test("elk script in scripts/, scripts/lead/ en scripts/lead/beleid/ staat in de tabel of in NIET_IN_LAB met reden", () => {
+    const scripts = ["scripts/*.{ts,sh}", "scripts/lead/*.{ts,sh}", "scripts/lead/beleid/*.{ts,sh}"]
       .flatMap((p) => [...new Bun.Glob(p).scanSync({ cwd: ROOT })])
       .filter((f) => !/\.test\.ts$/.test(f))
       .sort();
