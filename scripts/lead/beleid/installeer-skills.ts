@@ -52,5 +52,8 @@ export function installeer(o: Opties) {
 if (import.meta.main) {
   const a = process.argv.slice(2); const i = a.indexOf("--doel"); const doel = i < 0 ? undefined : a[i + 1];
   if (i < 0 || !doel || a.some((v, n) => !["--doel", "--droog", "--controle"].includes(v) && n !== i + 1)) throw new Error("gebruik: --doel <map> [--droog] [--controle]");
-  for (const r of installeer({ doel, droog: a.includes("--droog"), controle: a.includes("--controle") })) console.log(`${a.includes("--droog") ? "DROOG" : a.includes("--controle") ? "CONTROLE" : "OK"} ${r}`);
+  const controle = a.includes("--controle");
+  const regels = installeer({ doel, droog: a.includes("--droog"), controle });
+  for (const r of regels) console.log(`${a.includes("--droog") ? "DROOG" : controle ? "CONTROLE" : "OK"} ${r}`);
+  if (controle && regels.length) process.exit(1);
 }

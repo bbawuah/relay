@@ -18,6 +18,7 @@ const schrijf = (root: string, naam: string, tekst = "---\nname: x\n---\n# x\n")
   writeFileSync(join(d, "references", "hulp.md"), "hulp\n");
 };
 const opties = (doel: string, extra: Record<string, unknown> = {}) => ({ doel, repo, lokaal, droog: false, controle: false, ...extra });
+const cliControle = (doel: string) => Bun.spawnSync([process.execPath, join(import.meta.dir, "installeer-skills.ts"), "--doel", doel, "--controle"], { env: { ...process.env, HOME: dir } });
 
 beforeEach(() => {
   dir = mkdtempSync(join(tmpdir(), "beleid-skills-"));
@@ -61,6 +62,17 @@ describe("installeer-skills", () => {
     expect(r.join("\n")).toContain("drift");
     expect(r.join("\n")).toContain("lead");
     expect(readFileSync(join(claude, "lead", "SKILL.md"), "utf8")).toBe(voor);
+  });
+  test("controle-CLI is nul bij gelijkheid en niet-nul met skillnaam bij drift, zonder schrijven", () => {
+    const doel = join(dir, "cli", "skills");
+    installeer({ doel, repo: join(import.meta.dir, "../../..", "agents/skills"), lokaal: join(dir, "lege-vault") });
+    expect(cliControle(doel).exitCode).toBe(0);
+    writeFileSync(join(doel, "lead", "SKILL.md"), "drift\n");
+    const voor = readFileSync(join(doel, "lead", "SKILL.md"), "utf8");
+    const drift = cliControle(doel);
+    expect(drift.exitCode).not.toBe(0);
+    expect(drift.stdout.toString()).toContain("lead");
+    expect(readFileSync(join(doel, "lead", "SKILL.md"), "utf8")).toBe(voor);
   });
   test("installeert repo- en lokale allowlist naar beide hosts, gemarkeerd", () => {
     for (const doel of [claude, codex]) installeer(opties(doel));
