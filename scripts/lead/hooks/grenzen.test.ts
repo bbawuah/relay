@@ -88,6 +88,17 @@ describe("grenzen.sh: lead-proef kan niet escaleren tot merge of push-lead", () 
     expect(bashAlsRol("cat scripts/lead/merge.sh", "lead-proef").code).toBe(0);
     expect(bashAlsRol("git log -- scripts/lead/push-werker.sh", "lead-proef").code).toBe(0);
   });
+
+  test("weigert roltoewijzing en git -c ook als git verder alleen leest", () => {
+    for (const command of [
+      "LAB_AGENT_ROL=lead git status",
+      "git -c diff.external='bash scripts/lead/merge.sh 700' diff",
+      "git -c core.fsmonitor='bash scripts/lead/merge.sh 700' status",
+      "git -c core.pager='bash scripts/lead/merge.sh 700' -p log",
+      "git -c core.sshCommand='bash scripts/lead/push-werker.sh x' fetch",
+    ])
+      expect(bashAlsRol(command, "lead-proef").code).toBe(2);
+  });
 });
 
 const WEIGER = [

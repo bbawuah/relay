@@ -136,6 +136,18 @@ describe("identiteitEnv", () => {
   test("hookOmgeving: een cwd dat geen absoluut pad is geeft geen afgeleide naam", () => {
     for (const c of ["", "relatief", "../x"]) expect(hookOmgeving({ PATH: "/bin", LAB_LEAD_STAAT: staat }, c, Date.now(), "01a17ebd-76bc-7472-a451-ac8ef9f536d4").LAB_AGENT_NAAM).toBeUndefined();
   });
+  test("lead-proef-home faalt dicht bij een oude daemon, /new en een kind dat eerst bindt", () => {
+    const home = join(dir, "lead-home");
+    const env = { PATH: "/bin", HOME: home, CODEX_HOME: join(home, ".codex-lead"), LAB_LEAD_STAAT: staat, LAB_SPAWN_ID: "oud" };
+    expect(hookOmgeving(env, werk, Date.now(), "nieuw").LAB_AGENT_ROL).toBe("lead-proef");
+    schrijfIdentiteit(staat, werk, { ...ident, rol: "lead-proef", spawn_id: "huidig" });
+    const juist = { ...env, LAB_SPAWN_ID: "huidig" };
+    expect(hookOmgeving(juist, werk, Date.now(), "kind", "SessionStart").LAB_AGENT_ROL).toBe("lead-proef");
+    expect(hookOmgeving(juist, werk, Date.now(), "lead-na-new", "SessionStart").LAB_AGENT_ROL).toBe("lead-proef");
+    wisIdentiteit(staat, werk, "huidig");
+    expect(leesIdentiteit(staat, werk)?.rol).toBe("lead-proef");
+    expect(hookOmgeving({ PATH: "/bin", HOME: home, CODEX_HOME: join(home, ".andere-home"), LAB_LEAD_STAAT: staat }, join(dir, "geen")).LAB_AGENT_ROL).toBeUndefined();
+  });
   test("sessieUitInvoer", () => {
     expect(sessieUitInvoer('{"session_id":"abc"}')).toBe("abc");
     expect(sessieUitInvoer("{kapot")).toBe("");

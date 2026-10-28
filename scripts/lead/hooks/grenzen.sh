@@ -629,9 +629,13 @@ if tool == "Bash":
         # De proeflead is bewust geen merge-lead. Dit toetst de hook-rol, niet een
         # mogelijke `LAB_AGENT_ROL=lead` in het commando: Codex kan die env zelf
         # zetten, maar niet de identiteit waarmee de hook start.
-        if lead_proef and e not in LEZEN:
+        if lead_proef:
             if any(re.fullmatch(r"LAB_AGENT_ROL=.*", x) for x in w):
                 weiger("lead-proef mag LAB_AGENT_ROL niet in een commando zetten; de hook-rol is leidend.")
+            for glob, sub, args in git_aanroepen(w):
+                if any(o == "-c" for o, _ in glob):
+                    weiger("lead-proef mag git -c niet gebruiken; een git-config kan een extern commando of merge starten.")
+        if lead_proef and e not in LEZEN:
             if any(re.search(r"(^|/)merge\.sh$", x) for x in w) and "--droog" not in w:
                 weiger("lead-proef merget niet; alleen scripts/lead/merge.sh --droog is toegestaan.")
             if any(re.search(r"(^|/)push-werker\.sh$", x) for x in w):
