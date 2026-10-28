@@ -430,7 +430,7 @@ describe("grenzen.sh: rauwe merge zodra LAB_GRENS_MERGE=1", () => {
     test(`weigert ${JSON.stringify(c)}`, () => {
       const r = metMerge(c);
       expect(r.code).toBe(2);
-      expect(r.stderr).toContain("merge.sh");
+      expect(r.stderr).toContain("merget geen PR via gh");
     });
   test("lezen van een PR mag", () => {
     for (const c of ["gh pr view 1", "gh -R o/r pr checks 1", "gh api repos/o/r/pulls/1/merge"]) expect(metMerge(c).code).toBe(0);

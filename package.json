@@ -1,0 +1,13 @@
+{
+  "name": "relay",
+  "private": true,
+  "scripts": {
+    "test": "bun test",
+    "typecheck": "tsc -p tsconfig.json",
+    "poort": "bun run test && bun run typecheck && bash tests/hook-canaries.sh"
+  },
+  "devDependencies": {
+    "@types/bun": "^1.3.3",
+    "typescript": "^5.9.3"
+  }
+}
