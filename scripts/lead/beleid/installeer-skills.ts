@@ -7,7 +7,6 @@ export const LOKALE_SKILLS = ["naar-mod", "tailnet", "vault", "scrawl"] as const
 
 export type Opties = { doel: string; repo?: string; lokaal?: string; droog?: boolean; controle?: boolean };
 export type InstalleerDeps = { voorStageer?: (bron: string) => void };
-const veilig = (n: string) => /^[a-z][a-z0-9-]*$/.test(n) && n !== ".system" && n !== "synced";
 function geenSymlink(p: string): void { const s = lstatSync(p); if (s.isSymbolicLink()) throw new Error(`${p}: symlinks zijn niet toegestaan`); if (s.isDirectory()) for (const e of readdirSync(p)) geenSymlink(join(p, e)); }
 function afwijkingen(bron: string, doel: string, relatief = ""): string[] {
   if (!existsSync(bron)) return [`extra ${relatief || doel}`];
@@ -34,7 +33,7 @@ export function installeer(o: Opties, deps: InstalleerDeps = {}) {
   const repo = o.repo ?? join(import.meta.dir, "../../..", "agents/skills");
   const lokaal = o.lokaal ?? join(process.env.HOME ?? "", "vault-b-status/skills");
   const regels: string[] = [];
-  const bronnen = [...REPO_SKILLS.map((n) => [join(repo, n), join(o.doel, n)] as const), ...LOKALE_SKILLS.filter((n) => veilig(n) && existsSync(join(lokaal, n))).map((n) => [join(lokaal, n), join(o.doel, n)] as const)];
+  const bronnen = [...REPO_SKILLS.map((n) => [join(repo, n), join(o.doel, n)] as const), ...LOKALE_SKILLS.filter((n) => existsSync(join(lokaal, n))).map((n) => [join(lokaal, n), join(o.doel, n)] as const)];
   // Alles vooraf: een kapotte latere skill mag nooit een eerdere doelmap vervangen.
   for (const [bron, doel] of bronnen) { if (!existsSync(join(bron, "SKILL.md"))) throw new Error(`${bron}: SKILL.md ontbreekt`); geenSymlink(bron); if (!o.controle && existsSync(doel) && (!existsSync(join(doel, MARKER)) || lstatSync(join(doel, MARKER)).isSymbolicLink())) throw new Error(`${doel}: niet door beleid gemarkeerd of marker is symlink`); }
   if (o.controle) {
