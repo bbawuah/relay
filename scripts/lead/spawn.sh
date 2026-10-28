@@ -300,7 +300,10 @@ codex_sandbox() {
   # paden en quoting; de generator krijgt alleen al gevalideerde argumenten.
   WERKTMP="$t/lab-werker-$naam"
   SANDBOX_C_ARGS=()
-  while IFS= read -r regel; do SANDBOX_C_ARGS+=("$regel"); done < <(cd "$HIER" && env -u BUN_OPTIONS -u NODE_OPTIONS "$BELEID_BUN" "$HIER/beleid/codex-werker.ts" spawn-c-args "$m" "$c" "$e" "$h" "$t" "$naam" "$ch" "$([ "$netwerk" = 0 ] && echo false || echo true)")
+  gen=$(mktemp) || fout "kon tijdelijke generatoruitvoer niet maken"
+  if ! (cd "$HIER" && env -u BUN_OPTIONS -u NODE_OPTIONS "$BELEID_BUN" "$HIER/beleid/codex-werker.ts" spawn-c-args "$m" "$c" "$e" "$h" "$t" "$naam" "$ch" "$([ "$netwerk" = 0 ] && echo false || echo true)") >"$gen"; then rm -f "$gen"; fout "Codex-werkerprofielgenerator faalde"; fi
+  while IFS= read -r regel; do SANDBOX_C_ARGS+=("$regel"); done <"$gen"
+  rm -f "$gen"
   net=false; [ "$netwerk" = 0 ] || net=true
   [ "${#SANDBOX_C_ARGS[@]}" = 3 ] && [ "${SANDBOX_C_ARGS[0]}" = 'default_permissions="lab-werker"' ] &&
     [ "${SANDBOX_C_ARGS[2]}" = "permissions.lab-werker.network={enabled=$net}" ] || fout "kon het Codex-werkerprofiel niet genereren"

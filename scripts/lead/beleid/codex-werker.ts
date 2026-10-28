@@ -60,19 +60,6 @@ export function spawnCArgs(o: Required<CodexWerkerOpties>): string[] {
   ];
 }
 
-/** Config-fragment voor een eigen CODEX_HOME (bijvoorbeeld de T3 Codex-lab-instantie). */
-export function configBlok(o: Pick<CodexWerkerOpties, "home" | "codexHome">): string {
-  const regels = [regel("/", "read"), ...gedeeldeLeesRegels(o)];
-  return [
-    'default_permissions = "lab-werker"',
-    "",
-    "[permissions.lab-werker]",
-    `filesystem = { ${regels.join(",")} }`,
-    "network = { enabled = false }",
-    "",
-  ].join("\n");
-}
-
 function vereis(args: string[], aantal: number): void {
   if (args.length !== aantal || args.some((a) => !a || /['"\\\n\r]/.test(a))) throw new Error("ongeldige of onveilige profielargumenten");
 }
@@ -85,9 +72,6 @@ if (import.meta.main) {
       const [worktree, gitCommon, gitDir, home, tmp, naam, codexHome, netwerk] = args;
       if (netwerk !== "true" && netwerk !== "false") throw new Error("netwerk moet true of false zijn");
       process.stdout.write(`${spawnCArgs({ worktree, gitCommon, gitDir, home, tmp, naam, codexHome, netwerk: netwerk === "true" }).join("\n")}\n`);
-    } else if (actie === "config-blok") {
-      vereis(args, 2);
-      process.stdout.write(configBlok({ home: args[0]!, codexHome: args[1]! }));
     } else if (actie === "bun-install-args") {
       process.stdout.write(`${CODEX_WERKER_BUN_INSTALL_ARGS.join("\n")}\n`);
     } else {
