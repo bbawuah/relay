@@ -24,8 +24,10 @@ export function installeer(o: Opties) {
   const repo = o.repo ?? join(import.meta.dir, "../../..", "agents/skills");
   const lokaal = o.lokaal ?? join(process.env.HOME ?? "", "vault-b-status/skills");
   const regels: string[] = [];
-  for (const n of REPO_SKILLS) kopieer(join(repo, n), join(o.doel, n), !!o.droog, regels);
-  for (const n of LOKALE_SKILLS) if (veilig(n) && existsSync(join(lokaal, n))) kopieer(join(lokaal, n), join(o.doel, n), !!o.droog, regels);
+  const bronnen = [...REPO_SKILLS.map((n) => [join(repo, n), join(o.doel, n)] as const), ...LOKALE_SKILLS.filter((n) => veilig(n) && existsSync(join(lokaal, n))).map((n) => [join(lokaal, n), join(o.doel, n)] as const)];
+  // Alles vooraf: een kapotte latere skill mag nooit een eerdere doelmap vervangen.
+  for (const [bron, doel] of bronnen) { if (!existsSync(join(bron, "SKILL.md"))) throw new Error(`${bron}: SKILL.md ontbreekt`); geenSymlink(bron); if (existsSync(doel) && (!existsSync(join(doel, MARKER)) || lstatSync(join(doel, MARKER)).isSymbolicLink())) throw new Error(`${doel}: niet door beleid gemarkeerd of marker is symlink`); }
+  for (const [bron, doel] of bronnen) kopieer(bron, doel, !!o.droog, regels);
   if (o.controle) for (const n of readdirSync(o.doel, { withFileTypes: true }).filter((e) => e.isDirectory()).map((e) => e.name)) if ((REPO_SKILLS as readonly string[]).includes(n) && !existsSync(join(o.doel, n, MARKER))) throw new Error(`${n}: marker ontbreekt`);
   return regels;
 }
