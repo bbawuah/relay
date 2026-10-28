@@ -10,6 +10,7 @@ import { dirname, join } from "node:path";
 import { identiteitEnv } from "./hooks/codex-wrap";
 import { GELIJK_AAN_REPO } from "./hooks/codex-controle";
 import { commando } from "./hooks/codex-installeer";
+import { spawnCArgs } from "./beleid/codex-werker";
 
 const SPAWN = join(import.meta.dir, "spawn.sh");
 const MERGE = join(import.meta.dir, "merge.sh");
@@ -1378,6 +1379,35 @@ exit 1
     // de standalone codex-binary staat in ~/.codex/packages; dicht laat de sandboxhelper van Codex hem niet starten (echte demo, 27 okt)
     expect(regels.some((x) => x.endsWith("/.codex/packages=read"))).toBe(true);
     expect(regels.some((x) => x.endsWith("/.codex/sessions=none") || x.endsWith("/.codex/auth.json=none"))).toBe(false);
+  });
+
+  test("sandbox: de drie -c-waarden blijven byte-gelijk aan de gedeelde beleidsgenerator", () => {
+    const gem = realpathSync(join(repo, ".git"));
+    const eigen = realpathSync(join(gem, "worktrees", "eigen-worktree"));
+    for (const netwerk of [false, true]) {
+      const r = codex(["--map", wt, ...(netwerk ? ["--netwerk"] : []), "--droog"], { TMPDIR: join(dir, "sbtmp") });
+      const werkelijk = [...r.uit.matchAll(/-c '((?:default_permissions|permissions\.)[^']*)'/g)].map((m) => m[1]);
+      expect(werkelijk).toEqual(
+        spawnCArgs({
+          worktree: realpathSync(wt), gitCommon: gem, gitDir: eigen, home: realpathSync(process.env.HOME!), tmp: realpathSync(werkWortel()), naam: "cx1", codexHome, netwerk,
+        }),
+      );
+    }
+  });
+
+  test("sandbox: een bunfig.toml of BUN_OPTIONS in de werkmap van de aanroeper raakt de beleidsgenerator niet", () => {
+    const marker = join(dir, "preload-gedraaid");
+    const preload = join(dir, "preload.ts");
+    // Alleen de generator telt; andere bun-aanroepen van spawn.sh vallen buiten deze test.
+    writeFileSync(preload, `if (process.argv.some((a) => a.includes("codex-werker"))) require("node:fs").writeFileSync(${JSON.stringify(marker)}, "ja");\n`);
+    writeFileSync(join(repo, "bunfig.toml"), `preload = [${JSON.stringify(preload)}]\n`);
+    try {
+      const r = codex(["--map", wt, "--droog"], { TMPDIR: join(dir, "sbtmp"), BUN_OPTIONS: `--preload ${preload}`, NODE_OPTIONS: `--require ${preload}` });
+      expect(r.uit).toContain("default_permissions");
+      expect(existsSync(marker)).toBe(false);
+    } finally {
+      rmSync(join(repo, "bunfig.toml"), { force: true });
+    }
   });
 
   test("sandbox: een pad met een quote of backslash weigert spawn (nooit een halve sandbox)", () => {
