@@ -699,9 +699,9 @@ describe("spawn.sh", () => {
     expect(metQuote.uit).not.toContain("--mcp-config");
   });
 
-  const leadRecord = (id: string, naam: string, pane: string, toestand = "bezig") => {
+  const leadRecord = (id: string, naam: string, pane: string, toestand = "bezig", rol = "lead") => {
     mkdirSync(join(dir, "staat", "register"), { recursive: true });
-    const r = { id, soort: "sessie", naam, rol: "lead", lead: "", pane, toestand, sinds: 1, start: 1 };
+    const r = { id, soort: "sessie", naam, rol, lead: "", pane, toestand, sinds: 1, start: 1 };
     writeFileSync(join(dir, "staat", "register", `${id}.json`), JSON.stringify(r));
   };
 
@@ -858,6 +858,10 @@ describe("spawn.sh", () => {
     expect(draai(SPAWN, [...args, "--sublead", "--lead", "lead-peerbus"], basis()).code).toBe(1);
     // een levende lead met die naam: door; een weg-record of dode pane telt niet
     expect(draai(SPAWN, [...args, "--lead", "lead-a"], basis()).code).toBe(0);
+    // Een Codex-lead met lead-proef mag als meldadres gelden, maar wordt niet
+    // opgenomen in levendeLeads() (die alleen rol lead telt).
+    leadRecord("cccc3333", "codex-lead", "%1", "bezig", "lead-proef");
+    expect(draai(SPAWN, [...args, "--lead", "codex-lead"], basis()).code).toBe(0);
     leadRecord("aaaa1111", "lead-a", "%1", "weg");
     expect(draai(SPAWN, [...args, "--lead", "lead-a"], basis()).code).toBe(1);
     leadRecord("aaaa1111", "lead-a", "%1");

@@ -400,6 +400,33 @@ if tool == "Bash":
         except Exception:
             return cmd
     cz = leegmaken(heredoc_leeg(c))
+    # Een lead-proef mag de eigen pane bedienen, maar nooit tekst of een plakbuffer in een andere
+    # tmux-pane/sessie duwen. Ook het schrijven naar de Claude-inbox-sockets is voorbehouden aan de
+    # peerbus-wekkers: anders kan een proeflead buiten de bus om een andere sessie prikkelen.
+    if os.environ.get("LAB_AGENT_ROL", "") == "lead-proef":
+        eigen_pane = os.environ.get("TMUX_PANE", "")
+        for seg in re.split(r"&&|\|\||[;&|()\n`]|\$\(", cz):
+            w = [x.strip("'\"") for x in seg.split()]
+            for i, x in enumerate(w):
+                if os.path.basename(x) != "tmux" or i + 1 >= len(w) or w[i + 1] not in ("send-keys", "paste-buffer"):
+                    continue
+                doel = None
+                for j in range(i + 2, len(w)):
+                    if w[j] in ("-t", "--target") and j + 1 < len(w):
+                        doel = w[j + 1]
+                        break
+                    if w[j].startswith("--target="):
+                        doel = w[j].split("=", 1)[1]
+                        break
+                    if w[j].startswith("-t") and len(w[j]) > 2:
+                        doel = w[j][2:]
+                        break
+                if doel is not None and doel != eigen_pane:
+                    weiger("lead-proef mag geen tmux send-keys of paste-buffer naar een andere pane of sessie sturen; gebruik de peerbus.")
+        for seg in re.split(r"&&|\|\||[;&|()\n`]|\$\(", cz):
+            if not re.search(r"(?:>|>>)[ \t]*['\"]?/tmp/cc-socks(?:/|['\"]|$)", seg):
+                continue
+            weiger("lead-proef mag niet naar /tmp/cc-socks schrijven; gebruik de peerbus.")
     # Alleen als een uitrolscript echt gestart wordt: het pad staat op de commandopositie van een
     # segment (eventueel na VAR=x, exec/sudo/env/nohup/time of sh/bash/zsh), of `bun run … uitrollen`.
     # Een pad als argument (grep, cat, sed, git diff, ls) is geen start (vals alarm 6 okt).
@@ -585,6 +612,7 @@ if tool == "Bash":
                 return f"gh api met methode {methode or 'POST (door -f/-F/--input)'} schrijft naar GitHub; alleen lezen (GET) mag rauw. Mergen via scripts/lead/merge.sh."
         return None
     merge_aan = os.environ.get("LAB_GRENS_MERGE") == "1" or os.path.exists(os.path.expanduser("~/.claude/hooks/grenzen.merge"))
+    lead_proef = os.environ.get("LAB_AGENT_ROL") == "lead-proef"
     is_subagent = bool(d.get("agent_id") or d.get("agent_type"))
     basis = str(d.get("cwd") or procmap())
     hier = basis
@@ -598,6 +626,25 @@ if tool == "Bash":
             continue
         if e in TEKST:
             continue
+        # De proeflead is bewust geen merge-lead. Dit toetst de hook-rol, niet een
+        # mogelijke `LAB_AGENT_ROL=lead` in het commando: Codex kan die env zelf
+        # zetten, maar niet de identiteit waarmee de hook start.
+        if lead_proef:
+            if any(re.fullmatch(r"LAB_AGENT_ROL=.*", x) for x in w):
+                weiger("lead-proef mag LAB_AGENT_ROL niet in een commando zetten; de hook-rol is leidend.")
+            for glob, sub, args in git_aanroepen(w):
+                if any(o == "-c" for o, _ in glob):
+                    weiger("lead-proef mag git -c niet gebruiken; een git-config kan een extern commando of merge starten.")
+        if lead_proef and e not in LEZEN:
+            if any(re.search(r"(^|/)merge\.sh$", x) for x in w) and "--droog" not in w:
+                weiger("lead-proef merget niet; alleen scripts/lead/merge.sh --droog is toegestaan.")
+            if any(re.search(r"(^|/)push-werker\.sh$", x) for x in w):
+                weiger("lead-proef pusht geen werkertakken; laat de lead dat buiten de sandbox doen.")
+            for i, x in enumerate(w):
+                if re.fullmatch(r"(\S*/)?gh", x):
+                    namen = [y for _, y in gh_posities(w[i + 1:])]
+                    if namen[:2] == ["pr", "merge"]:
+                        weiger("lead-proef merget geen PR via gh; vraag de lead buiten de sandbox.")
         # merge.sh (elk pad) nooit vanuit een subagent of fork: de rol van de lead erft anders mee via env.
         if is_subagent and e not in LEZEN and any(re.search(r"(^|/)merge\.sh$", x) for x in w):
             weiger("een subagent of fork merget niet: alleen de lead zelf draait scripts/lead/merge.sh.")

@@ -346,7 +346,7 @@ export function wisExternMarkering(staat: string, naam: string): void {
 /** Een identiteit verloopt na deze tijd, ook als de sessie nooit netjes eindigde. */
 export const IDENTITEIT_MAX_MS = 12 * 3600_000;
 
-export type Identiteit = { naam: string; rol: string; lead: string; opdracht: string; spawn_id: string; ts: number; t3_thread?: string };
+export type Identiteit = { naam: string; rol: string; lead: string; opdracht: string; spawn_id: string; ts: number; t3_thread?: string; sessie_id?: string };
 
 export function identiteitPad(staat: string, cwd: string): string {
   return join(staat, "identiteit", `${createHash("sha256").update(cwd).digest("hex").slice(0, 24)}.json`);
@@ -359,7 +359,7 @@ export function schrijfIdentiteit(staat: string, cwd: string, i: Identiteit): vo
 }
 
 /** Rollen die een gespawnde werker kan hebben; "lead" of iets anders in het bestand is nooit geldig (geen escalatie via het bestand). */
-const IDENTITEIT_ROLLEN = ["agent", "sublead", "vervolg"];
+const IDENTITEIT_ROLLEN = ["agent", "sublead", "vervolg", "lead-proef"];
 
 /** Een gewoon bestand (geen symlink), van de eigen gebruiker, zonder rechten voor groep of anderen. */
 function eigenPrive(pad: string, map: boolean): boolean {
@@ -379,7 +379,7 @@ function leesIdentiteitBestand(pad: string, nu: number): Identiteit | null {
     const o = JSON.parse(readFileSync(pad, "utf8"));
     if (!o || typeof o !== "object" || typeof o.naam !== "string" || !o.naam || !IDENTITEIT_ROLLEN.includes(o.rol)) return null;
     if (typeof o.ts !== "number" || o.ts > nu || nu - o.ts > IDENTITEIT_MAX_MS) return null;
-    return { naam: o.naam, rol: o.rol, lead: String(o.lead ?? ""), opdracht: String(o.opdracht ?? ""), spawn_id: String(o.spawn_id ?? ""), ts: o.ts, ...(typeof o.t3_thread === "string" && o.t3_thread ? { t3_thread: o.t3_thread } : {}) };
+    return { naam: o.naam, rol: o.rol, lead: String(o.lead ?? ""), opdracht: String(o.opdracht ?? ""), spawn_id: String(o.spawn_id ?? ""), ts: o.ts, ...(typeof o.t3_thread === "string" && o.t3_thread ? { t3_thread: o.t3_thread } : {}), ...(typeof o.sessie_id === "string" && o.sessie_id ? { sessie_id: o.sessie_id } : {}) };
   } catch {
     return null;
   }
@@ -428,9 +428,19 @@ export function ververseIdentiteit(staat: string, cwd: string, spawnId: string, 
   if (g && g.identiteit.spawn_id === spawnId && nu - g.identiteit.ts > 60_000) schrijfAtomair(g.pad, `${JSON.stringify({ ...g.identiteit, ts: nu })}\n`);
 }
 
+/** Bindt de werkruimte-identiteit van een proeflead eenmalig aan haar Codex-sessie. Andere sessies mogen haar nooit overnemen. */
+export function bindLeadProefSessie(staat: string, cwd: string, spawnId: string, sessieId: string, nu = Date.now()): boolean {
+  if (!spawnId || !sessieId) return false;
+  const g = zoekIdentiteit(staat, cwd, nu);
+  if (!g || g.identiteit.rol !== "lead-proef" || g.identiteit.spawn_id !== spawnId) return false;
+  if (g.identiteit.sessie_id && g.identiteit.sessie_id !== sessieId) return false;
+  if (!g.identiteit.sessie_id) schrijfAtomair(g.pad, `${JSON.stringify({ ...g.identiteit, sessie_id: sessieId })}\n`);
+  return true;
+}
+
 /** SessionEnd: haalt de identiteit weg als hij nog van deze spawn is (een nieuwe spawn in dezelfde checkout blijft staan). */
 export function wisIdentiteit(staat: string, cwd: string, spawnId: string, nu = Date.now()): void {
   if (!spawnId) return;
   const g = zoekIdentiteit(staat, cwd, nu);
-  if (g && g.identiteit.spawn_id === spawnId) rmSync(g.pad, { force: true });
+  if (g && g.identiteit.rol !== "lead-proef" && g.identiteit.spawn_id === spawnId) rmSync(g.pad, { force: true });
 }

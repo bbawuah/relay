@@ -3,7 +3,7 @@ import { chmodSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, 
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { schoneEnv } from "../../test-integriteit";
-import { IDENTITEIT_SLEUTELS, cwdUitInvoer, hookOmgeving, identiteitEnv, sessieUitInvoer } from "./codex-wrap";
+import { IDENTITEIT_SLEUTELS, cwdUitInvoer, hookOmgeving, identiteitEnv, isLeadProefHome, sessieUitInvoer } from "./codex-wrap";
 import { IDENTITEIT_MAX_MS, identiteitPad, leesIdentiteit, schrijfIdentiteit, ververseIdentiteit, wisIdentiteit } from "./register";
 
 const WRAP = join(import.meta.dir, "codex-wrap.sh");
@@ -72,6 +72,9 @@ describe("identiteitEnv", () => {
       schrijfIdentiteit(staat, werk, { ...ident, rol });
       expect(identiteitEnv({ LAB_LEAD_STAAT: staat }, werk)).toMatchObject({ LAB_AGENT_ROL: rol });
     }
+    schrijfIdentiteit(staat, werk, { ...ident, rol: "lead-proef", sessie_id: "lead-sessie" });
+    expect(identiteitEnv({ LAB_LEAD_STAAT: staat }, werk, Date.now(), "lead-sessie")).toMatchObject({ LAB_AGENT_ROL: "lead-proef" });
+    expect(identiteitEnv({ LAB_LEAD_STAAT: staat }, werk, Date.now(), "andere-sessie")).toEqual({});
     schrijfIdentiteit(staat, werk, { ...ident, naam: "" });
     expect(leesIdentiteit(staat, werk)).toBeNull();
     schrijfIdentiteit(staat, werk, { ...ident, ts: Date.now() + 3600_000 });
@@ -132,6 +135,39 @@ describe("identiteitEnv", () => {
   });
   test("hookOmgeving: een cwd dat geen absoluut pad is geeft geen afgeleide naam", () => {
     for (const c of ["", "relatief", "../x"]) expect(hookOmgeving({ PATH: "/bin", LAB_LEAD_STAAT: staat }, c, Date.now(), "01a17ebd-76bc-7472-a451-ac8ef9f536d4").LAB_AGENT_NAAM).toBeUndefined();
+  });
+  test("lead-proef-home faalt dicht bij een oude daemon, /new en een kind dat eerst bindt", () => {
+    const home = join(dir, "lead-home");
+    const env = { PATH: "/bin", HOME: home, CODEX_HOME: join(home, ".codex-lead"), LAB_LEAD_STAAT: staat, LAB_SPAWN_ID: "oud" };
+    const leadHome = () => true;
+    expect(hookOmgeving(env, werk, Date.now(), "nieuw", "", leadHome).LAB_AGENT_ROL).toBe("lead-proef");
+    schrijfIdentiteit(staat, werk, { ...ident, rol: "lead-proef", spawn_id: "huidig" });
+    const juist = { ...env, LAB_SPAWN_ID: "huidig" };
+    expect(hookOmgeving(juist, werk, Date.now(), "kind", "SessionStart", leadHome).LAB_AGENT_ROL).toBe("lead-proef");
+    expect(hookOmgeving(juist, werk, Date.now(), "lead-na-new", "SessionStart", leadHome).LAB_AGENT_ROL).toBe("lead-proef");
+    wisIdentiteit(staat, werk, "huidig");
+    expect(leesIdentiteit(staat, werk)?.rol).toBe("lead-proef");
+    expect(hookOmgeving({ PATH: "/bin", HOME: home, CODEX_HOME: join(home, ".andere-home"), LAB_LEAD_STAAT: staat }, join(dir, "geen"), Date.now(), "", "", () => false).LAB_AGENT_ROL).toBeUndefined();
+  });
+  test("lead-home heeft voorrang op een geldige werker-identiteit in de cwd", () => {
+    schrijfIdentiteit(staat, werk, ident);
+    const env = { PATH: "/bin", LAB_LEAD_STAAT: staat, CODEX_HOME: join(dir, "lead-home", ".codex-lead") };
+    const uit = hookOmgeving(env, werk, Date.now(), "werker-sessie", "", () => true);
+    expect(uit).toMatchObject({ LAB_AGENT_NAAM: "codex-lead", LAB_AGENT_ROL: "lead-proef", LAB_LEAD_NAAM: "codex-lead" });
+  });
+  test("lead-proef-home vergelijkt absolute paden met de systeembasis; .codex-lead faalt dicht", () => {
+    const thuis = join(dir, "systeem-home");
+    const echt = join(thuis, ".codex-lead");
+    const link = join(dir, "link-naar-lead");
+    mkdirSync(echt, { recursive: true });
+    symlinkSync(echt, link);
+    const basis = { CODEX_HOME: echt, HOME: join(dir, "andere-home") };
+    expect(isLeadProefHome(basis, realpathSync, () => thuis)).toBe(true);
+    expect(isLeadProefHome({ ...basis, CODEX_HOME: link }, realpathSync, () => thuis)).toBe(true);
+    expect(isLeadProefHome({ ...basis, HOME: join(dir, "foute-home") }, realpathSync, () => thuis)).toBe(true);
+    expect(isLeadProefHome({ ...basis, CODEX_HOME: ".codex-lead" }, realpathSync, () => thuis)).toBe(true);
+    for (const rel of ["./.codex-lead", "../x/.codex-lead", ".codex-lead/"]) expect(isLeadProefHome({ ...basis, CODEX_HOME: rel }, realpathSync, () => thuis)).toBe(true);
+    expect(isLeadProefHome({ ...basis, CODEX_HOME: ".codex" }, realpathSync, () => thuis)).toBe(false);
   });
   test("sessieUitInvoer", () => {
     expect(sessieUitInvoer('{"session_id":"abc"}')).toBe("abc");

@@ -6,7 +6,7 @@
 
 import { existsSync } from "node:fs";
 import { join } from "node:path";
-import { dubbeleLeads, levendeLeads, staatMap, tmuxPanes } from "./hooks/register";
+import { alleRecords, dubbeleLeads, levendeLeads, staatMap, tmuxPanes } from "./hooks/register";
 
 const staat = staatMap(process.env);
 const pane = process.env.TMUX_PANE || "";
@@ -14,11 +14,24 @@ const [cmd, naam] = process.argv.slice(2);
 const panes = tmuxPanes();
 const eigen = pane ? levendeLeads(staat, panes).filter((r) => r.pane === pane).sort((a, b) => b.start - a.start)[0] : undefined;
 
+// `lead-proef` mag werkers aan een Codex-lead koppelen, maar is bewust geen gewone
+// lead: levendeLeads() blijft de bron voor dubbele leads en Terminal-B. Houd deze
+// smallere toelating daarom lokaal bij de `bekend`-controle.
+const bekendeLead = (gezochteNaam: string) =>
+  alleRecords(staat).some(
+    (r) =>
+      r.soort === "sessie" &&
+      (r.rol === "lead" || r.rol === "lead-proef") &&
+      r.naam === gezochteNaam &&
+      r.toestand !== "weg" &&
+      (r.pane ? !panes || panes.has(r.pane) : Date.now() - r.sinds < 24 * 3600_000),
+  );
+
 if (cmd === "eigen") {
   if (eigen?.naam) console.log(eigen.naam);
 } else if (cmd === "bekend" && naam) {
   // Zonder register (map ontbreekt) is er niets om aan te toetsen: een machine of test zonder peerbus.
-  if (existsSync(join(staat, "register")) && !levendeLeads(staat, panes).some((r) => r.naam === naam)) {
+  if (existsSync(join(staat, "register")) && !bekendeLead(naam)) {
     console.error(
       `spawn: lead '${naam}' staat niet in het register (${staat}); een rapport van de werker zou nergens aankomen ("onbekend"). Start de lead met de shell-functie \`lead\` (zet LAB_AGENT_ROL=lead en de naam), of herstart met: LAB_LEAD=1 LAB_AGENT_ROL=lead LAB_AGENT_NAAM=${naam} LAB_LEAD_NAAM=${naam} claude --resume <id> -n ${naam}`,
     );
