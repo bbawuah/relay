@@ -166,6 +166,8 @@ describe("identiteitEnv", () => {
     expect(isLeadProefHome({ ...basis, CODEX_HOME: link }, realpathSync, () => thuis)).toBe(true);
     expect(isLeadProefHome({ ...basis, HOME: join(dir, "foute-home") }, realpathSync, () => thuis)).toBe(true);
     expect(isLeadProefHome({ ...basis, CODEX_HOME: ".codex-lead" }, realpathSync, () => thuis)).toBe(true);
+    for (const rel of ["./.codex-lead", "../x/.codex-lead", ".codex-lead/"]) expect(isLeadProefHome({ ...basis, CODEX_HOME: rel }, realpathSync, () => thuis)).toBe(true);
+    expect(isLeadProefHome({ ...basis, CODEX_HOME: ".codex" }, realpathSync, () => thuis)).toBe(false);
   });
   test("sessieUitInvoer", () => {
     expect(sessieUitInvoer('{"session_id":"abc"}')).toBe("abc");

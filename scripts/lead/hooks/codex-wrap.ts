@@ -17,7 +17,7 @@
 import { bindLeadProefSessie, type Omgeving, staatMap, zoekIdentiteit } from "./register";
 import { userInfo } from "node:os";
 import { realpathSync } from "node:fs";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 
 // afgeleide-naam ligt in de repo op ../peers en geïnstalleerd op ./peers (zie peers-kopie.ts). Een statische import zou
 // geïnstalleerd falen en elke Codex-hook laten crashen (#685); faalt het laden, dan is er geen afgeleide naam en werkt de rest.
@@ -41,7 +41,7 @@ export const IDENTITEIT_SLEUTELS = ["LAB_AGENT_NAAM", "LAB_AGENT_ROL", "LAB_LEAD
 export function isLeadProefHome(env: Omgeving, echt: (pad: string) => string = realpathSync, thuis: () => string = () => userInfo().homedir): boolean {
   // Een relatieve home kan niet betrouwbaar aan een sessie gekoppeld worden. Geef
   // hem daarom de minst bevoegde lead-proefrol, nooit de geërfde daemonrol.
-  if (env.CODEX_HOME === ".codex-lead") return true;
+  if (env.CODEX_HOME && !env.CODEX_HOME.startsWith("/") && basename(env.CODEX_HOME.replace(/\/+$/, "")) === ".codex-lead") return true;
   if (!env.CODEX_HOME || !env.CODEX_HOME.startsWith("/")) return false;
   try {
     return echt(env.CODEX_HOME) === echt(join(thuis(), ".codex-lead"));
