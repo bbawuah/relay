@@ -69,37 +69,39 @@ describe("grenzen.sh: lead-proef blijft in de eigen pane en uit de Claude-socket
 });
 
 describe("grenzen.sh: lead-proef merge via het gecontroleerde pad, niet via push of gh", () => {
+  const MERGE_OMWEGEN = [
+    ["bash ervoor", "bash scripts/lead/merge.sh 700"],
+    ["../x/merge.sh", "../x/merge.sh 700"],
+    ["/tmp/merge.sh", "/tmp/merge.sh 700"],
+    ["puntkomma", "scripts/lead/merge.sh 700; true"],
+    ["&&", "scripts/lead/merge.sh 700 && true"],
+    ["pipe", "scripts/lead/merge.sh 700 | cat"],
+    ["command substitution", "echo $(scripts/lead/merge.sh 700)"],
+  ] as const;
+
   test("laat alleen de vaste merge.sh vanaf de hoofdcheckout door", () => {
     expect(bashAlsRol("scripts/lead/merge.sh 700", "lead-proef").code).toBe(0);
     expect(bashAlsRol("scripts/lead/merge.sh --droog 700", "lead-proef").code).toBe(0);
     expect(bashAlsRol(`${EIGEN_TAK}/scripts/lead/merge.sh 700`, "lead-proef").code).toBe(0);
   });
 
-  test("weigert wrappers, andere paden en commandoketens rond merge.sh", () => {
-    for (const command of [
-      "bash scripts/lead/merge.sh 700",
-      "../x/merge.sh 700",
-      "/tmp/merge.sh 700",
-      "scripts/lead/merge.sh 700; true",
-      "scripts/lead/merge.sh 700 && true",
-      "scripts/lead/merge.sh 700 | cat",
-      "echo $(scripts/lead/merge.sh 700)",
-    ]) {
+  for (const [naam, command] of MERGE_OMWEGEN)
+    test(`weigert merge-omweg: ${naam}`, () => {
       const r = bashAlsRol(command, "lead-proef");
       expect(r.code).toBe(2);
       expect(r.stderr).toContain("alleen scripts/lead/merge.sh");
-    }
-  });
+    });
 
-  test("mutatie: zonder de mergepadcheck worden alle omwegen open", () => {
+  test("mutatie: zonder de mergepadcheck wordt elke merge-omweg open", () => {
     const map = mkdtempSync(join(tmpdir(), "grenzen-mergepad-mutatie-"));
     const kopie = join(map, "grenzen.sh");
     try {
       const bron = readFileSync(HOOK, "utf8");
       expect(bron).toContain("merge_bezwaar = merge_proef_bezwaar(w, basis, cz)");
       writeFileSync(kopie, bron.replace("        if lead_proef:\n            merge_bezwaar = merge_proef_bezwaar(w, basis, cz)\n            if merge_bezwaar:\n                weiger(merge_bezwaar)\n", "        if lead_proef:\n            pass\n"));
-      expect(bashAlsRol("/tmp/merge.sh 700", "lead-proef", "%eigen", kopie).code).toBe(0);
-      expect(bashAlsRol("bash scripts/lead/merge.sh 700", "lead-proef", "%eigen", kopie).code).toBe(0);
+      for (const [naam, command] of MERGE_OMWEGEN) {
+        expect(bashAlsRol(command, "lead-proef", "%eigen", kopie).code, naam).toBe(0);
+      }
     } finally {
       rmSync(map, { recursive: true, force: true });
     }
