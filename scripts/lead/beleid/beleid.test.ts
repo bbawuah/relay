@@ -230,7 +230,7 @@ describe("beleid.ts: geen geheimen", () => {
     for (const w of nep) expect(SLEUTELVORM.some((re) => re.test(w))).toBe(true);
   });
   test("de bronbestanden bevatten zelf geen sleutelvorm", () => {
-    for (const f of ["beleid.ts", "hosts.ts", "typen.ts", "claude.ts"]) {
+    for (const f of ["beleid.ts", "hosts.ts", "typen.ts", "claude.ts", "codex-werker.ts"]) {
       const t = readFileSync(join(import.meta.dir, f), "utf8");
       for (const re of SLEUTELVORM.slice(0, 3)) expect(re.test(t)).toBe(false);
     }

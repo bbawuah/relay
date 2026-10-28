@@ -170,6 +170,7 @@ fi
 # Zonder --lead: de naam van de aanroepende lead uit het register (via TMUX_PANE), anders LAB_LEAD_NAAM.
 HIER=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 BUN="${LAB_LEAD_BUN:-bun}"
+BELEID_BUN=$(command -v bun 2>/dev/null || true)
 if [ -z "$lead" ] && command -v "$BUN" >/dev/null 2>&1; then
   lead=$("$BUN" "$HIER/leadnaam.ts" eigen 2>/dev/null || true)
 fi
@@ -281,7 +282,7 @@ eigen_worktree() {
 # gitdir, die een git in die worktree naar een andere common dir sturen), een profiel met `read` op die bestanden wel.
 # Weigert (nooit half): een pad met ' " \ of een regeleinde kan niet veilig in de TOML.
 codex_sandbox() {
-  local c e h t b rest m ch
+  local c e h t rest m ch regel
   c=$GEMEEN_DIR e=$EIGEN_DIR h=${HOME:-}
   m=$(cd "$map" && pwd -P) || fout "--vendor codex: $map is niet te openen"
   [ -n "$h" ] && [ -d "$h" ] || fout "--vendor codex: HOME ontbreekt, de sandbox kan niet gebouwd worden"
@@ -291,48 +292,20 @@ codex_sandbox() {
   for rest in "$m" "$c" "$e" "$h" "$t" "$naam" "$ch"; do
     case $rest in *\'*|*\"*|*\\*|*$'\n'*) fout "--vendor codex: een pad bevat ', \" of \\ en kan niet in de sandbox-config: $rest" ;; esac
   done
-  b="$h/.bun/install/cache"
-  SANDBOX_FS="\"/\"=\"read\",\"$m\"=\"write\",\"$c/objects\"=\"write\",\"$c/refs\"=\"write\",\"$c/logs\"=\"write\""
-  SANDBOX_FS="$SANDBOX_FS,\"$e\"=\"write\",\"$e/commondir\"=\"read\",\"$e/gitdir\"=\"read\",\"$e/config.worktree\"=\"read\""
-  # HEAD van de worktree read-only: anders wijst de werker hem naar een andere tak (push-werker leest de tak uit de identiteit, dit is de
-  # tweede laag). Een commit schrijft de tak in refs/ en de index in $e, niet HEAD.
-  SANDBOX_FS="$SANDBOX_FS,\"$e/HEAD\"=\"read\""
-  # refs/replace read-only (refs/ is schrijfbaar): een replace-ref laat merge-base, log en diff van de lead liegen. <worktree>/.git
-  # (het bestand dat naar de gitdir wijst) read-only: het zou de gitdir kunnen omleggen.
-  SANDBOX_FS="$SANDBOX_FS,\"$c/refs/replace\"=\"read\",\"$m/.git\"=\"read\""
-  # Eigen tmp-map als enige tmp-root: niet /tmp als geheel en niet de TMPDIR van de lead (daar staan sessiemappen en sockets van anderen).
+  # De pure beleidsgenerator bewaart de vaste volgorde van de regels en levert
+  # dezelfde drie -c-waarden als vóór deze extractie. De shell bewaakt hier de
+  # paden en quoting; de generator krijgt alleen al gevalideerde argumenten.
   WERKTMP="$t/lab-werker-$naam"
-  SANDBOX_FS="$SANDBOX_FS,\"$WERKTMP\"=\"write\""
-  # De bun-cache alleen schrijfbaar als de werker zelf mag installeren (--netwerk). Anders vervangt hij een pakket in de cache en linkt de
-  # volgende `bun install` van de lead het in, waarna `bun run check` het als de lead draait. Gelezen mag hij ("/"="read").
-  [ "$netwerk" = 0 ] || SANDBOX_FS="$SANDBOX_FS,\"$b\"=\"write\""
-  # De projectconfig van Codex (<worktree>/.codex/config.toml) draait zijn mcp_servers buiten de sandbox en mag het profiel aanvullen:
-  # read-only, ook als de map nog niet bestaat.
-  SANDBOX_FS="$SANDBOX_FS,\"$m/.codex\"=\"read\""
-  # Sleutelmappen onleesbaar (dezelfde lijst als grenzen.sh), want een write_stdin gaat langs die hook.
-  SANDBOX_FS="$SANDBOX_FS,\"$h/.config/klaarover\"=\"none\",\"$h/.config/douane\"=\"none\",\"$h/.config/agentwerkbank\"=\"none\""
-  # De CODEX_HOME die spawn gebruikt (kan een andere zijn dan ~/.codex) als geheel onleesbaar: transcripten, geschiedenis, logs, sqlite-staat
-  # (ook bestanden die pas na de start ontstaan), config en sleutel. Codex en zijn hooks lezen die buiten de sandbox. Alleen wat de shell
-  # van de werker nodig heeft gaat weer op read (een diepere regel wint van de map, zoals $e/HEAD hierboven): shell_snapshots/, skills/,
-  # prompts/, rules/ en AGENTS.md. En packages/: de standalone-installatie zet de codex-binary daar (~/.local/bin/codex wijst naar
-  # ~/.codex/packages/standalone/current/bin/codex) en de fs-sandboxhelper van Codex start die binary zelf; dicht = "execvp() …
-  # Operation not permitted" en codex stopt bij de start (echte demo, 27 okt).
-  local d f k
-  for d in "$ch" "$h/.codex"; do
-    SANDBOX_FS="$SANDBOX_FS,\"$d\"=\"none\""
-    for k in shell_snapshots skills prompts rules AGENTS.md packages; do
-      SANDBOX_FS="$SANDBOX_FS,\"$d/$k\"=\"read\""
-    done
-    [ "$ch" != "$h/.codex" ] || break
-  done
-  # Inloggegevens en tokens: een denylist (alles blijft leesbaar tenzij hier genoemd), geen allowlist. Met --netwerk is een leesbaar
-  # token een directe exfiltratieroute. ~/.codex en de CODEX_HOME staan hierboven (als geheel dicht, op een paar leesmappen na).
-  local k
-  for k in .ssh .config/gh .netrc .git-credentials .aws .azure .kube .docker .npmrc .config/op Library/Keychains \
-    .config/glab-cli .gnupg .config/gcloud "Library/Application Support/com.vercel.cli" \
-    .claude/projects .claude/.credentials.json .claude/history.jsonl .claude.json; do
-    SANDBOX_FS="$SANDBOX_FS,\"$h/$k\"=\"none\""
-  done
+  SANDBOX_C_ARGS=()
+  while IFS= read -r regel; do SANDBOX_C_ARGS+=("$regel"); done < <("$BELEID_BUN" "$HIER/beleid/codex-werker.ts" spawn-c-args "$m" "$c" "$e" "$h" "$t" "$naam" "$ch" "$([ "$netwerk" = 0 ] && echo false || echo true)")
+  net=false; [ "$netwerk" = 0 ] || net=true
+  [ "${#SANDBOX_C_ARGS[@]}" = 3 ] && [ "${SANDBOX_C_ARGS[0]}" = 'default_permissions="lab-werker"' ] &&
+    [ "${SANDBOX_C_ARGS[2]}" = "permissions.lab-werker.network={enabled=$net}" ] || fout "kon het Codex-werkerprofiel niet genereren"
+  case ${SANDBOX_C_ARGS[1]} in
+    permissions.lab-werker.filesystem=\{*\}) ;;
+    *) fout "ongeldige filesystem-regel van het Codex-werkerprofiel" ;;
+  esac
+  case ${SANDBOX_C_ARGS[1]} in *"'"*|*\\*|*$'\n'*|*$'\r'*) fout "onveilige filesystem-regel van het Codex-werkerprofiel" ;; esac
 }
 
 # Een andere sessie in dezelfde checkout? Dan weigeren (de identiteit is per checkout, niet per sessie).
@@ -386,6 +359,7 @@ codex_controles() {
     fout "--vendor codex weigert: $map/.codex bestaat (getrackt of niet). Codex laadt <worktree>/.codex/config.toml bij de start; zijn mcp_servers draaien buiten de sandbox en hij kan het profiel aanvullen. Haal de map weg of start in een andere worktree"
   fi
   command -v "$BUN" >/dev/null 2>&1 || fout "--vendor codex heeft bun nodig om de grenzen-hook in $cfg te controleren"
+  [ -n "$BELEID_BUN" ] || fout "--vendor codex heeft bun nodig om het workerprofiel te genereren"
   if [ "$t3" = 1 ]; then
     [ "$zonder_sandbox" = 1 ] || fout "--t3 met --vendor codex weigert: een T3-thread krijgt geen -c per thread en dus niet de sandbox van de tmux-werker (schrijven alleen in de worktree, hooks en config read-only). Start in tmux. --zonder-sandbox is een expliciete escape (de thread draait dan zonder die sandbox) en mag alleen op aanwijzing van Brian"
   else
@@ -564,8 +538,10 @@ if [ "$vendor" = codex ]; then
   [ "$t3" = 1 ] || cmd="$cmd -c 'web_search=\"disabled\"'"
   # Sandbox: een permissieprofiel (zie codex_sandbox) zonder netwerk (met --netwerk wel), en nooit een escalatieverzoek (-a never): zonder mens in de
   # pane zou een verzoek om buiten de sandbox te draaien blijven hangen, en een goedkeuring zou de sandbox ophouden te zijn.
-  net=false; [ "$netwerk" = 0 ] || net=true
-  [ "$t3" = 1 ] || cmd="$cmd -a never -c 'default_permissions=\"lab-werker\"' -c 'permissions.lab-werker.filesystem={$SANDBOX_FS}' -c 'permissions.lab-werker.network={enabled=$net}'"
+  if [ "$t3" = 0 ]; then
+    cmd="$cmd -a never"
+    for c_arg in "${SANDBOX_C_ARGS[@]}"; do cmd="$cmd -c '$c_arg'"; done
+  fi
   # De peers-MCP alleen voor deze sessie (-c), nooit globaal in ~/.codex.
   if [ "$t3" = 1 ]; then
     :   # een T3-thread krijgt geen -c per thread: de peers-MCP leest de identiteit uit <staat>/identiteit (zie peers/server.ts)
@@ -677,7 +653,10 @@ if [ "$vendor" = codex ]; then
     done < <(find "$map" \( -name node_modules -o -name .git \) -prune -o \( -type l -o -name package.json -o -name bunfig.toml -o -name .npmrc -o -name '.env*' -o -name bun.lock -o -name bun.lockb \) -print0)
     rm -rf "$bron"
     [ -z "$afwijking" ] || fout "$afwijking in $map wijkt af van origin/main (of is nieuw, of een symlink): bun install buiten de sandbox zou hem volgen. Herstel het bestand, of start met --netwerk: dan draait de werker zelf bun install in de sandbox"
-    (cd "$map" && "$BUN" install --ignore-scripts --frozen-lockfile >&2) || fout "bun install --ignore-scripts --frozen-lockfile in $map mislukte; de werker heeft zonder netwerk geen installatie. Los het op of start met --netwerk"
+    BUN_INSTALL_ARGS=()
+    while IFS= read -r regel; do BUN_INSTALL_ARGS+=("$regel"); done < <("$BELEID_BUN" "$HIER/beleid/codex-werker.ts" bun-install-args)
+    [ "${BUN_INSTALL_ARGS[*]}" = 'install --ignore-scripts --frozen-lockfile' ] || fout "kon de bun-installatie voor het Codex-werkerprofiel niet genereren"
+    (cd "$map" && "$BUN" "${BUN_INSTALL_ARGS[@]}" >&2) || fout "bun install --ignore-scripts --frozen-lockfile in $map mislukte; de werker heeft zonder netwerk geen installatie. Los het op of start met --netwerk"
   fi
   mkdir -p -m 700 "$WERKTMP" 2>/dev/null || [ "$t3" = 1 ] || fout "kon de tmp-map $WERKTMP niet maken"
   schrijf_identiteit

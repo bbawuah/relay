@@ -10,6 +10,7 @@ import { dirname, join } from "node:path";
 import { identiteitEnv } from "./hooks/codex-wrap";
 import { GELIJK_AAN_REPO } from "./hooks/codex-controle";
 import { commando } from "./hooks/codex-installeer";
+import { spawnCArgs } from "./beleid/codex-werker";
 
 const SPAWN = join(import.meta.dir, "spawn.sh");
 const MERGE = join(import.meta.dir, "merge.sh");
@@ -1378,6 +1379,20 @@ exit 1
     // de standalone codex-binary staat in ~/.codex/packages; dicht laat de sandboxhelper van Codex hem niet starten (echte demo, 27 okt)
     expect(regels.some((x) => x.endsWith("/.codex/packages=read"))).toBe(true);
     expect(regels.some((x) => x.endsWith("/.codex/sessions=none") || x.endsWith("/.codex/auth.json=none"))).toBe(false);
+  });
+
+  test("sandbox: de drie -c-waarden blijven byte-gelijk aan de gedeelde beleidsgenerator", () => {
+    const gem = realpathSync(join(repo, ".git"));
+    const eigen = realpathSync(join(gem, "worktrees", "eigen-worktree"));
+    for (const netwerk of [false, true]) {
+      const r = codex(["--map", wt, ...(netwerk ? ["--netwerk"] : []), "--droog"], { TMPDIR: join(dir, "sbtmp") });
+      const werkelijk = [...r.uit.matchAll(/-c '((?:default_permissions|permissions\.)[^']*)'/g)].map((m) => m[1]);
+      expect(werkelijk).toEqual(
+        spawnCArgs({
+          worktree: realpathSync(wt), gitCommon: gem, gitDir: eigen, home: realpathSync(process.env.HOME!), tmp: realpathSync(werkWortel()), naam: "cx1", codexHome, netwerk,
+        }),
+      );
+    }
   });
 
   test("sandbox: een pad met een quote of backslash weigert spawn (nooit een halve sandbox)", () => {
