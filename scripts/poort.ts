@@ -989,6 +989,12 @@ export const KANARIES: Kanarie[] = [
     },
   },
   {
+    stap: "skills",
+    wat: "een tijdelijke skill zonder verplichte name-frontmatter",
+    verwacht: /FOUT skills .*1 skillproble/,
+    zet: (m) => schrijf(m, "agents/skills/kanarie/SKILL.md", "---\ndescription: kanarie\n---\n# kanarie\n"),
+  },
+  {
     stap: "gc-data-laag",
     wat: "een useEffect met maakClient( in een fixture-bestand van de klant-app",
     verwacht: /FOUT gc-data-laag .*1 nieuw/,
