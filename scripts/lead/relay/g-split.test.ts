@@ -39,19 +39,35 @@ test("bouwt in een tijdelijk HOME uit een clone, zonder remote, en vervangt alle
   git(bron, "remote", "add", "origin", origin);
   git(bron, "push", "-q", "origin", "main");
   const nepGit = join(bin, "git");
-  writeFileSync(nepGit, `#!/usr/bin/env bash\nfor a in "$@"; do [ "$a" = filter-repo ] && exit 0; done\nexec "${Bun.which("git")}" "$@"\n`);
+  writeFileSync(nepGit, `#!/usr/bin/env bash
+for a in "$@"; do
+  if [ "$a" = filter-repo ]; then
+    # Filter-repo zelf verwijdert origin; de splitter moet dat idempotent accepteren.
+    for ((i=1; i <= $#; i++)); do
+      [ "\${!i}" = -C ] && { j=$((i + 1)); "${Bun.which("git")}" -C "\${!j}" remote remove origin; }
+    done
+    exit 0
+  fi
+done
+exec "${Bun.which("git")}" "$@"
+`);
   chmodSync(nepGit, 0o755);
+  const nepBun = join(bin, "bun");
+  writeFileSync(nepBun, "#!/usr/bin/env bash\nprintf '%s\\n' \"$*\" >> \"$BUN_LOG\"\n");
+  chmodSync(nepBun, 0o755);
+  const bunLog = join(dir, "bun.log");
   const doel = join(home, "relay");
   mkdirSync(doel);
   writeFileSync(join(doel, ".relay-split-marker"), "gemaakt-door=g-split.sh\n");
   writeFileSync(join(doel, "oud.txt"), "oude relay\n");
   const run = Bun.spawnSync(["bash", SCRIPT], {
-    env: { ...envZonderGit(), HOME: home, CONCEPT_UITVOEREN: "JA", RELAY_BRON_REPO: bron, RELAY_GIT: nepGit, TMPDIR: dir },
+    env: { ...envZonderGit(), HOME: home, CONCEPT_UITVOEREN: "JA", RELAY_BRON_REPO: bron, RELAY_GIT: nepGit, RELAY_BUN: nepBun, BUN_LOG: bunLog, TMPDIR: dir },
   });
   expect(run.exitCode).toBe(0);
   expect(readFileSync(join(doel, ".relay-split-marker"), "utf8")).toContain("gemaakt-door");
   expect(existsSync(join(doel, "oud.txt"))).toBe(false);
   expect(git(doel, "remote").stdout.toString().trim()).toBe("");
+  expect(readFileSync(bunLog, "utf8")).toBe("run poort\n");
   const backup = readdirSync(home).find((naam) => naam.startsWith("relay.voor-split-"));
   expect(backup).toContain(".voor-split-");
   expect(readFileSync(join(home, backup!, "oud.txt"), "utf8")).toBe("oude relay\n");

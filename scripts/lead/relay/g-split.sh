@@ -8,6 +8,7 @@ readonly HIER="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
 readonly BRON="${RELAY_BRON_REPO:-$(cd "$HIER/../../.." && pwd -P)}"
 readonly DOEL="${RELAY_DOEL:-$HOME/relay}"
 readonly GIT_BIN="${RELAY_GIT:-git}"
+readonly BUN_BIN="${RELAY_BUN:-bun}"
 
 fout() { printf 'FOUT g-split: %s\n' "$*" >&2; exit 2; }
 ok() { printf 'OK g-split: %s\n' "$*"; }
@@ -62,8 +63,11 @@ fi
   --path scripts/scripts-tests-veilig.ts \
   --path scripts/scripts-tests-paden.test.ts \
   --path AGENTS.md
-# Een lokale inspectierepo mag nooit per ongeluk naar LAB kunnen pushen.
-"$GIT_BIN" -C "$clone" remote remove origin
+# git-filter-repo verwijdert origin doorgaans zelf; een oudere variant niet.
+# In beide gevallen mag de lokale inspectierepo nooit een remote overhouden.
+if "$GIT_BIN" -C "$clone" remote get-url origin >/dev/null 2>&1; then
+  "$GIT_BIN" -C "$clone" remote remove origin
+fi
 
 mv "$clone" "$DOEL"
 trap - EXIT
@@ -110,4 +114,8 @@ default_branch = "main"
 [checks]
 full_gate = ["bun", "run", "poort"]
 EOF
+(
+  cd "$DOEL"
+  "$BUN_BIN" run poort
+)
 ok "lokale relay gebouwd in $DOEL (geen remote toegevoegd, niets gepusht)"
