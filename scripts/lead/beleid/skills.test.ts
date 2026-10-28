@@ -83,7 +83,8 @@ describe("installeer-skills", () => {
     writeFileSync(join(claude, "lead", "references", "hulp.md"), "oud hulpmiddel\n");
     const voor = readFileSync(join(claude, "lead", "references", "hulp.md"), "utf8");
     const r = installeer(opties(claude, { droog: true })).join("\n");
-    expect(r).toContain("references/hulp.md");
+    expect(r).toContain(`--- ${join(claude, "lead", "references", "hulp.md")}`);
+    expect(r).toContain(`+++ ${join(repo, "lead", "references", "hulp.md")}`);
     expect(r).toContain("- oud hulpmiddel");
     expect(r).toContain("+ hulp");
     expect(readFileSync(join(claude, "lead", "references", "hulp.md"), "utf8")).toBe(voor);

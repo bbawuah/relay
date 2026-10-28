@@ -26,19 +26,19 @@ function diffTekst(van: string, naar: string, oud: string, nieuw: string): strin
   for (let i = min; i < nieuweRegels.length; i++) regels.push(`+ ${nieuweRegels[i]}`);
   return regels.join("\n");
 }
-function diffs(bron: string, doel: string, relatief = ""): string[] {
-  if (!existsSync(bron)) return [`--- ${join(doel, relatief)}\n+++ /dev/null\n- verwijderd`];
+function diffs(bron: string, doel: string): string[] {
+  if (!existsSync(bron)) return [`--- ${doel}\n+++ /dev/null\n- verwijderd`];
   if (!existsSync(doel)) {
     const stat = lstatSync(bron);
-    if (stat.isDirectory()) return readdirSync(bron).filter((n) => n !== MARKER).flatMap((n) => diffs(join(bron, n), join(doel, n), relatief ? join(relatief, n) : n));
-    return diffTekst("/dev/null", join(bron, relatief), "", readFileSync(bron, "utf8"));
+    if (stat.isDirectory()) return readdirSync(bron).filter((n) => n !== MARKER).flatMap((n) => diffs(join(bron, n), join(doel, n)));
+    return diffTekst("/dev/null", bron, "", readFileSync(bron, "utf8"));
   }
   const bs = lstatSync(bron); const ds = lstatSync(doel);
   if (bs.isDirectory() && ds.isDirectory()) return [...new Set([...readdirSync(bron), ...readdirSync(doel)])]
-    .filter((n) => n !== MARKER).flatMap((n) => diffs(join(bron, n), join(doel, n), relatief ? join(relatief, n) : n));
-  if (bs.isDirectory() !== ds.isDirectory() || ds.isSymbolicLink()) return [`--- ${join(doel, relatief)}\n+++ ${join(bron, relatief)}\n@@\n- ander type\n+ ander type`];
+    .filter((n) => n !== MARKER).flatMap((n) => diffs(join(bron, n), join(doel, n)));
+  if (bs.isDirectory() !== ds.isDirectory() || ds.isSymbolicLink()) return [`--- ${doel}\n+++ ${bron}\n@@\n- ander type\n+ ander type`];
   const oud = readFileSync(doel, "utf8"); const nieuw = readFileSync(bron, "utf8");
-  return oud === nieuw ? [] : [diffTekst(join(doel, relatief), join(bron, relatief), oud, nieuw)];
+  return oud === nieuw ? [] : [diffTekst(doel, bron, oud, nieuw)];
 }
 function plan(bron: string, doel: string, droog: boolean, regels: string[]) {
   regels.push(`${existsSync(doel) ? "vervang" : "installeer"} ${doel}`);
