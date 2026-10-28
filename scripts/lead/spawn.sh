@@ -593,7 +593,7 @@ fi
 
 if [ "$droog" = 1 ]; then
   echo "droog: $SPAWN window $map \"$cmd\""
-  echo "droog: tmux set -p -t <pane> @agent $vendor; tmux set -p -t <pane> @vendor $vendor; tmux set -p -t <pane> @agent_rol $rol; tmux set -p -t <pane> @agent_naam $naam"
+  echo "droog: tmux set -p -t <pane> @agent_rol $rol; tmux set -p -t <pane> @agent_naam $naam"
   if [ "$vendor" = codex ]; then
     echo "droog: schrijf de identiteit (naam=$naam rol=$rol) naar $(identiteit_pad) (0600 in een map 0700); codex-wrap.sh zet die in elke hook"
     [ "$t3" = 1 ] || [ "$netwerk" = 1 ] || [ ! -f "$map/package.json" ] || echo "droog: bun install --ignore-scripts --frozen-lockfile in $map (buiten de sandbox, zonder netwerk kan de werker het niet)"
@@ -672,8 +672,6 @@ fi
 pane=$(bash "$SPAWN" window "$map" "$cmd" | tail -n 1) || pane=""   # pipefail: een falend spawn-script moet de foutmelding en de opruiming krijgen
 [[ $pane =~ ^%[0-9]+$ ]] || fout_ruim "kreeg geen pane-id terug van het spawn-script: '$pane'"
 
-tmux set -p -t "$pane" @agent "$vendor" 2>/dev/null || true
-tmux set -p -t "$pane" @vendor "$vendor" 2>/dev/null || true
 tmux set -p -t "$pane" @agent_rol "$rol" 2>/dev/null || true
 tmux set -p -t "$pane" @agent_naam "$naam" 2>/dev/null || true
 
