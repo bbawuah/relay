@@ -17,16 +17,45 @@ function afwijkingen(bron: string, doel: string, relatief = ""): string[] {
   const namen = new Set([...readdirSync(bron), ...readdirSync(doel)]);
   return [...namen].filter((n) => n !== MARKER).flatMap((n) => afwijkingen(join(bron, n), join(doel, n), relatief ? join(relatief, n) : n));
 }
+function diffTekst(van: string, naar: string, oud: string, nieuw: string): string {
+  const oudeRegels = oud.split("\n"); const nieuweRegels = nieuw.split("\n");
+  const min = Math.min(oudeRegels.length, nieuweRegels.length);
+  const regels = [`--- ${van}`, `+++ ${naar}`, "@@"];
+  for (let i = 0; i < min; i++) if (oudeRegels[i] !== nieuweRegels[i]) regels.push(`- ${oudeRegels[i]}`, `+ ${nieuweRegels[i]}`);
+  for (let i = min; i < oudeRegels.length; i++) regels.push(`- ${oudeRegels[i]}`);
+  for (let i = min; i < nieuweRegels.length; i++) regels.push(`+ ${nieuweRegels[i]}`);
+  return regels.join("\n");
+}
+function diffs(bron: string, doel: string, relatief = ""): string[] {
+  if (!existsSync(bron)) return [`--- ${join(doel, relatief)}\n+++ /dev/null\n- verwijderd`];
+  if (!existsSync(doel)) {
+    const stat = lstatSync(bron);
+    if (stat.isDirectory()) return readdirSync(bron).filter((n) => n !== MARKER).flatMap((n) => diffs(join(bron, n), join(doel, n), relatief ? join(relatief, n) : n));
+    return diffTekst("/dev/null", join(bron, relatief), "", readFileSync(bron, "utf8"));
+  }
+  const bs = lstatSync(bron); const ds = lstatSync(doel);
+  if (bs.isDirectory() && ds.isDirectory()) return [...new Set([...readdirSync(bron), ...readdirSync(doel)])]
+    .filter((n) => n !== MARKER).flatMap((n) => diffs(join(bron, n), join(doel, n), relatief ? join(relatief, n) : n));
+  if (bs.isDirectory() !== ds.isDirectory() || ds.isSymbolicLink()) return [`--- ${join(doel, relatief)}\n+++ ${join(bron, relatief)}\n@@\n- ander type\n+ ander type`];
+  const oud = readFileSync(doel, "utf8"); const nieuw = readFileSync(bron, "utf8");
+  return oud === nieuw ? [] : [diffTekst(join(doel, relatief), join(bron, relatief), oud, nieuw)];
+}
 function plan(bron: string, doel: string, droog: boolean, regels: string[]) {
   regels.push(`${existsSync(doel) ? "vervang" : "installeer"} ${doel}`);
-  if (droog) { if (existsSync(join(doel, "SKILL.md")) && readFileSync(join(bron, "SKILL.md"), "utf8") !== readFileSync(join(doel, "SKILL.md"), "utf8")) regels.push(`--- ${join(doel, "SKILL.md")}\n+++ ${join(bron, "SKILL.md")}\n- ${readFileSync(join(doel, "SKILL.md"), "utf8").trim()}\n+ ${readFileSync(join(bron, "SKILL.md"), "utf8").trim()}`); return; }
+  if (droog) regels.push(...diffs(bron, doel));
 }
 function stageer(bron: string, doel: string) {
   cpSync(bron, doel, { recursive: true, filter: (p) => !p.endsWith(".system") && !p.includes("/synced/") });
   writeFileSync(join(doel, MARKER), JSON.stringify({ bron: "beleid" }) + "\n", { mode: 0o600 });
 }
 function vervang(staging: string, doel: string, backupMap: string) {
-  if (existsSync(doel)) { const back = join(backupMap, basename(doel)); rmSync(back, { recursive: true, force: true }); mkdirSync(backupMap, { recursive: true }); renameSync(doel, back); }
+  if (existsSync(doel)) {
+    mkdirSync(backupMap, { recursive: true });
+    const stam = `${basename(doel)}.voor-beleid-${Date.now()}`;
+    let back = join(backupMap, stam); let volg = 1;
+    while (existsSync(back)) back = join(backupMap, `${stam}-${volg++}`);
+    renameSync(doel, back);
+  }
   renameSync(staging, doel);
 }
 export function installeer(o: Opties, deps: InstalleerDeps = {}) {
@@ -41,6 +70,13 @@ export function installeer(o: Opties, deps: InstalleerDeps = {}) {
       if (!existsSync(doel)) regels.push(`drift ${doel}: ontbreekt`);
       else if (!existsSync(join(doel, MARKER)) || lstatSync(join(doel, MARKER)).isSymbolicLink()) regels.push(`drift ${doel}: marker ontbreekt of is symlink`);
       else for (const afwijking of afwijkingen(bron, doel)) regels.push(`drift ${doel}: ${afwijking}`);
+    }
+    if (existsSync(o.doel)) {
+      const beheerd = new Set(bronnen.map(([, doel]) => basename(doel)));
+      for (const naam of readdirSync(o.doel)) {
+        if (naam === ".system" || naam === "synced" || beheerd.has(naam)) continue;
+        regels.push(`drift ${join(o.doel, naam)}: onbeheerde skillmap`);
+      }
     }
     return regels;
   }

@@ -78,6 +78,16 @@ describe("installeer-skills", () => {
     expect(r.join("\n")).toContain("+ ");
     expect(readFileSync(join(claude, "lead", "SKILL.md"), "utf8")).toBe(voor);
   });
+  test("droog toont ook een bestandsdiff in references zonder het doel te wijzigen", () => {
+    installeer(opties(claude));
+    writeFileSync(join(claude, "lead", "references", "hulp.md"), "oud hulpmiddel\n");
+    const voor = readFileSync(join(claude, "lead", "references", "hulp.md"), "utf8");
+    const r = installeer(opties(claude, { droog: true })).join("\n");
+    expect(r).toContain("references/hulp.md");
+    expect(r).toContain("- oud hulpmiddel");
+    expect(r).toContain("+ hulp");
+    expect(readFileSync(join(claude, "lead", "references", "hulp.md"), "utf8")).toBe(voor);
+  });
   test("controle meldt drift zonder te installeren", () => {
     installeer(opties(claude));
     writeFileSync(join(claude, "lead", "SKILL.md"), "afwijkend\n");
@@ -86,6 +96,15 @@ describe("installeer-skills", () => {
     expect(r.join("\n")).toContain("drift");
     expect(r.join("\n")).toContain("lead");
     expect(readFileSync(join(claude, "lead", "SKILL.md"), "utf8")).toBe(voor);
+  });
+  test("controle meldt een onbeheerde skillmap zonder te schrijven", () => {
+    installeer(opties(claude));
+    mkdirSync(join(claude, "oude-skill")); writeFileSync(join(claude, "oude-skill", "SKILL.md"), "eigen\n");
+    const voor = readFileSync(join(claude, "oude-skill", "SKILL.md"), "utf8");
+    const r = installeer(opties(claude, { controle: true })).join("\n");
+    expect(r).toContain("oude-skill");
+    expect(r).toContain("onbeheerde skillmap");
+    expect(readFileSync(join(claude, "oude-skill", "SKILL.md"), "utf8")).toBe(voor);
   });
   test("controle-CLI is nul bij gelijkheid en niet-nul met skillnaam bij drift, zonder schrijven", () => {
     const doel = join(dir, "cli", "skills");
@@ -115,13 +134,20 @@ describe("installeer-skills", () => {
     expect(existsSync(join(claude, ".system"))).toBe(true);
     expect(existsSync(join(claude, "synced"))).toBe(true);
   });
-  test("vervangt alleen een eigen gemarkeerde map met backup buiten skills en laat bronnen ongemoeid", () => {
+  test("bewaart elke backup buiten skills en laat eerdere backups ongemoeid", () => {
     installeer(opties(claude));
     writeFileSync(join(claude, "lead", "SKILL.md"), "oud\n");
     const bron = readFileSync(join(repo, "lead", "SKILL.md"), "utf8");
     installeer(opties(claude));
     expect(existsSync(join(claude, "lead.voor-beleid"))).toBe(false);
-    expect(readFileSync(join(dir, "claude", ".lab-beleid-backups", "lead", "SKILL.md"), "utf8")).toBe("oud\n");
+    const backups = readdirSync(join(dir, "claude", ".lab-beleid-backups")).filter((naam) => naam.startsWith("lead.voor-beleid-"));
+    expect(backups).toHaveLength(1);
+    expect(readFileSync(join(dir, "claude", ".lab-beleid-backups", backups[0]!, "SKILL.md"), "utf8")).toBe("oud\n");
+    writeFileSync(join(claude, "lead", "SKILL.md"), "nieuwer oud\n");
+    installeer(opties(claude));
+    const tweede = readdirSync(join(dir, "claude", ".lab-beleid-backups")).filter((naam) => naam.startsWith("lead.voor-beleid-"));
+    expect(tweede).toHaveLength(2);
+    expect(tweede.some((naam) => readFileSync(join(dir, "claude", ".lab-beleid-backups", naam, "SKILL.md"), "utf8") === "oud\n")).toBe(true);
     expect(readFileSync(join(claude, "lead", "SKILL.md"), "utf8")).toBe(bron);
     expect(readFileSync(join(repo, "lead", "SKILL.md"), "utf8")).toBe(bron);
   });
