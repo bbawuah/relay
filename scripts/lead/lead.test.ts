@@ -19,6 +19,10 @@ let bin: string;
 let repo: string;
 let origin: string;
 
+// Een Codex-lead draait deze suite in zijn eigen sandbox (CODEX_SANDBOX=seatbelt). Tests die zelf een sandbox, sockets of een
+// bun-installatie opzetten, kunnen daar niet en worden overgeslagen; CI en de poort van de lead draaien ze altijd.
+const inCodexSandbox = process.env.CODEX_SANDBOX === "seatbelt";
+
 const schrijfBin = (naam: string, tekst: string) => {
   const pad = join(bin, naam);
   writeFileSync(pad, tekst);
@@ -786,8 +790,13 @@ describe("spawn.sh", () => {
     test("een hangende fetch stopt na LAB_SPAWN_FETCH_S: git zelf is weg (geen wees), spawn gaat door met een waarschuwing", () => {
       // Nep-ssh op PATH (GIT_SSH_COMMAND='ssh -oBatchMode=yes'): noteert zichzelf en zijn argumenten, en hangt.
       // Geen $PPID als pid van git: op Linux zit er een `sh -c` (dash, zonder exec) tussen git en ssh.
+      // De pid van git zelf noteert een nep-git op PATH die zich met exec door de echte git vervangt (zelfde pid). Geen `ps`:
+      // dat geeft EPERM in de Codex-sandbox (een Codex-lead draait deze suite daar).
       const pids = join(dir, "ssh-pids");
+      const gitPids = join(dir, "git-fetch-pids");
+      const echteGit = Bun.which("git") ?? "/usr/bin/git";
       schrijfBin("ssh", `#!/bin/sh\necho "$$ $*" > ${pids}\nexec sleep 30\n`);
+      schrijfBin("git", `#!/bin/sh\ncase " $* " in *" fetch "*) echo $$ >> ${gitPids} ;; esac\nexec ${echteGit} "$@"\n`);
       git(repo, "remote", "set-url", "origin", "ssh://hangt.invalid/x.git");
       const r = draai(SPAWN, args(), basis({ LAB_SPAWN_FETCH_S: "1" }));
       const [sshPid, ...sshArgs] = readFileSync(pids, "utf8").trim().split(" ");
@@ -795,9 +804,10 @@ describe("spawn.sh", () => {
         expect(r.code).toBe(0);
         expect(r.fout).toMatch(/waarschuwing: ophalen van origin\/main mislukte \(exit 143\)/);
         expect(sshArgs).toContain("-oBatchMode=yes");
-        // git zelf (met -C <deze wegwerp-repo> fetch) draait niet meer
-        const nog = Bun.spawnSync(["ps", "-eo", "args"]).stdout.toString().split("\n").filter((l) => l.startsWith("git ") && l.includes(` -C ${repo} fetch`));
-        expect(nog).toEqual([]);
+        // git zelf (de fetch) draait niet meer
+        const fetchPids = readFileSync(gitPids, "utf8").trim().split("\n").map(Number);
+        expect(fetchPids.length).toBe(1);
+        expect(() => process.kill(fetchPids[0], 0)).toThrow();
       } finally {
         try {
           process.kill(Number(sshPid));
@@ -1037,7 +1047,8 @@ describe("spawn.sh", () => {
     expect(proef(`w1 ${o}\nw2 ${join(dir, "bestaat-niet.md")}\n`).fout).toMatch(/regel 2: opdrachtbestand bestaat niet/);
     expect(proef(`w1 ${o} sonnet\nw2 ${o} gpt\n`).fout).toMatch(/regel 2: model moet sonnet of opus/);
     expect(log("spawn.log")).toBe(""); // niets gestart, ook w1 niet
-    expect(readdirSync(tmp)).toEqual([]); // geen temp-map achtergelaten
+    // xcrun_db: de cache van de xcrun-shim (/usr/bin/git op macOS) in TMPDIR, die alleen binnen de Codex-sandbox daar landt
+    expect(readdirSync(tmp).filter((n) => n !== "xcrun_db")).toEqual([]); // geen temp-map achtergelaten
   });
 
   test("--meerdere sluit --naam uit en weigert een lege of kapotte lijst", () => {
@@ -1382,7 +1393,8 @@ exit 1
 
   // Echte afdwinging: het profiel uit spawn.sh in een echte Codex (seatbelt), met een nep-Responses-server die één shellcommando
   // laat draaien. Alleen macOS met een codex-binary; elders draait dit niet (de pure test hierboven bewaakt dan de vorm).
-  test("sandbox (echte codex): schrijven naar .git/hooks, .git/config en commondir faalt met EPERM, een commit in de worktree slaagt", async () => {
+  // test-weg: niet binnen de Codex-sandbox (geen geneste sandbox, sockets of bun-cache); CI en de poort van de lead draaien hem wel
+  test.skipIf(inCodexSandbox)("sandbox (echte codex): schrijven naar .git/hooks, .git/config en commondir faalt met EPERM, een commit in de worktree slaagt", async () => {
     const codexBin = Bun.which("codex");
     if (process.platform !== "darwin" || !codexBin) {
       console.log("sandbox-afdwinging niet getoetst: geen macOS of geen codex");
@@ -1654,7 +1666,8 @@ exit 1
     expect(installLog()).toBe("");
   }, 60_000); // spawn.sh draait hier meerdere keren; 5 s is te krap onder belasting
 
-  test("M1 (echte bun): een postinstall in de worktree draait niet; zonder --ignore-scripts zou hij wel draaien", () => {
+  // test-weg: niet binnen de Codex-sandbox (geen geneste sandbox, sockets of bun-cache); CI en de poort van de lead draaien hem wel
+  test.skipIf(inCodexSandbox)("M1 (echte bun): een postinstall in de worktree draait niet; zonder --ignore-scripts zou hij wel draaien", () => {
     writeFileSync(join(dir, "pane.txt"), "Ask Codex\n• Ran ls\n");
     const marker = join(dir, "postinstall-draaide");
     const pkg = JSON.stringify({ name: "x", version: "1.0.0", scripts: { postinstall: `touch ${marker}` } });
@@ -1799,7 +1812,8 @@ exit 1
     return uitvoer;
   };
 
-  test("netwerk uit (echte codex): unix-socket, tmux-socket en uitgaand TCP geven EPERM; met --netwerk slagen ze; .codex en /tmp blijven dicht", async () => {
+  // test-weg: niet binnen de Codex-sandbox (geen geneste sandbox, sockets of bun-cache); CI en de poort van de lead draaien hem wel
+  test.skipIf(inCodexSandbox)("netwerk uit (echte codex): unix-socket, tmux-socket en uitgaand TCP geven EPERM; met --netwerk slagen ze; .codex en /tmp blijven dicht", async () => {
     // Alleen lokaal gemeten (macOS-seatbelt met de echte codex): in CI bewijst dit niets, daar slaat hij over.
     if (process.platform !== "darwin" || !Bun.which("codex") || !Bun.which("tmux") || !Bun.which("nc")) {
       console.log("netwerk-afdwinging niet getoetst: geen macOS, codex, tmux of nc");
@@ -1820,7 +1834,8 @@ exit 1
     }
   }, 240_000);
 
-  test("profiel (echte codex): .git, HEAD en refs/replace zijn read-only maar commit werkt; Brians inloggegevens zijn onleesbaar (wegwerp-HOME met nepbestanden)", async () => {
+  // test-weg: niet binnen de Codex-sandbox (geen geneste sandbox, sockets of bun-cache); CI en de poort van de lead draaien hem wel
+  test.skipIf(inCodexSandbox)("profiel (echte codex): .git, HEAD en refs/replace zijn read-only maar commit werkt; Brians inloggegevens zijn onleesbaar (wegwerp-HOME met nepbestanden)", async () => {
     // Alleen lokaal gemeten (macOS-seatbelt met de echte codex). De nepbestanden staan in een wegwerp-HOME: nooit de echte ~/.ssh e.d. lezen.
     if (process.platform !== "darwin" || !Bun.which("codex") || !Bun.which("tmux") || !Bun.which("nc")) {
       console.log("profiel niet getoetst: geen macOS, codex, tmux of nc");
@@ -1897,7 +1912,8 @@ exit 1
   }, 240_000);
 
   // spawn.sh draait meerdere keren; 5 s standaard is te krap onder belasting (27 okt, load 13)
-  test("hooks met de ~/.codex-denylist (echte codex, wegwerp-CODEX_HOME): SessionStart/UserPromptSubmit/PreToolUse draaien en grenzen.sh weigert een verboden aanroep", async () => {
+  // test-weg: niet binnen de Codex-sandbox (geen geneste sandbox, sockets of bun-cache); CI en de poort van de lead draaien hem wel
+  test.skipIf(inCodexSandbox)("hooks met de ~/.codex-denylist (echte codex, wegwerp-CODEX_HOME): SessionStart/UserPromptSubmit/PreToolUse draaien en grenzen.sh weigert een verboden aanroep", async () => {
     // Alleen lokaal gemeten (macOS-seatbelt met de echte codex). De hooks draaien buiten de sandbox (app-server); dit toont dat de
     // denylist op sessions/, config.toml enz. de beleidslaag niet stil uitzet.
     if (process.platform !== "darwin" || !Bun.which("codex") || !Bun.which("tmux") || !Bun.which("nc")) {
