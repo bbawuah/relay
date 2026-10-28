@@ -528,9 +528,9 @@ fi
 if [ "$vendor" = codex ]; then
   # Codex kent geen SendMessage: het rapport aan de lead is de tool send van de MCP-server peers.
   zin="${zin//via SendMessage (to: $lead)/met de tool send van MCP-server peers (naar: $lead)}"
-  # Zonder netwerk kan de werker niet pushen: de lead pusht en opent de PR.
+  # De werker pusht niet en draait geen gh: de lead pusht en opent de PR.
   if [ "$t3" = 0 ] && [ "$netwerk" = 0 ]; then
-    zin="$zin Je hebt geen netwerk: push niet en draai geen gh. Commit in je worktree en meld in je rapport \"klaar om te pushen op <sha>\"; de lead pusht (met scripts/lead/push-werker.sh, nooit met een push vanuit jouw worktree) en opent de PR. Draai nodige postinstall-scripts zelf in je sandbox (spawn installeert met --ignore-scripts)."
+    zin="$zin Push niet en draai geen gh, want de lead pusht en opent de PR. Commit in je worktree en meld in je rapport \"klaar om te pushen op <sha>\"; de lead pusht met scripts/lead/push-werker.sh (nooit met een push vanuit jouw worktree). Draai nodige postinstall-scripts zelf (spawn installeert met --ignore-scripts)."
   fi
 fi
 zin="$zin Sluit je laatste rapport aan de lead af met een vaste slotregel (laatste regel, kaal): \`vrij\` als je klaar en opgeruimd bent, of \`wacht op achtergrondrun tot ~HH:MM\` (hoogstens 2 uur vooruit) als je op een achtergrondrun wacht. \"vrij\" ergens anders in de tekst telt niet."

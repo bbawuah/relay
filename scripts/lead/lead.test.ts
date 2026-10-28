@@ -1,3 +1,4 @@
+// test-weg: scripts/lead/lead.test.ts: de sandbox-, netwerkprofiel-, tmp-map- en profiel-tests (E2) toetsten runtimebeleid dat spawn.sh niet meer zet; de werker draait met de config van ~/.codex-werker. Wat nog geldt (startzin, .codex-weigering, --meerdere, hooks) staat in de resterende tests
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { appendFileSync, chmodSync, cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -1383,84 +1384,7 @@ exit 1
     expect(t3.fout).not.toMatch(/zonder-sandbox/);
   });
 
-  // Echte afdwinging: het profiel uit spawn.sh in een echte Codex (seatbelt), met een nep-Responses-server die één shellcommando
-  // laat draaien. Alleen macOS met een codex-binary; elders draait dit niet (de pure test hierboven bewaakt dan de vorm).
-  // test-weg: niet binnen de Codex-sandbox (geen geneste sandbox, sockets of bun-cache); CI en de poort van de lead draaien hem wel
-  test.skipIf(inCodexSandbox)("sandbox (echte codex): schrijven naar .git/hooks, .git/config en commondir faalt met EPERM, een commit in de worktree slaagt", async () => {
-    const codexBin = Bun.which("codex");
-    if (process.platform !== "darwin" || !codexBin) {
-      console.log("sandbox-afdwinging niet getoetst: geen macOS of geen codex");
-      return;
-    }
-    writeFileSync(join(dir, "pane.txt"), "Ask Codex\n• Ran ls\n");
-    // Een eigen HOME in de tijdelijke map (nooit het echte HOME aanraken): de sandbox mag er niets in schrijven, ook niet in een bestaand dotfile.
-    const thuis = join(dir, "thuis");
-    mkdirSync(thuis);
-    writeFileSync(join(thuis, ".zshrc"), "# kopie\n");
-    const r = codex(["--map", wt, "--droog"], { TMPDIR: join(dir, "sbtmp"), HOME: thuis });
-    const cArgs = [...r.uit.matchAll(/-c '((?:default_permissions|permissions\.)[^']*)'/g)].map((m) => m[1]);
-    expect(cArgs.length).toBe(3);
-    const gem = realpathSync(join(repo, ".git"));
-    const eigen = realpathSync(join(gem, "worktrees", "eigen-worktree"));
-    git(repo, "config", "user.email", "t@t");
-    git(repo, "config", "user.name", "t");
-    const shell = [
-      "echo b > b.txt; git add b.txt && git commit -qm sandbox-test && echo COMMIT-OK",
-      `touch ${gem}/hooks/x && echo HOOK-OK`,
-      `echo x >> ${gem}/config && echo CONFIG-OK`,
-      `echo x > ${eigen}/commondir && echo COMMONDIR-OK`,
-      `echo x > ${eigen}/gitdir && echo GITDIR-OK`,
-      `echo x > ${eigen}/config.worktree && echo CFGWT-OK`,
-      `echo x > ${join(dir, "buiten.txt")} && echo BUITEN-OK`,
-      `echo x >> ${thuis}/.zshrc && echo ZSHRC-OK`,
-      `touch ${thuis}/nieuw && echo THUISNIEUW-OK`,
-      `echo x > ${gem}/packed-refs && echo PACKED-OK`,
-      `touch ${gem}/info/x && echo INFO-OK`,
-      `echo x > ${gem}/HEAD && echo HEAD-OK`,
-    ].join("; ");
-    let verzoeken = 0;
-    let uitvoer = "";
-    const server = Bun.serve({
-      port: 0,
-      hostname: "127.0.0.1",
-      async fetch(req) {
-        const body = await req.text();
-        if (!new URL(req.url).pathname.endsWith("/responses")) return new Response("{}", { status: 404 });
-        verzoeken++;
-        const sse = (e: string, d: object) => `event: ${e}\ndata: ${JSON.stringify({ type: e, ...d })}\n\n`;
-        let uit = sse("response.created", { response: { id: `r${verzoeken}`, status: "in_progress" } });
-        const item =
-          verzoeken === 1
-            ? { type: "function_call", id: "fc_1", call_id: "call_1", name: "exec_command", arguments: JSON.stringify({ cmd: shell }) }
-            : { type: "message", id: "m_2", role: "assistant", content: [{ type: "output_text", text: "klaar" }] };
-        if (verzoeken === 2) {
-          const o = (JSON.parse(body).input as { type?: string; output?: unknown }[]).find((i) => i.type === "function_call_output");
-          uitvoer = String(o?.output ?? "");
-        }
-        uit += sse("response.output_item.added", { output_index: 0, item: verzoeken === 1 ? item : { ...item, content: [] } }) + sse("response.output_item.done", { output_index: 0, item });
-        uit += sse("response.completed", { response: { id: `r${verzoeken}`, status: "completed", usage: { input_tokens: 1, output_tokens: 1, total_tokens: 2 } } });
-        return new Response(uit, { headers: { "content-type": "text/event-stream" } });
-      },
-    });
-    try {
-      const ch = join(dir, "codex-sandbox-home");
-      mkdirSync(ch, { recursive: true });
-      writeFileSync(join(ch, "config.toml"), `model = "nep"\nmodel_provider = "nep"\n[model_providers.nep]\nname = "nep"\nbase_url = "http://127.0.0.1:${server.port}/v1"\nwire_api = "responses"\nrequires_openai_auth = false\n`);
-      const p = Bun.spawn([codexBin, "exec", "--skip-git-repo-check", ...cArgs.flatMap((c) => ["-c", c]), "doe"], { cwd: wt, env: { PATH: process.env.PATH ?? "", HOME: thuis, CODEX_HOME: ch }, stdin: "ignore", stdout: "pipe", stderr: "pipe" });
-      const timer = setTimeout(() => p.kill(), 90_000); // echte-klok: een echte codex-run, geen testklok
-      await p.exited;
-      clearTimeout(timer);
-    } finally {
-      server.stop(true);
-    }
-    expect(uitvoer).toContain("COMMIT-OK");
-    for (const x of ["HOOK-OK", "CONFIG-OK", "COMMONDIR-OK", "GITDIR-OK", "CFGWT-OK", "BUITEN-OK", "ZSHRC-OK", "THUISNIEUW-OK", "PACKED-OK", "INFO-OK", "HEAD-OK"]) expect(uitvoer).not.toContain(x);
-    expect((uitvoer.match(/[Oo]peration not permitted/g) ?? []).length).toBeGreaterThanOrEqual(11);
-    expect(readFileSync(join(thuis, ".zshrc"), "utf8")).toBe("# kopie\n");
-    expect(existsSync(join(thuis, "nieuw"))).toBe(false);
-    expect(git(wt, "log", "--format=%s", "-1").stdout.toString().trim()).toBe("sandbox-test");
-    expect(existsSync(join(gem, "hooks", "x"))).toBe(false);
-  }, 120_000);
+  // test-weg: 'sandbox (echte codex): schrijven naar .git/hooks, .git/config en commondir faalt met EPERM' toetste het runtime-sandboxprofiel (de drie -c sandboxargumenten) van spawn.sh; dat profiel is weg (E2: danger-full-access via ~/.codex-werker), er is niets meer te weigeren
 
   /** Een nep-bun: `install` wordt gelogd (argumenten, cwd, aantal identiteitsbestanden op dat moment); al het andere gaat naar de echte bun. */
   const nepBun = (faal = false) => {
@@ -1490,25 +1414,26 @@ exit 1
   };
   const installLog = () => (existsSync(join(dir, "install.log")) ? readFileSync(join(dir, "install.log"), "utf8") : "");
 
-  test("netwerk uit is de standaard: --netwerk zet het aan; de startzin zegt niet pushen en meldt 'klaar om te pushen'; geen install-regel zonder package.json", () => {
+  test("--netwerk: de startzin zegt niet pushen (want de lead pusht) en meldt 'klaar om te pushen'; geen install-regel zonder package.json", () => {
     writeFileSync(join(dir, "pane.txt"), "Ask Codex\n• Ran ls\n");
     const uit = codex(["--map", wt, "--droog"]);
-    expect(uit.uit).toContain("network={enabled=false}");
-    expect(uit.uit).toContain("push niet en draai geen gh");
+    expect(uit.uit).not.toContain("network={enabled"); // E2: spawn zet geen netwerkprofiel meer
+    expect(uit.uit).not.toContain("Je hebt geen netwerk");
+    expect(uit.uit).toContain("Push niet en draai geen gh, want de lead pusht");
     expect(uit.uit).toContain("klaar om te pushen op <sha>");
-    expect(uit.uit).toContain("scripts/lead/push-werker.sh, nooit met een push vanuit jouw worktree");
+    expect(uit.uit).toContain("de lead pusht met scripts/lead/push-werker.sh (nooit met een push vanuit jouw worktree)");
     expect(uit.uit).not.toContain("droog: bun install"); // K5: geen package.json
     writeFileSync(join(wt, "package.json"), "{}\n");
     expect(codex(["--map", wt, "--droog"]).uit).toContain(`droog: bun install --ignore-scripts --frozen-lockfile in ${wt}`);
     const aan = codex(["--map", wt, "--droog", "--netwerk"]);
-    expect(aan.uit).toContain("network={enabled=true}");
-    expect(aan.uit).not.toContain("push niet en draai geen gh");
+    expect(aan.uit).not.toContain("network={enabled");
+    expect(aan.uit).not.toContain("Push niet en draai geen gh");
     expect(aan.uit).not.toContain("droog: bun install");
-    // K2: --t3 --netwerk weigert
+    // K2 (--t3 --netwerk weigert) vervalt: --netwerk betekent niets meer voor het profiel (E2), spawn.sh weigert de combinatie niet meer
     const t3 = codex(["--map", wt, "--t3", "--netwerk", "--droog"]);
-    expect(t3.code).toBe(1);
-    expect(t3.fout).toMatch(/--netwerk past niet bij --t3/);
-    expect(codex(["--map", wt, "--t3", "--droog"]).uit).not.toContain("push niet en draai geen gh");
+    expect(t3.code, t3.fout).toBe(0);
+    expect(t3.uit).not.toContain("Push niet en draai geen gh");
+    expect(codex(["--map", wt, "--t3", "--droog"]).uit).not.toContain("Push niet en draai geen gh");
     // --netwerk hoort bij codex
     const cl = draai(SPAWN, ["--naam", "w", "--opdracht", opdracht(), "--lead", "l", "--netwerk", "--droog"], basis());
     expect(cl.code).toBe(1);
@@ -1525,8 +1450,8 @@ exit 1
     writeFileSync(lijst, `a ${opdracht()}\nb ${opdracht()}\n`);
     const aan = draai(SPAWN, ["--meerdere", lijst, "--lead", "l", "--map", wt, "--vendor", "codex", "--netwerk"], basis());
     expect(aan.fout).not.toMatch(/parallel in één worktree/);
-    expect(log("spawn.log")).toContain("network={enabled=true}"); // de kindsessie kreeg --netwerk
-    expect(log("spawn.log")).not.toContain("enabled=false");
+    expect(log("spawn.log")).not.toContain("network={enabled"); // E2: geen netwerkprofiel meer; --netwerk gaat wel door (geen startzin 'Push niet')
+    expect(log("spawn.log")).not.toContain("Push niet en draai geen gh");
     rmSync(idDir(), { recursive: true, force: true });
     const uit = draai(SPAWN, ["--meerdere", lijst, "--lead", "l", "--map", wt, "--vendor", "codex"], basis());
     expect(uit.code).toBe(1);
@@ -1694,11 +1619,13 @@ exit 1
     expect(id().tak).toBeUndefined();
   });
 
-  test("M3: de profielregel zet <worktree>/.codex op read; een bestaande .codex (ook niet-getrackt, ook een symlink) weigert spawn", () => {
+  // test-weg: 'M3 (profielregel zet <worktree>/.codex op read)' en 'Z1 (eigen tmp-map als enige tmp-root, TMPDIR)' toetsten het filesystemprofiel permissions.lab-werker.filesystem en de TMPDIR-instelling; spawn.sh zet die niet meer (E2); het weigeren van een bestaande .codex staat in de test hieronder
+  test("M3: een bestaande <worktree>/.codex (ook niet-getrackt, ook een symlink) weigert spawn; zonder .codex slaagt hij", () => {
     writeFileSync(join(dir, "pane.txt"), "Ask Codex\n• Ran ls\n");
     const r = codex(["--map", wt, "--droog"]);
-    const fs = /-c 'permissions\.lab-werker\.filesystem=\{([^']*)\}'/.exec(r.uit)?.[1] ?? "";
-    expect(fs.split(",").map((x) => x.replace(/"/g, ""))).toContain(`${realpathSync(wt)}/.codex=read`);
+    expect(r.code, r.fout).toBe(0);
+    expect(r.uit).not.toContain("permissions.lab-werker");
+    expect(r.uit).not.toContain("TMPDIR=");
     symlinkSync(dir, join(wt, ".codex"));
     const s2 = codex(["--map", wt, "--droog"]);
     expect(s2.code).toBe(1);
@@ -1706,48 +1633,22 @@ exit 1
     expect(idBestanden()).toEqual([]);
   });
 
-  test("Z1: de werker krijgt een eigen tmp-map als enige tmp-root; TMPDIR wijst ernaar; /tmp en de TMPDIR van de lead zijn niet schrijfbaar", () => {
-    writeFileSync(join(dir, "pane.txt"), "Ask Codex\n• Ran ls\n");
-    const lt = join(dir, "lead-tmp");
-    mkdirSync(lt);
-    const r = codex(["--map", wt, "--droog"], { TMPDIR: lt });
-    const fs = /-c 'permissions\.lab-werker\.filesystem=\{([^']*)\}'/.exec(r.uit)?.[1] ?? "";
-    const regels = fs.split(",").map((x) => x.replace(/"/g, ""));
-    const tmp = realpathSync(werkWortel());
-    expect(regels).toContain(`${tmp}/lab-werker-cx1=write`);
-    expect(regels).not.toContain(`${tmp}=write`);
-    expect(regels).not.toContain(`${realpathSync("/tmp")}=write`);
-    expect(regels.some((x) => x.startsWith(`${realpathSync(lt)}=`))).toBe(false);
-    expect(r.uit).toContain(`TMPDIR=${tmp}/lab-werker-cx1 `);
-    expect(codex(["--map", wt, "--t3", "--droog"]).uit).not.toContain("TMPDIR=");
-  });
-
-  // Echte afdwinging (zoals hierboven, nep-Responses-server): met netwerk uit geven een unix-socket (stand-in), een tmux-socket
-  // (wegwerp-tmux via -S) en een uitgaande TCP-verbinding EPERM; met --netwerk slagen ze (positieve controle, de omweg uit de README).
-  const netwerkProef = async (extra: string[], eigenShell?: (thuis: string) => string, metHooks = false, naSpawn?: () => void): Promise<string> => {
+  // test-weg: 'netwerk uit (echte codex): unix-socket, tmux-socket en uitgaand TCP geven EPERM' en 'profiel (echte codex): .git, HEAD en refs/replace zijn read-only' toetsten het runtime-sandboxprofiel van spawn.sh (seatbelt, network={enabled=false}); dat profiel is weg (E2: de werker draait met danger-full-access via ~/.codex-werker), dus er is niets meer te toetsen
+  // spawn.sh draait meerdere keren; 5 s standaard is te krap onder belasting (27 okt, load 13)
+  // test-weg: niet binnen de Codex-sandbox (geen geneste sandbox, sockets of bun-cache); CI en de poort van de lead draaien hem wel
+  test.skipIf(inCodexSandbox)("hooks in de werker-home (echte codex, wegwerp-HOME met .codex-werker): SessionStart/UserPromptSubmit/PreToolUse draaien en grenzen.sh weigert een verboden aanroep", async () => {
+    // Alleen lokaal gemeten (macOS met de echte codex). De hooks draaien buiten de shell-tool (app-server); dit toont dat de
+    // hooks uit codex-installeer in de werker-home de beleidslaag echt aanzetten. Alles in een wegwerp-HOME, nooit het echte ~/.codex*.
     const codexBin = Bun.which("codex");
+    if (process.platform !== "darwin" || !codexBin) {
+      console.log("hooks niet getoetst: geen macOS of geen codex");
+      return;
+    }
     writeFileSync(join(dir, "pane.txt"), "Ask Codex\n• Ran ls\n");
-    const thuis = join(dir, "thuis-net");
-    mkdirSync(thuis, { recursive: true });
-    // Een kort pad in de tmp-map van de test (een unix-socket-pad is op macOS hooguit 104 tekens), tevens de tmp-wortel van de werker.
+    const thuis = join(dir, "thuis-hooks");
+    const ch = join(thuis, ".codex-werker");
+    mkdirSync(ch, { recursive: true });
     const kort = realpathSync(mkdtempSync(join(tmpdir(), "nw-")));
-    const sock = join(kort, "s.sock");
-    const tsock = join(kort, "t.sock");
-    const unix = Bun.listen({ unix: sock, socket: { data() {} } });
-    const tcp = Bun.listen({ hostname: "127.0.0.1", port: 0, socket: { data() {} } });
-    Bun.spawnSync(["tmux", "-S", tsock, "-f", "/dev/null", "new-session", "-d", "-s", "nw"], { env: { PATH: process.env.PATH ?? "", HOME: thuis } });
-    // werktmp: de eigen tmp-map van de werker bestaat (spawn maakt hem in een echte run); /tmp zelf en de map van de test niet schrijfbaar
-    const werktmp = join(kort, "lab-werker-nwproef");
-    mkdirSync(werktmp, { recursive: true });
-    const shell = eigenShell?.(thuis) ?? [
-      `nc -U -w1 ${sock} </dev/null; echo SOCK-RC=$?`,
-      `tmux -S ${tsock} list-sessions >/dev/null; echo TMUX-RC=$?`,
-      `nc -z -w1 127.0.0.1 ${tcp.port}; echo TCP-RC=$?`,
-      `mkdir -p ${wt}/.codex; echo CODEXDIR-RC=$?`,
-      `touch ${kort}/x; echo TMPROOT-RC=$?`,
-      `touch ${werktmp}/x; echo WERKTMP-RC=$?`,
-    ].join("; ");
-    let cArgs: string[] = [];
     let verzoeken = 0;
     let uitvoer = "";
     const server = Bun.serve({
@@ -1761,7 +1662,7 @@ exit 1
         let uit = sse("response.created", { response: { id: `r${verzoeken}`, status: "in_progress" } });
         const item =
           verzoeken === 1
-            ? { type: "function_call", id: "fc_1", call_id: "call_1", name: "exec_command", arguments: JSON.stringify({ cmd: shell }) }
+            ? { type: "function_call", id: "fc_1", call_id: "call_1", name: "exec_command", arguments: JSON.stringify({ cmd: "rg foo . ; echo NA-RG-RC=$?" }) }
             : { type: "message", id: "m_2", role: "assistant", content: [{ type: "output_text", text: "klaar" }] };
         if (verzoeken === 2) {
           const o = (JSON.parse(body).input as { type?: string; output?: unknown }[]).find((i) => i.type === "function_call_output");
@@ -1773,153 +1674,30 @@ exit 1
       },
     });
     try {
-      const ch = join(dir, "codex-net-home");
-      mkdirSync(ch, { recursive: true });
-      writeFileSync(join(ch, "config.toml"), `model = "nep"\nmodel_provider = "nep"\n[model_providers.nep]\nname = "nep"\nbase_url = "http://127.0.0.1:${server.port}/v1"\nwire_api = "responses"\nrequires_openai_auth = false\n`);
-      // Met hooks: de echte hooks van deze branch (de installer, met trust) in de wegwerp-CODEX_HOME; spawn leest dan dezelfde CODEX_HOME.
-      if (metHooks) {
-        const inst = Bun.spawnSync([process.execPath, join(import.meta.dir, "hooks", "codex-installeer.ts"), "--codex-home", ch, "--doel", join(ch, "hooks", "lab-lead-hooks")], { env: { PATH: process.env.PATH ?? "", HOME: thuis, CODEX_HOME: ch } });
-        expect(inst.stderr.toString() + inst.stdout.toString()).toMatch(/trusted|vertrouwd|geïnstalleerd|ok/i);
-        expect(inst.exitCode).toBe(0);
-      }
-      const r = codex(["--map", wt, "--droog", ...extra], { TMPDIR: join(dir, "sbtmp-net"), HOME: thuis, LAB_WERKER_TMPWORTEL: kort, ...(metHooks ? { CODEX_HOME: ch } : {}) }, "nwproef");
+      writeFileSync(join(ch, "config.toml"), `model = "nep"\nmodel_provider = "nep"\nsandbox_mode = "danger-full-access"\napproval_policy = "never"\n[model_providers.nep]\nname = "nep"\nbase_url = "http://127.0.0.1:${server.port}/v1"\nwire_api = "responses"\nrequires_openai_auth = false\n`);
+      const inst = Bun.spawnSync([process.execPath, join(import.meta.dir, "hooks", "codex-installeer.ts"), "--codex-home", ch, "--doel", join(ch, "hooks", "lab-lead-hooks")], { env: { PATH: process.env.PATH ?? "", HOME: thuis, CODEX_HOME: ch } });
+      expect(inst.stderr.toString() + inst.stdout.toString()).toMatch(/trusted|vertrouwd|geïnstalleerd|ok/i);
+      expect(inst.exitCode).toBe(0);
+      // spawn accepteert de wegwerp-werker-home (nep-codex voor 'login status'); de echte codex draait daarna met dezelfde CODEX_HOME
+      const r = codex(["--map", wt, "--droog"], { HOME: thuis, LAB_WERKER_TMPWORTEL: kort }, "hookproef");
       expect(r.code, r.fout).toBe(0);
-      naSpawn?.();
-      cArgs = [...r.uit.matchAll(/-c '((?:default_permissions|permissions\.)[^']*)'/g)].map((m) => m[1]!);
-      const p = Bun.spawn([codexBin!, "exec", "--skip-git-repo-check", ...cArgs.flatMap((c) => ["-c", c]), "doe"], { cwd: wt, env: { PATH: process.env.PATH ?? "", HOME: thuis, CODEX_HOME: ch, ...(metHooks ? { LAB_LEAD_STAAT: staat } : {}) }, stdin: "ignore", stdout: "pipe", stderr: "pipe" });
+      const p = Bun.spawn([codexBin, "exec", "--skip-git-repo-check", "doe"], { cwd: wt, env: { PATH: process.env.PATH ?? "", HOME: thuis, CODEX_HOME: ch, LAB_LEAD_STAAT: staat }, stdin: "ignore", stdout: "pipe", stderr: "pipe" });
       const timer = setTimeout(() => p.kill(), 90_000); // echte-klok: een echte codex-run, geen testklok
       await p.exited;
       clearTimeout(timer);
       // de hook-regels van codex zelf ("hook: SessionStart Completed", "hook: PreToolUse Blocked", ...)
-      if (metHooks) uitvoer += `\nHOOKS\n${(await new Response(p.stderr).text()).split("\n").filter((l) => l.startsWith("hook: ")).join("\n")}\n`;
+      uitvoer += `\nHOOKS\n${(await new Response(p.stderr).text()).split("\n").filter((l) => l.startsWith("hook: ")).join("\n")}\n`;
     } finally {
       server.stop(true);
-      unix.stop(true);
-      tcp.stop(true);
-      rmSync(werktmp, { recursive: true, force: true });
-      rmSync(join(wt, ".codex"), { recursive: true, force: true });
-      Bun.spawnSync(["tmux", "-S", tsock, "kill-server"], { env: { PATH: process.env.PATH ?? "" } });
       rmSync(kort, { recursive: true, force: true });
     }
-    return uitvoer;
-  };
-
-  // test-weg: niet binnen de Codex-sandbox (geen geneste sandbox, sockets of bun-cache); CI en de poort van de lead draaien hem wel
-  test.skipIf(inCodexSandbox)("netwerk uit (echte codex): unix-socket, tmux-socket en uitgaand TCP geven EPERM; met --netwerk slagen ze; .codex en /tmp blijven dicht", async () => {
-    // Alleen lokaal gemeten (macOS-seatbelt met de echte codex): in CI bewijst dit niets, daar slaat hij over.
-    if (process.platform !== "darwin" || !Bun.which("codex") || !Bun.which("tmux") || !Bun.which("nc")) {
-      console.log("netwerk-afdwinging niet getoetst: geen macOS, codex, tmux of nc");
-      return;
-    }
-    const rc = (u: string, k: string) => /^(\d+)$/.exec(new RegExp(`${k}=(\\d+)`).exec(u)?.[1] ?? "")?.[1];
-    const uit = await netwerkProef([]);
-    for (const k of ["SOCK-RC", "TMUX-RC", "TCP-RC"]) expect([k, rc(uit, k)]).not.toEqual([k, "0"]);
-    for (const k of ["SOCK-RC", "TMUX-RC", "TCP-RC"]) expect([k, rc(uit, k) !== undefined]).toEqual([k, true]); // de probe draaide echt
-    expect(uit).toMatch(/[Oo]peration not permitted/);
-    const aan = await netwerkProef(["--netwerk"]);
-    for (const k of ["SOCK-RC", "TMUX-RC", "TCP-RC"]) expect([k, rc(aan, k)]).toEqual([k, "0"]);
-    // onafhankelijk van het netwerk: .codex aanmaken en /tmp-root schrijven faalt, de eigen tmp-map werkt
-    for (const u of [uit, aan]) {
-      expect(rc(u, "CODEXDIR-RC")).not.toBe("0");
-      expect(rc(u, "TMPROOT-RC")).not.toBe("0");
-      expect(rc(u, "WERKTMP-RC")).toBe("0");
-    }
-  }, 240_000);
-
-  // test-weg: niet binnen de Codex-sandbox (geen geneste sandbox, sockets of bun-cache); CI en de poort van de lead draaien hem wel
-  test.skipIf(inCodexSandbox)("profiel (echte codex): .git, HEAD en refs/replace zijn read-only maar commit werkt; Brians inloggegevens zijn onleesbaar (wegwerp-HOME met nepbestanden)", async () => {
-    // Alleen lokaal gemeten (macOS-seatbelt met de echte codex). De nepbestanden staan in een wegwerp-HOME: nooit de echte ~/.ssh e.d. lezen.
-    if (process.platform !== "darwin" || !Bun.which("codex") || !Bun.which("tmux") || !Bun.which("nc")) {
-      console.log("profiel niet getoetst: geen macOS, codex, tmux of nc");
-      return;
-    }
-    const gitUit = (...a: string[]) => git(wt, ...a).stdout.toString().trim();
-    const c = realpathSync(gitUit("rev-parse", "--path-format=absolute", "--git-common-dir"));
-    const e = realpathSync(gitUit("rev-parse", "--path-format=absolute", "--absolute-git-dir"));
-    const m = realpathSync(wt);
-    const geheimen = [".claude/projects/p.jsonl", ".claude/.credentials.json", ".claude.json", ".config/glab-cli/config.yml", ".gnupg/pubring.kbx", ".config/gcloud/creds.db", "Library/Application Support/com.vercel.cli/auth.json", ".ssh/id_nep", ".config/gh/hosts.yml", ".netrc", ".git-credentials", ".aws/credentials", ".azure/token", ".kube/config", ".docker/config.json", ".npmrc", ".config/op/sessie", "Library/Keychains/login.keychain-db"];
-    const thuis = join(dir, "thuis-net");
-    for (const g of geheimen) {
-      mkdirSync(dirname(join(thuis, g)), { recursive: true });
-      writeFileSync(join(thuis, g), "NEPGEHEIM\n");
-    }
-    writeFileSync(join(thuis, "gewoon.txt"), "gewoon\n");
-    // CODEX_HOME van de test (niet ~/.codex): wat de shell van de werker niet mag lezen, en wat wel
-    const chGeheim = ["sessions/s1.jsonl", "archived_sessions/a1.jsonl", "history.jsonl", "log/codex.log", "state_5.sqlite", "state_5.sqlite-wal", "config.toml", "config.toml.voor-peerbus", "auth.json"].map((f) => join(codexHome, f));
-    // sqlite-bestanden en een onbekend bestand die pas na de start van spawn ontstaan: de hele map is dicht, dus ook die
-    const chLaat = ["state_9.sqlite", "state_9.sqlite-wal", "state_9.sqlite-shm", "logs_3.sqlite", "nieuw/ding.txt"].map((f) => join(codexHome, f));
-    const chLeesbaar = ["skills/s.md", "shell_snapshots/snap.sh", "prompts/p.md", "rules/r.md", "AGENTS.md"].map((f) => join(codexHome, f));
-    for (const f of [...chGeheim, ...chLeesbaar]) {
-      mkdirSync(dirname(f), { recursive: true });
-      if (!existsSync(f)) writeFileSync(f, "NEPGEHEIM\n");
-    }
-    const cache = join(thuis, ".bun", "install", "cache");
-    mkdirSync(cache, { recursive: true });
-    const gc = "git -c user.name=t -c user.email=t@t";
-    const uit = await netwerkProef([], (h) =>
-      [
-        `echo x > ${m}/f; echo WRITE-RC=$?`,
-        `${gc} add f; echo ADD-RC=$?`,
-        `${gc} commit -q -m probe; echo COMMIT-RC=$?`,
-        `${gc} update-ref refs/replace/${"a".repeat(40)} HEAD; echo REPLACE-RC=$?`,
-        `echo 'ref: refs/heads/andere' > ${e}/HEAD; echo HEAD-RC=$?`,
-        `echo 'gitdir: /nergens' > ${m}/.git; echo DOTGIT-RC=$?`,
-        `mkdir -p ${c}/refs/replace/x; echo REPLACEDIR-RC=$?`,
-        `cat ${h}/gewoon.txt >/dev/null; echo GEWOON-RC=$?`,
-        ...geheimen.map((g, i) => `cat "${h}/${g}" >/dev/null; echo GEHEIM${i}-RC=$?`),
-        ...chGeheim.map((f, i) => `cat ${f} >/dev/null; echo CHGEHEIM${i}-RC=$?`),
-        ...chLaat.map((f, i) => `cat ${f} >/dev/null; echo CHLAAT${i}-RC=$?`),
-        ...chLeesbaar.map((f, i) => `cat ${f} >/dev/null; echo CHLEES${i}-RC=$?`),
-        `touch ${cache}/pakket; echo CACHE-RC=$?`,
-      ].join("; "),
-      false,
-      () => {
-        for (const f of chLaat) {
-          mkdirSync(dirname(f), { recursive: true });
-          writeFileSync(f, "NEPGEHEIM\n");
-        }
-      },
-    );
-    const rc = (k: string) => new RegExp(`${k}=(\\d+)`).exec(uit)?.[1];
-    // positieve controles: het werkt wel, en gewone bestanden in HOME blijven leesbaar (denylist, geen allowlist)
-    for (const k of ["WRITE-RC", "ADD-RC", "COMMIT-RC", "GEWOON-RC"]) expect([k, rc(k)]).toEqual([k, "0"]);
-    // de aanvallen: replace-ref, HEAD omleggen, .git omleggen
-    for (const k of ["REPLACE-RC", "HEAD-RC", "DOTGIT-RC", "REPLACEDIR-RC"]) expect([k, rc(k) !== undefined && rc(k) !== "0"]).toEqual([k, true]);
-    for (let i = 0; i < geheimen.length; i++) expect([geheimen[i], rc(`GEHEIM${i}-RC`) !== undefined && rc(`GEHEIM${i}-RC`) !== "0"]).toEqual([geheimen[i], true]);
-    for (let i = 0; i < chGeheim.length; i++) expect([chGeheim[i], rc(`CHGEHEIM${i}-RC`) !== undefined && rc(`CHGEHEIM${i}-RC`) !== "0"]).toEqual([chGeheim[i], true]);
-    for (let i = 0; i < chLaat.length; i++) expect([chLaat[i], rc(`CHLAAT${i}-RC`) !== undefined && rc(`CHLAAT${i}-RC`) !== "0"]).toEqual([chLaat[i], true]);
-    for (let i = 0; i < chLeesbaar.length; i++) expect([chLeesbaar[i], rc(`CHLEES${i}-RC`)]).toEqual([chLeesbaar[i], "0"]);
-    // de bun-cache is zonder --netwerk niet schrijfbaar (een vervangen pakket zou door de volgende install van de lead gelinkt worden)
-    expect(rc("CACHE-RC") !== undefined && rc("CACHE-RC") !== "0").toBe(true);
-    expect(existsSync(join(cache, "pakket"))).toBe(false);
-    // positieve controle: met --netwerk (de werker installeert zelf) is hij wel schrijfbaar
-    const aan = await netwerkProef(["--netwerk"], () => `touch ${cache}/pakket; echo CACHE-RC=$?`);
-    expect(/CACHE-RC=(\d+)/.exec(aan)?.[1]).toBe("0");
-    rmSync(join(cache, "pakket"), { force: true });
-    expect(uit).not.toContain("NEPGEHEIM");
-    expect(existsSync(join(c, "refs", "replace", "a".repeat(40)))).toBe(false);
-    expect(readFileSync(join(e, "HEAD"), "utf8")).not.toContain("andere");
-    expect(readFileSync(join(wt, ".git"), "utf8")).toContain("gitdir:");
-    expect(readFileSync(join(wt, ".git"), "utf8")).not.toContain("nergens");
-  }, 240_000);
-
-  // spawn.sh draait meerdere keren; 5 s standaard is te krap onder belasting (27 okt, load 13)
-  // test-weg: niet binnen de Codex-sandbox (geen geneste sandbox, sockets of bun-cache); CI en de poort van de lead draaien hem wel
-  test.skipIf(inCodexSandbox)("hooks met de ~/.codex-denylist (echte codex, wegwerp-CODEX_HOME): SessionStart/UserPromptSubmit/PreToolUse draaien en grenzen.sh weigert een verboden aanroep", async () => {
-    // Alleen lokaal gemeten (macOS-seatbelt met de echte codex). De hooks draaien buiten de sandbox (app-server); dit toont dat de
-    // denylist op sessions/, config.toml enz. de beleidslaag niet stil uitzet.
-    if (process.platform !== "darwin" || !Bun.which("codex") || !Bun.which("tmux") || !Bun.which("nc")) {
-      console.log("hooks niet getoetst: geen macOS, codex, tmux of nc");
-      return;
-    }
-    const uit = await netwerkProef([], () => "rg foo . ; echo NA-RG-RC=$?", true);
     // SessionStart en UserPromptSubmit draaien (Completed, niet Failed) en PreToolUse is voltooid
-    for (const h of ["SessionStart", "UserPromptSubmit", "PreToolUse", "Stop"]) expect(uit).toContain(`hook: ${h} Completed`);
-    expect(uit).not.toMatch(/hook: \w+ Failed/);
+    for (const h of ["SessionStart", "UserPromptSubmit", "PreToolUse", "Stop"]) expect(uitvoer).toContain(`hook: ${h} Completed`);
+    expect(uitvoer).not.toMatch(/hook: \w+ Failed/);
     // grenzen.sh blokkeerde het verboden commando: de melding komt terug en de shell draaide het niet (geen uitvoer NA-RG-RC=<getal>)
-    expect(uit).toMatch(/Command blocked by PreToolUse hook: Geweigerd door grenzen\.sh: recursief zoeken/);
-    expect(uit).toContain("hook: PreToolUse Blocked");
-    expect(uit).not.toMatch(/NA-RG-RC=\d/);
+    expect(uitvoer).toMatch(/Command blocked by PreToolUse hook: Geweigerd door grenzen\.sh: recursief zoeken/);
+    expect(uitvoer).toContain("hook: PreToolUse Blocked");
+    expect(uitvoer).not.toMatch(/NA-RG-RC=\d/);
   }, 240_000);
 
   test("hosted web search: tmux zet hem uit met -c (ook zonder MCP, ook als de config hem aanzet); T3 weigert als de config hem aanzet", () => {
