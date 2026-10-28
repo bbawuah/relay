@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { appendFileSync, chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import { appendFileSync, chmodSync, cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { deflateSync } from "node:zlib";
 import { dirname, join } from "node:path";
@@ -1408,6 +1408,20 @@ exit 1
     } finally {
       rmSync(join(repo, "bunfig.toml"), { force: true });
     }
+  });
+
+  test("sandbox: een falende profielgenerator weigert droog zonder -c-uitvoer", () => {
+    const kopie = join(dir, "lead-kopie");
+    cpSync(import.meta.dir, kopie, { recursive: true });
+    writeFileSync(join(kopie, "beleid", "codex-werker.ts"), `
+console.log('default_permissions="lab-werker"');
+console.log('permissions.lab-werker.filesystem={"/"="read"}');
+console.log('permissions.lab-werker.network={enabled=false}');
+process.exit(1);
+`);
+    const r = draai(join(kopie, "spawn.sh"), ["--naam", "cx1", "--opdracht", opdracht(), "--lead", "lead-x", "--vendor", "codex", "--map", wt, "--droog"], basis({ TMPDIR: join(dir, "sbtmp") }));
+    expect(r.code).not.toBe(0);
+    expect(r.uit).not.toContain(" -c '");
   });
 
   test("sandbox: een pad met een quote of backslash weigert spawn (nooit een halve sandbox)", () => {
