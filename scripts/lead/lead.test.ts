@@ -182,8 +182,8 @@ describe("merge.sh", () => {
   const geweigerd = (r: { code: number; fout: string }, reden: RegExp) => {
     expect(r.code).toBe(1);
     expect(r.fout).toMatch(reden);
-    expect(log("gh.log")).toContain("pr merge");
-    expect(remoteTakken()).not.toContain("lead/test-tak");
+    expect(log("gh.log")).not.toContain("pr merge");
+    expect(remoteTakken()).toContain("lead/test-tak");
   };
 
   test("weigert zonder nummer of met een vreemd nummer", () => {

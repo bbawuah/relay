@@ -28,10 +28,10 @@ function draai(invoer: unknown, hook = HOOK) {
   return { code: p.exitCode, stderr: p.stderr.toString() };
 }
 const bash = (command: string, hook = HOOK) => draai({ tool_name: "Bash", tool_input: { command } }, hook);
-const bashAlsRol = (command: string, rol: string, pane = "%eigen") => {
-  const env = { ...schoneEnv(), HOME: "/nonexistent-grenzen-test", LAB_GRENS_MERGE: "", LAB_AGENT_ROL: rol, TMUX_PANE: pane };
+const bashAlsRol = (command: string, rol: string, pane = "%eigen", hook = HOOK) => {
+  const env = { ...schoneEnv(), HOME: "/nonexistent-grenzen-test", LAB_GRENS_MERGE: "", LAB_AGENT_ROL: rol, TMUX_PANE: pane, LAB_HOOFDCHECKOUT: EIGEN_TAK };
   const invoer = { tool_name: "Bash", tool_input: { command }, cwd: EIGEN_TAK };
-  const p = Bun.spawnSync(["bash", HOOK], { stdin: new TextEncoder().encode(JSON.stringify(invoer)), env, stdout: "pipe", stderr: "pipe" });
+  const p = Bun.spawnSync(["bash", hook], { stdin: new TextEncoder().encode(JSON.stringify(invoer)), env, stdout: "pipe", stderr: "pipe" });
   return { code: p.exitCode, stderr: p.stderr.toString() };
 };
 // Elke hook-aanroep is een eigen bash-proces (met jq en git erin): ~0,1 s onbelast, een veelvoud onder
@@ -69,9 +69,40 @@ describe("grenzen.sh: lead-proef blijft in de eigen pane en uit de Claude-socket
 });
 
 describe("grenzen.sh: lead-proef merge via het gecontroleerde pad, niet via push of gh", () => {
-  test("laat merge.sh door, ook zonder --droog", () => {
+  test("laat alleen de vaste merge.sh vanaf de hoofdcheckout door", () => {
     expect(bashAlsRol("scripts/lead/merge.sh 700", "lead-proef").code).toBe(0);
     expect(bashAlsRol("scripts/lead/merge.sh --droog 700", "lead-proef").code).toBe(0);
+    expect(bashAlsRol(`${EIGEN_TAK}/scripts/lead/merge.sh 700`, "lead-proef").code).toBe(0);
+  });
+
+  test("weigert wrappers, andere paden en commandoketens rond merge.sh", () => {
+    for (const command of [
+      "bash scripts/lead/merge.sh 700",
+      "../x/merge.sh 700",
+      "/tmp/merge.sh 700",
+      "scripts/lead/merge.sh 700; true",
+      "scripts/lead/merge.sh 700 && true",
+      "scripts/lead/merge.sh 700 | cat",
+      "echo $(scripts/lead/merge.sh 700)",
+    ]) {
+      const r = bashAlsRol(command, "lead-proef");
+      expect(r.code).toBe(2);
+      expect(r.stderr).toContain("alleen scripts/lead/merge.sh");
+    }
+  });
+
+  test("mutatie: zonder de mergepadcheck worden alle omwegen open", () => {
+    const map = mkdtempSync(join(tmpdir(), "grenzen-mergepad-mutatie-"));
+    const kopie = join(map, "grenzen.sh");
+    try {
+      const bron = readFileSync(HOOK, "utf8");
+      expect(bron).toContain("merge_bezwaar = merge_proef_bezwaar(w, basis, cz)");
+      writeFileSync(kopie, bron.replace("        if lead_proef:\n            merge_bezwaar = merge_proef_bezwaar(w, basis, cz)\n            if merge_bezwaar:\n                weiger(merge_bezwaar)\n", "        if lead_proef:\n            pass\n"));
+      expect(bashAlsRol("/tmp/merge.sh 700", "lead-proef", "%eigen", kopie).code).toBe(0);
+      expect(bashAlsRol("bash scripts/lead/merge.sh 700", "lead-proef", "%eigen", kopie).code).toBe(0);
+    } finally {
+      rmSync(map, { recursive: true, force: true });
+    }
   });
 
   test("weigert push-werker, gh pr merge en een roltoewijzing", () => {

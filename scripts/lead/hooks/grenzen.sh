@@ -505,6 +505,22 @@ if tool == "Bash":
             if j < len(w):
                 uit.append((glob, w[j], w[j + 1:]))
         return uit
+    def merge_proef_bezwaar(w, basis, commando):
+        # lead-proef draait uitsluitend de vaste kopie in de hoofdcheckout. Een
+        # relatief pad telt alleen vanuit die checkout; zo kan een eigen
+        # worktree geen aangepaste merge.sh als geautoriseerde route aanbieden.
+        if not any(re.search(r"(^|/)merge\.sh$", x) for x in w):
+            return None
+        e = eerste(w)
+        echte_paden = {os.path.realpath(os.path.join(h, "scripts/lead/merge.sh")) for h in hoofd_paden}
+        keten = re.search(r";|&&|\||\$\(", commando)
+        if e in LEZEN and not keten:
+            return None
+        relatief_ok = e == "scripts/lead/merge.sh" and is_hoofd(basis)
+        absoluut_ok = os.path.isabs(e) and os.path.realpath(e) in echte_paden
+        if keten or not (relatief_ok or absoluut_ok):
+            return "lead-proef mag alleen scripts/lead/merge.sh vanuit de hoofdcheckout draaien, zonder shell-wrapper of commandoketen."
+        return None
     def push_bezwaar(a):
         # geeft (melding of None, lijst positionele argumenten: remote en refspecs)
         k, pos = 0, []
@@ -648,6 +664,10 @@ if tool == "Bash":
             for glob, sub, args in git_aanroepen(w):
                 if any(o == "-c" for o, _ in glob):
                     weiger("lead-proef mag git -c niet gebruiken; een git-config kan een extern commando of merge starten.")
+        if lead_proef:
+            merge_bezwaar = merge_proef_bezwaar(w, basis, cz)
+            if merge_bezwaar:
+                weiger(merge_bezwaar)
         if lead_proef and e not in LEZEN:
             if any(re.search(r"(^|/)push-werker\.sh$", x) for x in w):
                 weiger("lead-proef pusht geen werkertakken; laat de lead dat buiten de sandbox doen.")
