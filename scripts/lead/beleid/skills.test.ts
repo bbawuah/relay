@@ -44,6 +44,15 @@ describe("installeer-skills", () => {
     expect(existsSync(join(claude, "lead"))).toBe(false);
     expect(existsSync(join(codex, "lead"))).toBe(false);
   });
+  test("droog toont een diff van gewijzigde SKILL.md zonder het doel te wijzigen", () => {
+    installeer(opties(claude));
+    writeFileSync(join(claude, "lead", "SKILL.md"), "oud\n");
+    const voor = readFileSync(join(claude, "lead", "SKILL.md"), "utf8");
+    const r = installeer(opties(claude, { droog: true }));
+    expect(r.join("\n")).toContain("---");
+    expect(r.join("\n")).toContain("+ ");
+    expect(readFileSync(join(claude, "lead", "SKILL.md"), "utf8")).toBe(voor);
+  });
   test("installeert repo- en lokale allowlist naar beide hosts, gemarkeerd", () => {
     for (const doel of [claude, codex]) installeer(opties(doel));
     for (const doel of [claude, codex]) {
