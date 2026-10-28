@@ -1,8 +1,11 @@
 // Hulp voor spawn.sh: leadnaam uit het register.
 //   bun leadnaam.ts eigen                 naam van de lead in de pane $TMUX_PANE (leeg als onbekend)
+//   bun leadnaam.ts bekend <naam>         exit 4 + uitleg als geen levend lead-record die naam draagt (register zonder map: geen toets)
 //   bun leadnaam.ts dubbel <naam>         exit 3 + uitleg als een ander levend lead-record die naam draagt
 // Alleen lezen. Staat: ${LAB_LEAD_STAAT:-~/.local/state/lab-lead}.
 
+import { existsSync } from "node:fs";
+import { join } from "node:path";
 import { dubbeleLeads, levendeLeads, staatMap, tmuxPanes } from "./hooks/register";
 
 const staat = staatMap(process.env);
@@ -13,6 +16,14 @@ const eigen = pane ? levendeLeads(staat, panes).filter((r) => r.pane === pane).s
 
 if (cmd === "eigen") {
   if (eigen?.naam) console.log(eigen.naam);
+} else if (cmd === "bekend" && naam) {
+  // Zonder register (map ontbreekt) is er niets om aan te toetsen: een machine of test zonder peerbus.
+  if (existsSync(join(staat, "register")) && !levendeLeads(staat, panes).some((r) => r.naam === naam)) {
+    console.error(
+      `spawn: lead '${naam}' staat niet in het register (${staat}); een rapport van de werker zou nergens aankomen ("onbekend"). Start de lead met de shell-functie \`lead\` (zet LAB_AGENT_ROL=lead en de naam), of herstart met: LAB_LEAD=1 LAB_AGENT_ROL=lead LAB_AGENT_NAAM=${naam} LAB_LEAD_NAAM=${naam} claude --resume <id> -n ${naam}`,
+    );
+    process.exit(4);
+  }
 } else if (cmd === "dubbel" && naam) {
   // Is de aanroeper herkend en heet zij anders, dan gaat het om de naam van een andere lead: niet toetsen.
   if (eigen && eigen.naam !== naam) process.exit(0);
@@ -24,6 +35,6 @@ if (cmd === "eigen") {
     process.exit(3);
   }
 } else {
-  console.error("gebruik: leadnaam.ts eigen | dubbel <naam>");
+  console.error("gebruik: leadnaam.ts eigen | bekend <naam> | dubbel <naam>");
   process.exit(2);
 }

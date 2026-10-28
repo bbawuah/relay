@@ -106,7 +106,7 @@ exit 0
   // nep-agent-spawn: print een pane-id.
   schrijfBin("nep-agent-spawn.sh", `#!/usr/bin/env bash\necho "spawn $*" >> "$FAKE_DIR/spawn.log"\necho "bijvangst"\necho "%7"\n`);
 
-  git(dir, "init", "-q", "--bare", origin);
+  git(dir, "init", "-q", "--bare", "-b", "main", origin); // CI kent geen init.defaultBranch: anders wijst HEAD van origin naar master
   git(repo, "init", "-q", "-b", "main");
   // vangnet: nooit verdergaan als dit niet de wegwerp-repo is
   expect(git(repo, "rev-parse", "--git-dir").stdout.toString().trim()).toBe(".git");
@@ -131,6 +131,7 @@ const omgeving = (extra: Record<string, string> = {}) => ({
   PATH: `${bin}:${process.env.PATH}`,
   FAKE_DIR: dir,
   LAB_LEAD_STAAT: join(dir, "staat"),
+  LAB_SPAWN_REPO: repo, // wegwerp-repo: spawn.sh toetst nooit de echte checkout (en haalt niets van het netwerk)
   LAB_MERGE_STEMPELS: join(dir, "stempels"),
   TMUX: "",
   TMUX_PANE: "",
@@ -680,7 +681,7 @@ describe("spawn.sh", () => {
     const cmd = r.uit.match(/ window \S+ "(.*)"$/m)![1];
     expect(Bun.spawnSync(["sh", "-n", "-c", cmd]).exitCode).toBe(0);
     // Zonder LAB_LEAD_STAAT geen sleutel; een quote in het serverpad geeft geen vlag (nooit uit de quotes breken).
-    const geenStaat = draai(SPAWN, ["--naam", "w1", "--opdracht", opdracht(), "--lead", "lead-x", "--droog"], basis({ LAB_PEERS_SERVER: server, LAB_LEAD_STAAT: "" }));
+    const geenStaat = draai(SPAWN, ["--naam", "w1", "--opdracht", opdracht(), "--lead", "lead-x", "--droog"], basis({ LAB_PEERS_SERVER: server, LAB_LEAD_STAAT: "", HOME: dir })); // HOME in de wegwerpmap: de standaard-staat is niet het echte register
     expect(JSON.parse(geenStaat.uit.match(/--mcp-config '([^']+)'/)![1]).mcpServers.peers.env).toEqual({ LAB_AGENT_NAAM: "w1", LAB_LEAD_NAAM: "lead-x" });
     const quote = join(dir, "q'uote.ts");
     writeFileSync(quote, "// nep\n");
@@ -721,6 +722,135 @@ describe("spawn.sh", () => {
     leadRecord("bbbb2222", "lead", "%2");
     writeFileSync(join(dir, "panes.txt"), "%1\n"); // pane %2 bestaat niet meer
     expect(draai(SPAWN, args, basis({ TMUX_PANE: "%1" })).code).toBe(0);
+  });
+
+  describe("checkout achter op origin/main", () => {
+    const args = () => ["--naam", "w1", "--opdracht", opdracht(), "--lead", "l", "--droog"];
+    // Een tweede clone zet een commit op origin/main (in `pad`), zoals een gemergde PR terwijl de checkout van de lead stilstaat.
+    const mergeOpMain = (pad: string) => {
+      const clone = join(dir, "andere-clone");
+      git(dir, "clone", "-q", "-b", "main", origin, clone);
+      mkdirSync(join(clone, dirname(pad)), { recursive: true });
+      writeFileSync(join(clone, pad), "nieuw\n");
+      git(clone, "add", "-A");
+      git(clone, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "-m", "merge");
+      expect(git(clone, "push", "-q", "origin", "HEAD:main").exitCode).toBe(0);
+    };
+
+    test("gelijk met origin/main: door, zonder melding (ook zonder fetch-resultaat)", () => {
+      const r = draai(SPAWN, args(), basis());
+      expect([r.code, r.fout]).toEqual([0, ""]);
+    });
+
+    test("achter in scripts/lead/: weigert (ook --droog en --vendor codex), met pull --ff-only voor die checkout", () => {
+      mergeOpMain("scripts/lead/nieuw.sh");
+      for (const extra of [[], ["--vendor", "codex"]]) {
+        const r = draai(SPAWN, [...args(), ...extra], basis());
+        expect(r.code).toBe(1);
+        expect(r.fout).toMatch(/^spawn: scripts\/lead\/ in .* loopt 1 commit\(s\) achter op origin\/main/);
+        expect(r.fout).toContain(`git -C ${realpathSync(repo)} pull --ff-only`);
+      }
+      expect(log("spawn.log")).toBe("");
+      // na de pull weer door
+      expect(git(repo, "pull", "-q", "--ff-only", "origin", "main").exitCode).toBe(0);
+      expect(draai(SPAWN, args(), basis()).code).toBe(0);
+    });
+
+    test("achter buiten scripts/lead/: door; een tak die vooruit loopt in scripts/lead/ ook", () => {
+      mergeOpMain("apps/x/y.ts");
+      expect(draai(SPAWN, args(), basis()).code).toBe(0);
+      mkdirSync(join(repo, "scripts/lead"), { recursive: true });
+      writeFileSync(join(repo, "scripts/lead/lokaal.sh"), "x\n");
+      git(repo, "add", "-A");
+      git(repo, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "-m", "lokaal");
+      expect(draai(SPAWN, args(), basis()).code).toBe(0);
+    });
+
+    test("LAB_SPAWN_NIET_ACTUEEL_OK=1 laat achterlopen toe met een waarschuwing", () => {
+      mergeOpMain("scripts/lead/nieuw.sh");
+      const r = draai(SPAWN, args(), basis({ LAB_SPAWN_NIET_ACTUEEL_OK: "1" }));
+      expect(r.code).toBe(0);
+      expect(r.fout).toMatch(/waarschuwing: scripts\/lead\/ .* achter op origin\/main; doorgaan op LAB_SPAWN_NIET_ACTUEEL_OK=1/);
+    });
+
+    test("fetch mislukt: waarschuwing en vergelijking met de lokale origin/main (achter blijft geweigerd)", () => {
+      mergeOpMain("scripts/lead/nieuw.sh");
+      expect(git(repo, "fetch", "-q", "origin", "main").exitCode).toBe(0);
+      git(repo, "remote", "set-url", "origin", join(dir, "bestaat-niet.git"));
+      const r = draai(SPAWN, args(), basis());
+      expect(r.code).toBe(1);
+      expect(r.fout).toMatch(/waarschuwing: ophalen van origin\/main mislukte/);
+      expect(r.fout).toMatch(/achter op origin\/main/);
+    });
+
+    test("een hangende fetch stopt na LAB_SPAWN_FETCH_S: git zelf is weg (geen wees), spawn gaat door met een waarschuwing", () => {
+      // Nep-ssh op PATH (GIT_SSH_COMMAND='ssh -oBatchMode=yes'): noteert zichzelf en zijn argumenten, en hangt.
+      // Geen $PPID als pid van git: op Linux zit er een `sh -c` (dash, zonder exec) tussen git en ssh.
+      const pids = join(dir, "ssh-pids");
+      schrijfBin("ssh", `#!/bin/sh\necho "$$ $*" > ${pids}\nexec sleep 30\n`);
+      git(repo, "remote", "set-url", "origin", "ssh://hangt.invalid/x.git");
+      const r = draai(SPAWN, args(), basis({ LAB_SPAWN_FETCH_S: "1" }));
+      const [sshPid, ...sshArgs] = readFileSync(pids, "utf8").trim().split(" ");
+      try {
+        expect(r.code).toBe(0);
+        expect(r.fout).toMatch(/waarschuwing: ophalen van origin\/main mislukte \(exit 143\)/);
+        expect(sshArgs).toContain("-oBatchMode=yes");
+        // git zelf (met -C <deze wegwerp-repo> fetch) draait niet meer
+        const nog = Bun.spawnSync(["ps", "-eo", "args"]).stdout.toString().split("\n").filter((l) => l.startsWith("git ") && l.includes(` -C ${repo} fetch`));
+        expect(nog).toEqual([]);
+      } finally {
+        try {
+          process.kill(Number(sshPid));
+        } catch {
+          // al weg
+        }
+      }
+    });
+
+    test("--meerdere: de ouder toetst eenmaal, de kinderen niet", () => {
+      mergeOpMain("scripts/lead/nieuw.sh");
+      writeFileSync(join(dir, "lijst.txt"), `w1 ${opdracht()}\nw2 ${opdracht()}\n`);
+      const r = draai(SPAWN, ["--meerdere", join(dir, "lijst.txt"), "--lead", "l", "--droog"], basis({ LAB_SPAWN_NIET_ACTUEEL_OK: "1" }));
+      expect(r.fout.match(/doorgaan op LAB_SPAWN_NIET_ACTUEEL_OK=1/g)?.length).toBe(1);
+      // een LAB_SPAWN_ACTUEEL_GETOETST van buiten (niet de ouder) slaat de toets niet over
+      const zelf = draai(SPAWN, args(), basis({ LAB_SPAWN_ACTUEEL_GETOETST: "1" }));
+      expect(zelf.code).toBe(1);
+    });
+
+    test("geen origin/main of geen repo: waarschuwing en door", () => {
+      git(repo, "remote", "remove", "origin");
+      const r = draai(SPAWN, args(), basis());
+      expect(r.code).toBe(0);
+      expect(r.fout).toMatch(/waarschuwing: geen origin\/main/);
+      const geen = draai(SPAWN, args(), basis({ LAB_SPAWN_REPO: join(dir, "geen-repo") }));
+      expect(geen.code).toBe(0);
+      expect(geen.fout).toMatch(/waarschuwing: .* is geen git-repo/);
+    });
+  });
+
+  test("weigert een --lead die niet in het register staat (met het herstelcommando), toetst niets zonder register", () => {
+    writeFileSync(join(dir, "panes.txt"), "%1\n");
+    leadRecord("aaaa1111", "lead-a", "%1");
+    const args = ["--naam", "w1", "--opdracht", opdracht(), "--droog"];
+    const r = draai(SPAWN, [...args, "--lead", "lead-peerbus"], basis());
+    expect(r.code).toBe(1);
+    expect(r.fout).toMatch(/^spawn: lead 'lead-peerbus' staat niet in het register/);
+    expect(r.fout).toContain("`lead`");
+    expect(r.fout).toContain("LAB_LEAD=1 LAB_AGENT_ROL=lead LAB_AGENT_NAAM=lead-peerbus LAB_LEAD_NAAM=lead-peerbus claude --resume <id> -n lead-peerbus");
+    expect(log("spawn.log")).toBe("");
+    // ook via LAB_LEAD_NAAM, en voor --sublead (zelfde pad)
+    expect(draai(SPAWN, args, basis({ LAB_LEAD_NAAM: "lead-peerbus" })).code).toBe(1);
+    expect(draai(SPAWN, [...args, "--sublead", "--lead", "lead-peerbus"], basis()).code).toBe(1);
+    // een levende lead met die naam: door; een weg-record of dode pane telt niet
+    expect(draai(SPAWN, [...args, "--lead", "lead-a"], basis()).code).toBe(0);
+    leadRecord("aaaa1111", "lead-a", "%1", "weg");
+    expect(draai(SPAWN, [...args, "--lead", "lead-a"], basis()).code).toBe(1);
+    leadRecord("aaaa1111", "lead-a", "%1");
+    writeFileSync(join(dir, "panes.txt"), "%9\n");
+    expect(draai(SPAWN, [...args, "--lead", "lead-a"], basis()).code).toBe(1);
+    // register zonder map (machine zonder peerbus): geen toets
+    rmSync(join(dir, "staat"), { recursive: true, force: true });
+    expect(draai(SPAWN, [...args, "--lead", "lead-peerbus"], basis()).code).toBe(0);
   });
 
   test("een mislukte dubbel-controle (andere exit dan 3) geeft een waarschuwing en spawnt toch", () => {
@@ -1956,6 +2086,7 @@ exit 1
     expect(codex(["--map", wt]).code).toBe(0);
     const spawnId = JSON.parse(readFileSync(join(idDir(), idBestanden()[0]), "utf8")).spawn_id;
     mkdirSync(join(staat, "register"), { recursive: true });
+    writeFileSync(join(staat, "register", "lead.json"), JSON.stringify({ id: "lead", soort: "sessie", naam: "lead-x", rol: "lead", pane: "", toestand: "bezig", sinds: Date.now(), start: 1 })); // --lead moet in het register staan
     const rec = (toestand: string) => writeFileSync(join(staat, "register", "s1.json"), JSON.stringify({ id: "s1", soort: "sessie", naam: "cx1", spawn_id: spawnId, toestand }));
     rec("bezig");
     const r = codex(["--map", wt]);

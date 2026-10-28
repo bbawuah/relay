@@ -73,6 +73,41 @@ case $vendor in claude|codex) ;; *) fout "--vendor moet claude of codex zijn, ni
 [ "$netwerk" = 0 ] || [ "$vendor" = codex ] || fout "--netwerk hoort bij --vendor codex"
 [ "$netwerk" = 0 ] || [ "$t3" = 0 ] || fout "--netwerk past niet bij --t3: een T3-thread heeft geen sandbox en dus geen netwerkprofiel om aan te zetten"
 
+# --- Controle 1: draait deze spawn.sh uit een checkout die achterloopt op origin/main? --------------------------
+# Een verouderde scripts/lead/ start werkers zonder de nieuwste grenzen (27 okt: Codex zonder netwerk-uit-sandbox, #683/#692).
+# Achter = origin/main heeft een commit in scripts/lead/ die HEAD mist (een tak die vooruit loopt of ongerelateerd werk heeft telt niet).
+# Weigert voor elke vendor en ook met --droog. Geen repo of geen origin/main: waarschuwing en door. Een mislukte fetch (10 s) ook.
+# LAB_SPAWN_REPO en LAB_SPAWN_FETCH_S zijn test-haken. Override: LAB_SPAWN_NIET_ACTUEEL_OK=1 (waarschuwing).
+HIER=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+controleer_actueel() (
+  while IFS= read -r v; do unset "$v"; done < <(compgen -e | grep '^GIT_' || true)
+  local repo=${LAB_SPAWN_REPO:-$HIER/../..} fetch_s=${LAB_SPAWN_FETCH_S:-10} top fp wp rc=0 achter
+  g() { ${gexec:-} git -c core.fsmonitor= -c core.hooksPath=/dev/null -c core.untrackedCache=false -c diff.ignoreSubmodules=all -C "$repo" "$@"; }
+  top=$(g rev-parse --show-toplevel 2>/dev/null) || { echo "spawn: waarschuwing: $repo is geen git-repo; actualiteit van scripts/lead/ niet getoetst" >&2; return 0; }
+  if g remote get-url origin >/dev/null 2>&1; then
+    # De subshell vervangt zich door git (exec), zodat $! git zelf is en de kill na de grens git stopt (zonder exec blijft
+    # git als wees hangen). Nooit een prompt (wachtwoord, host-sleutel) die op de tty wacht.
+    ( export GIT_TERMINAL_PROMPT=0 GIT_SSH_COMMAND='ssh -oBatchMode=yes'; gexec=exec; g fetch --quiet origin main ) >/dev/null 2>&1 &
+    fp=$!
+    ( sleep "$fetch_s"; kill "$fp" 2>/dev/null ) >/dev/null 2>&1 &
+    wp=$!
+    wait "$fp" || rc=$?
+    kill "$wp" 2>/dev/null || true
+    [ "$rc" = 0 ] || echo "spawn: waarschuwing: ophalen van origin/main mislukte (exit $rc); vergelijk met de lokale origin/main" >&2
+  fi
+  g rev-parse --verify --quiet refs/remotes/origin/main >/dev/null || { echo "spawn: waarschuwing: geen origin/main in $top; actualiteit van scripts/lead/ niet getoetst" >&2; return 0; }
+  achter=$(g rev-list --count HEAD..origin/main -- scripts/lead/ 2>/dev/null) || { echo "spawn: waarschuwing: vergelijking met origin/main mislukte; actualiteit niet getoetst" >&2; return 0; }
+  [ "$achter" != 0 ] || return 0
+  if [ "${LAB_SPAWN_NIET_ACTUEEL_OK:-}" = 1 ]; then
+    echo "spawn: waarschuwing: scripts/lead/ in $top loopt $achter commit(s) achter op origin/main; doorgaan op LAB_SPAWN_NIET_ACTUEEL_OK=1" >&2
+    return 0
+  fi
+  echo "spawn: scripts/lead/ in $top loopt $achter commit(s) achter op origin/main (een werker zou zonder de nieuwste grenzen starten); draai: git -C $top pull --ff-only (op main) of git -C $top merge origin/main (op een tak) (bewust achterlopen: LAB_SPAWN_NIET_ACTUEEL_OK=1)" >&2
+  return 1
+)
+# --meerdere: de ouder toetst eenmaal; zijn kinderen (zelfde checkout) slaan het over, anders vechten N fetches om dezelfde ref.
+[ -n "${LAB_SPAWN_ACTUEEL_GETOETST:-}" ] && [ "$LAB_SPAWN_ACTUEEL_GETOETST" = "$PPID" ] || controleer_actueel || exit 1
+
 if [ -n "$meerdere" ]; then
   [ -z "$naam$opdracht$vervolg" ] && [ "$sublead" = 0 ] || fout "--meerdere sluit --naam, --opdracht, --vervolg en --sublead uit"
   [ -f "$meerdere" ] || fout "lijst bestaat niet: $meerdere"
@@ -113,7 +148,7 @@ if [ -n "$meerdere" ]; then
     [ "$zonder_sandbox" = 0 ] || args+=(--zonder-sandbox)
     [ "$netwerk" = 0 ] || args+=(--netwerk)
     [ "$vendor" = claude ] || args+=(--vendor "$vendor")
-    bash "$zelf" "${args[@]}" >"$uitmap/${namen[$i]}.uit" 2>"$uitmap/${namen[$i]}.fout" &
+    LAB_SPAWN_ACTUEEL_GETOETST=$$ bash "$zelf" "${args[@]}" >"$uitmap/${namen[$i]}.uit" 2>"$uitmap/${namen[$i]}.fout" &
     pids+=($!)
   done
   mislukt=0
@@ -166,6 +201,12 @@ if command -v "$BUN" >/dev/null 2>&1; then
   dubbel=$("$BUN" "$HIER/leadnaam.ts" dubbel "$lead" 2>&1 >/dev/null) || rc=$?
   if [ "$rc" = 3 ]; then echo "$dubbel" >&2; exit 1; fi
   [ "$rc" = 0 ] || echo "spawn: waarschuwing: controle op dubbele leadnaam mislukt (exit $rc); ga door. $dubbel" >&2
+  # Controle 2: --lead (of LAB_LEAD_NAAM) moet een levende lead in het register zijn, anders komt elk rapport van de werker nergens aan
+  # (27 okt: lead zonder LAB_AGENT_ROL gestart, peers.send gaf "onbekend"). exit 4 = onbekend (blokkeert); andere fout: waarschuwing.
+  rc=0
+  onbekend=$("$BUN" "$HIER/leadnaam.ts" bekend "$lead" 2>&1 >/dev/null) || rc=$?
+  if [ "$rc" = 4 ]; then echo "$onbekend" >&2; exit 1; fi
+  [ "$rc" = 0 ] || echo "spawn: waarschuwing: controle op de leadnaam in het register mislukt (exit $rc); ga door. $onbekend" >&2
 fi
 [ -z "$workflow" ] || [ "$sublead" = 1 ] || fout "--workflow hoort bij --sublead"
 [ -z "$workflow" ] || [[ $workflow =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}$ ]] || fout "--workflow wil de datum van Brians toestemming (JJJJ-MM-DD), niet '$workflow'"
