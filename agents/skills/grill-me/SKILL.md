@@ -1,0 +1,1 @@
+/Users/labbawuah/dotfiles/home/.claude/skills/grill-me/SKILL.md

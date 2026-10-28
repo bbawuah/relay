@@ -1,0 +1,33 @@
+import { cpSync, existsSync, mkdirSync, readdirSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
+
+export const MARKER = ".lab-beleid-skill.json";
+export const REPO_SKILLS = ["lead", "retro", "grill-me"] as const;
+export const LOKALE_SKILLS = ["naar-mod", "tailnet", "vault", "scrawl"] as const;
+
+export type Opties = { doel: string; repo?: string; lokaal?: string; droog?: boolean; controle?: boolean };
+const veilig = (n: string) => /^[a-z][a-z0-9-]*$/.test(n) && n !== ".system" && n !== "synced";
+function kopieer(bron: string, doel: string, droog: boolean, regels: string[]) {
+  if (!existsSync(join(bron, "SKILL.md"))) throw new Error(`${bron}: SKILL.md ontbreekt`);
+  if (existsSync(doel) && !existsSync(join(doel, MARKER))) throw new Error(`${doel}: niet door beleid gemarkeerd`);
+  regels.push(`${existsSync(doel) ? "vervang" : "installeer"} ${doel}`);
+  if (droog) return;
+  if (existsSync(doel)) { const back = `${doel}.voor-beleid`; rmSync(back, { recursive: true, force: true }); renameSync(doel, back); }
+  mkdirSync(doel, { recursive: true });
+  cpSync(bron, doel, { recursive: true, filter: (p) => !p.endsWith(".system") && !p.includes("/synced/") });
+  writeFileSync(join(doel, MARKER), JSON.stringify({ bron: "beleid" }) + "\n", { mode: 0o600 });
+}
+export function installeer(o: Opties) {
+  const repo = o.repo ?? join(import.meta.dir, "../../..", "agents/skills");
+  const lokaal = o.lokaal ?? join(process.env.HOME ?? "", "vault-b-status/skills");
+  const regels: string[] = [];
+  for (const n of REPO_SKILLS) kopieer(join(repo, n), join(o.doel, n), !!o.droog, regels);
+  for (const n of LOKALE_SKILLS) if (veilig(n) && existsSync(join(lokaal, n))) kopieer(join(lokaal, n), join(o.doel, n), !!o.droog, regels);
+  if (o.controle) for (const n of readdirSync(o.doel, { withFileTypes: true }).filter((e) => e.isDirectory()).map((e) => e.name)) if ((REPO_SKILLS as readonly string[]).includes(n) && !existsSync(join(o.doel, n, MARKER))) throw new Error(`${n}: marker ontbreekt`);
+  return regels;
+}
+if (import.meta.main) {
+  const a = process.argv.slice(2); const doel = a[a.indexOf("--doel") + 1];
+  if (!doel) throw new Error("--doel ontbreekt");
+  for (const r of installeer({ doel, droog: a.includes("--droog"), controle: a.includes("--controle") })) console.log(`${a.includes("--droog") ? "DROOG" : "OK"} ${r}`);
+}
