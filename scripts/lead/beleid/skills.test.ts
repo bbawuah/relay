@@ -53,6 +53,15 @@ describe("installeer-skills", () => {
     expect(r.join("\n")).toContain("+ ");
     expect(readFileSync(join(claude, "lead", "SKILL.md"), "utf8")).toBe(voor);
   });
+  test("controle meldt drift zonder te installeren", () => {
+    installeer(opties(claude));
+    writeFileSync(join(claude, "lead", "SKILL.md"), "afwijkend\n");
+    const voor = readFileSync(join(claude, "lead", "SKILL.md"), "utf8");
+    const r = installeer(opties(claude, { controle: true }));
+    expect(r.join("\n")).toContain("drift");
+    expect(r.join("\n")).toContain("lead");
+    expect(readFileSync(join(claude, "lead", "SKILL.md"), "utf8")).toBe(voor);
+  });
   test("installeert repo- en lokale allowlist naar beide hosts, gemarkeerd", () => {
     for (const doel of [claude, codex]) installeer(opties(doel));
     for (const doel of [claude, codex]) {
