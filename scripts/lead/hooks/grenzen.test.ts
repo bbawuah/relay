@@ -28,6 +28,12 @@ function draai(invoer: unknown, hook = HOOK) {
   return { code: p.exitCode, stderr: p.stderr.toString() };
 }
 const bash = (command: string, hook = HOOK) => draai({ tool_name: "Bash", tool_input: { command } }, hook);
+const bashAlsRol = (command: string, rol: string, pane = "%eigen") => {
+  const env = { ...schoneEnv(), HOME: "/nonexistent-grenzen-test", LAB_GRENS_MERGE: "", LAB_AGENT_ROL: rol, TMUX_PANE: pane };
+  const invoer = { tool_name: "Bash", tool_input: { command }, cwd: EIGEN_TAK };
+  const p = Bun.spawnSync(["bash", HOOK], { stdin: new TextEncoder().encode(JSON.stringify(invoer)), env, stdout: "pipe", stderr: "pipe" });
+  return { code: p.exitCode, stderr: p.stderr.toString() };
+};
 // Elke hook-aanroep is een eigen bash-proces (met jq en git erin): ~0,1 s onbelast, een veelvoud onder
 // machinebelasting. Voor de vaste lijsten WEIGER/DOOR/CASES (puur commandotekst, vaste cwd EIGEN_TAK, geen
 // bestanden) hangt de uitkomst alleen van (hook, commando) af: de eigenschapstest hergebruikt wat de losse
@@ -43,6 +49,24 @@ const bashVast = (command: string, hook = HOOK) => {
 // het onderwerp van de test, en de standaard van 5 s past bij werk zonder subproces.
 // echte-klok: tijdgrens voor subprocessen, geen wachttijd; onder belasting duurt een spawn seconden
 const RUIM = 60_000;
+
+describe("grenzen.sh: lead-proef blijft in de eigen pane en uit de Claude-sockets", () => {
+  test("weigert tmux send-keys en paste-buffer naar een andere pane of sessie", () => {
+    for (const command of ["tmux send-keys -t %ander -l hallo", "tmux paste-buffer --target=sessie:0", "tmux paste-buffer -t%ander"])
+      expect(bashAlsRol(command, "lead-proef").code).toBe(2);
+  });
+
+  test("laat de eigen pane en een tmux-opdracht zonder doel door", () => {
+    expect(bashAlsRol("tmux send-keys -t %eigen -l hallo", "lead-proef").code).toBe(0);
+    expect(bashAlsRol("tmux paste-buffer", "lead-proef").code).toBe(0);
+  });
+
+  test("weigert redirects naar /tmp/cc-socks, maar niet lezen", () => {
+    for (const command of ["printf x > /tmp/cc-socks/123.sock", "echo x >> '/tmp/cc-socks/456.sock'"])
+      expect(bashAlsRol(command, "lead-proef").code).toBe(2);
+    expect(bashAlsRol("ls /tmp/cc-socks", "lead-proef").code).toBe(0);
+  });
+});
 
 const WEIGER = [
   "./scripts/uitrollen.sh",

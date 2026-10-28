@@ -359,7 +359,7 @@ export function schrijfIdentiteit(staat: string, cwd: string, i: Identiteit): vo
 }
 
 /** Rollen die een gespawnde werker kan hebben; "lead" of iets anders in het bestand is nooit geldig (geen escalatie via het bestand). */
-const IDENTITEIT_ROLLEN = ["agent", "sublead", "vervolg"];
+const IDENTITEIT_ROLLEN = ["agent", "sublead", "vervolg", "lead-proef"];
 
 /** Een gewoon bestand (geen symlink), van de eigen gebruiker, zonder rechten voor groep of anderen. */
 function eigenPrive(pad: string, map: boolean): boolean {

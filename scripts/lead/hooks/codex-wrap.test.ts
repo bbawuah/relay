@@ -68,7 +68,7 @@ describe("identiteitEnv", () => {
       schrijfIdentiteit(staat, werk, { ...ident, rol });
       expect(identiteitEnv({ LAB_LEAD_STAAT: staat }, werk)).toEqual({});
     }
-    for (const rol of ["agent", "sublead", "vervolg"]) {
+    for (const rol of ["agent", "sublead", "vervolg", "lead-proef"]) {
       schrijfIdentiteit(staat, werk, { ...ident, rol });
       expect(identiteitEnv({ LAB_LEAD_STAAT: staat }, werk)).toMatchObject({ LAB_AGENT_ROL: rol });
     }
