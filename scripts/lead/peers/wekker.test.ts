@@ -173,14 +173,26 @@ describe("t3", () => {
     ]);
   });
 
-  test("open vraag, ontbrekend veld, oude top-level vorm of kapotte JSON: niet sturen", async () => {
+  test("open vraag, onbekende count, oude top-level vorm of kapotte JSON: niet sturen", async () => {
     // De top-level vorm bestaat niet in echte t3-uitvoer (gemeten 27 okt: keys messages en thread); hij telt als ontbrekend.
-    for (const stdout of ['{"messages":[],"thread":{"pendingRequestCount":1}}', '{"pendingRequestCount":0}', '{"thread":{}}', "{}", "geen json"]) {
+    for (const stdout of ['{"messages":[],"thread":{"pendingRequestCount":1}}', '{"pendingRequestCount":null}', '{"messages":[],"thread":null}', 'null', '{"pendingRequestCount":0}', '{"thread":{}}', "{}", "geen json"]) {
       const { calls, run } = nepRun(() => ({ stdout }));
       const u = await maakWekker({ env, run }).wek(doel, 1);
       expect(u.gewekt).toBe(false);
       expect(calls).toHaveLength(1);
+      if (stdout !== "geen json") expect(u.melding).toContain("open vraag");
     }
+  });
+
+  test('een string-count zoals "0" telt als open vraag en wekt niet', async () => {
+    const { calls, run } = nepRun(() => ({ stdout: '{"thread":{"pendingRequestCount":"0"}}' }));
+    const u = await maakWekker({ env, run }).wek(doel, 1);
+    expect(u).toMatchObject({ gewekt: false, route: "t3" });
+    expect(u.melding).toContain("open vraag");
+    expect(u.melding).toContain('onbekend ("0")');
+    expect(calls).toHaveLength(1);
+    const leeg = await maakWekker({ env, run: nepRun(() => ({ stdout: '{"thread":{}}' })).run }).wek(doel, 1);
+    expect(leeg.melding).toContain("onbekend (ontbreekt)");
   });
 
   test("show faalt of send faalt", async () => {

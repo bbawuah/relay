@@ -196,7 +196,7 @@ export function maakWekker(opties: { env: Omgeving; run?: Run; socketSchrijf?: S
       return mislukt("t3", "t3 thread show: uitvoer is geen JSON");
     }
     // Sturen naar een thread met een open vraag laat die vastlopen (T3 #15517); onbekend telt als open.
-    if (open !== 0) return mislukt("t3", open === undefined ? "pendingRequestCount ontbreekt; niet gewekt" : "thread heeft een open vraag; niet gewekt");
+    if (open !== 0) return mislukt("t3", typeof open === "number" ? "thread heeft een open vraag; niet gewekt" : `pendingRequestCount onbekend (${JSON.stringify(open) ?? "ontbreekt"}); telt als open vraag; niet gewekt`);
     if (rest() <= 0) return mislukt("t3", "t3: budget van 10 s op na thread show");
     const r = await run(bin, ["thread", "send", doel.t3_thread, seintje(aantal)], { env: tenv, timeoutMs: rest() });
     if (r.timeout) return mislukt("t3", "t3 thread send: tijdsgrens");
