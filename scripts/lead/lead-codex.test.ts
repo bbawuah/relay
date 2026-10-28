@@ -1,9 +1,10 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { chmodSync, existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { schoneEnv } from "../test-integriteit";
-import { identiteitPad } from "./hooks/register";
+import { identiteitPad, schrijfIdentiteit } from "./hooks/register";
+import { identiteitEnv } from "./hooks/codex-wrap";
 
 const STARTER = join(import.meta.dir, "lead-codex.sh");
 let dir: string;
@@ -41,15 +42,17 @@ const run = (extra: Record<string, string> = {}) =>
 
 describe("lead-codex.sh", () => {
   test("controleert het profiel en de inlog, start met lead-proef-identiteit en ruimt die daarna op", () => {
-    const r = run();
+    const r = run({ CODEX_HOME: "/onveilig-profiel" });
     expect(r.exitCode).toBe(0);
     const regels = readFileSync(log, "utf8");
+    const werkruimte = dirname(process.cwd());
+    expect(regels).toContain(identiteitPad(staat, werkruimte));
     expect(regels).toContain(`home=${join(dir, ".codex-lead")}`);
     expect(regels).toContain("role=lead-proef");
     expect(regels).toContain("naam=codex-lead");
     expect(regels).toContain("lead=codex-lead");
     expect(regels).toContain(`args=-C ${dirname(process.cwd())} start-opdracht`);
-    const pad = identiteitPad(staat, process.cwd());
+    const pad = identiteitPad(staat, werkruimte);
     expect(existsSync(pad)).toBe(false);
     expect(readdirSync(join(staat, "identiteit"))).toEqual([]);
   });
@@ -63,5 +66,32 @@ describe("lead-codex.sh", () => {
     expect(login.exitCode).toBe(1);
     expect(login.stderr.toString()).toContain("geen Codex-inlog");
     expect(existsSync(join(staat, "identiteit"))).toBe(false);
+  });
+
+  test("de werkruimte-identiteit geldt in hoofdcheckout en zusterworktree; een dichtere werkeridentiteit wint", () => {
+    const werkruimte = join(dir, "werkruimte");
+    const hoofd = join(werkruimte, "lab-bawuah");
+    const ander = join(werkruimte, "andere-worktree");
+    mkdirSync(hoofd, { recursive: true });
+    mkdirSync(ander);
+    const echt = realpathSync(werkruimte);
+    const echtHoofd = realpathSync(hoofd);
+    const echtAnder = realpathSync(ander);
+    schrijfIdentiteit(staat, echt, { naam: "codex-lead", rol: "lead-proef", lead: "codex-lead", opdracht: "", spawn_id: "lead", ts: Date.now() });
+    expect(identiteitEnv({ LAB_LEAD_STAAT: staat }, echtHoofd).LAB_AGENT_ROL).toBe("lead-proef");
+    expect(identiteitEnv({ LAB_LEAD_STAAT: staat }, echtAnder).LAB_AGENT_ROL).toBe("lead-proef");
+    schrijfIdentiteit(staat, echtAnder, { naam: "werker", rol: "agent", lead: "codex-lead", opdracht: "", spawn_id: "werker", ts: Date.now() });
+    expect(identiteitEnv({ LAB_LEAD_STAAT: staat }, echtAnder).LAB_AGENT_ROL).toBe("agent");
+  });
+
+  test("weigert configuratievlaggen en een bestaande werkruimte-identiteit", () => {
+    expect(run({},).exitCode).toBe(0);
+    const vlag = Bun.spawnSync(["bash", STARTER, "--sandbox", "danger-full-access"], { cwd: process.cwd(), env: { ...schoneEnv(), PATH: `${bin}:${process.env.PATH}`, HOME: dir, LAB_LEAD_STAAT: staat, FAKE_LOG: log }, stdout: "pipe", stderr: "pipe" });
+    expect(vlag.exitCode).toBe(1);
+    expect(vlag.stderr.toString()).toContain("permissievlaggen");
+    schrijfIdentiteit(staat, dirname(process.cwd()), { naam: "andere-lead", rol: "lead-proef", lead: "andere-lead", opdracht: "", spawn_id: "oud", ts: Date.now() });
+    const bestaand = run();
+    expect(bestaand.exitCode).toBe(1);
+    expect(bestaand.stderr.toString()).toContain("identiteit bestaat al");
   });
 });

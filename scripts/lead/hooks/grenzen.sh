@@ -612,6 +612,7 @@ if tool == "Bash":
                 return f"gh api met methode {methode or 'POST (door -f/-F/--input)'} schrijft naar GitHub; alleen lezen (GET) mag rauw. Mergen via scripts/lead/merge.sh."
         return None
     merge_aan = os.environ.get("LAB_GRENS_MERGE") == "1" or os.path.exists(os.path.expanduser("~/.claude/hooks/grenzen.merge"))
+    lead_proef = os.environ.get("LAB_AGENT_ROL") == "lead-proef"
     is_subagent = bool(d.get("agent_id") or d.get("agent_type"))
     basis = str(d.get("cwd") or procmap())
     hier = basis
@@ -625,6 +626,21 @@ if tool == "Bash":
             continue
         if e in TEKST:
             continue
+        # De proeflead is bewust geen merge-lead. Dit toetst de hook-rol, niet een
+        # mogelijke `LAB_AGENT_ROL=lead` in het commando: Codex kan die env zelf
+        # zetten, maar niet de identiteit waarmee de hook start.
+        if lead_proef:
+            if any(re.fullmatch(r"LAB_AGENT_ROL=.*", x) for x in w):
+                weiger("lead-proef mag LAB_AGENT_ROL niet in een commando zetten; de hook-rol is leidend.")
+            if any(re.search(r"(^|/)merge\.sh$", x) for x in w) and "--droog" not in w:
+                weiger("lead-proef merget niet; alleen scripts/lead/merge.sh --droog is toegestaan.")
+            if any(re.search(r"(^|/)push-werker\.sh$", x) for x in w):
+                weiger("lead-proef pusht geen werkertakken; laat de lead dat buiten de sandbox doen.")
+            for i, x in enumerate(w):
+                if re.fullmatch(r"(\S*/)?gh", x):
+                    namen = [y for _, y in gh_posities(w[i + 1:])]
+                    if namen[:2] == ["pr", "merge"]:
+                        weiger("lead-proef merget geen PR via gh; vraag de lead buiten de sandbox.")
         # merge.sh (elk pad) nooit vanuit een subagent of fork: de rol van de lead erft anders mee via env.
         if is_subagent and e not in LEZEN and any(re.search(r"(^|/)merge\.sh$", x) for x in w):
             weiger("een subagent of fork merget niet: alleen de lead zelf draait scripts/lead/merge.sh.")

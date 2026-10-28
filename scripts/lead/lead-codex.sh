@@ -6,9 +6,10 @@ set -euo pipefail
 HIER=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)
 MAP=$(pwd -P)
 WERKRUIMTE=${LAB_CODEX_LEAD_WERKRUIMTE:-"$(dirname "$MAP")"}
+WERKRUIMTE=$(cd "$WERKRUIMTE" && pwd -P)
 THUIS=${HOME:?HOME ontbreekt}
 STAAT=${LAB_LEAD_STAAT:-"$THUIS/.local/state/lab-lead"}
-CODEX_HOME_LEAD=${CODEX_HOME:-"$THUIS/.codex-lead"}
+CODEX_HOME_LEAD="$THUIS/.codex-lead"
 BUN=${LAB_LEAD_BUN:-bun}
 CODEX=${LAB_LEAD_CODEX:-codex}
 NAAM=${LAB_AGENT_NAAM:-codex-lead}
@@ -20,9 +21,20 @@ fout() { echo "lead-codex: $*" >&2; exit 1; }
 command -v "$BUN" >/dev/null 2>&1 || fout "bun ontbreekt"
 command -v "$CODEX" >/dev/null 2>&1 || fout "codex ontbreekt"
 
+for arg in "$@"; do
+  case $arg in
+    -c|--config|--config=*|--sandbox|--sandbox=*|-s|-s*|--dangerously*|-a|--ask-for-approval|--ask-for-approval=*)
+      fout "eigen Codex-configuratie of permissievlaggen zijn niet toegestaan; het lead-profiel bepaalt het beleid" ;;
+  esac
+done
+
+git_hard() {
+  git -c core.fsmonitor= -c core.hooksPath=/dev/null -c core.untrackedCache=false -c diff.ignoreSubmodules=all -C "$MAP" "$@"
+}
+
 # Een lead-proef mag alleen vanuit een linked worktree starten, nooit de hoofdcheckout.
-GIT_DIR=$(git -C "$MAP" rev-parse --git-dir 2>/dev/null) || fout "geen git-worktree: $MAP"
-GIT_COMMON=$(git -C "$MAP" rev-parse --git-common-dir 2>/dev/null) || fout "geen git-worktree: $MAP"
+GIT_DIR=$(git_hard rev-parse --path-format=absolute --git-dir 2>/dev/null) || fout "geen git-worktree: $MAP"
+GIT_COMMON=$(git_hard rev-parse --path-format=absolute --git-common-dir 2>/dev/null) || fout "geen git-worktree: $MAP"
 [ "$GIT_DIR" != "$GIT_COMMON" ] || fout "weiger de hoofdcheckout; start vanuit een eigen linked worktree"
 
 "$BUN" "$HIER/hooks/codex-controle.ts" "$CODEX_HOME_LEAD/config.toml" ||
@@ -33,8 +45,9 @@ CODEX_HOME="$CODEX_HOME_LEAD" "$CODEX" login status >/dev/null 2>&1 ||
 IDENTITEIT_MAP="$STAAT/identiteit"
 mkdir -p "$IDENTITEIT_MAP"
 chmod 700 "$IDENTITEIT_MAP"
-SLEUTEL=$(printf '%s' "$MAP" | shasum -a 256 | awk '{print substr($1, 1, 24)}')
+SLEUTEL=$(printf '%s' "$WERKRUIMTE" | shasum -a 256 | awk '{print substr($1, 1, 24)}')
 IDENTITEIT="$IDENTITEIT_MAP/$SLEUTEL.json"
+([ ! -e "$IDENTITEIT" ] && [ ! -L "$IDENTITEIT" ]) || fout "identiteit bestaat al: $IDENTITEIT; start niet in een gebruikte werkruimte"
 SPAWN_ID="lead-proef-$(date +%s)-$$"
 TIJD=$(( $(date +%s) * 1000 ))
 TMP=$(mktemp "$IDENTITEIT.XXXXXX")
