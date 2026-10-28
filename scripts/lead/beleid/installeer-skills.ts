@@ -1,4 +1,4 @@
-import { cpSync, existsSync, mkdirSync, readdirSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { cpSync, existsSync, lstatSync, mkdirSync, readdirSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
 export const MARKER = ".lab-beleid-skill.json";
@@ -9,7 +9,8 @@ export type Opties = { doel: string; repo?: string; lokaal?: string; droog?: boo
 const veilig = (n: string) => /^[a-z][a-z0-9-]*$/.test(n) && n !== ".system" && n !== "synced";
 function kopieer(bron: string, doel: string, droog: boolean, regels: string[]) {
   if (!existsSync(join(bron, "SKILL.md"))) throw new Error(`${bron}: SKILL.md ontbreekt`);
-  if (existsSync(doel) && !existsSync(join(doel, MARKER))) throw new Error(`${doel}: niet door beleid gemarkeerd`);
+  if (lstatSync(bron).isSymbolicLink() || lstatSync(join(bron, "SKILL.md")).isSymbolicLink()) throw new Error(`${bron}: symlinks zijn niet toegestaan`);
+  if (existsSync(doel) && (!existsSync(join(doel, MARKER)) || lstatSync(join(doel, MARKER)).isSymbolicLink())) throw new Error(`${doel}: niet door beleid gemarkeerd of marker is symlink`);
   regels.push(`${existsSync(doel) ? "vervang" : "installeer"} ${doel}`);
   if (droog) return;
   if (existsSync(doel)) { const back = `${doel}.voor-beleid`; rmSync(back, { recursive: true, force: true }); renameSync(doel, back); }
@@ -27,7 +28,7 @@ export function installeer(o: Opties) {
   return regels;
 }
 if (import.meta.main) {
-  const a = process.argv.slice(2); const doel = a[a.indexOf("--doel") + 1];
-  if (!doel) throw new Error("--doel ontbreekt");
+  const a = process.argv.slice(2); const i = a.indexOf("--doel"); const doel = i < 0 ? undefined : a[i + 1];
+  if (i < 0 || !doel || a.some((v, n) => !["--doel", "--droog", "--controle"].includes(v) && n !== i + 1)) throw new Error("gebruik: --doel <map> [--droog] [--controle]");
   for (const r of installeer({ doel, droog: a.includes("--droog"), controle: a.includes("--controle") })) console.log(`${a.includes("--droog") ? "DROOG" : "OK"} ${r}`);
 }

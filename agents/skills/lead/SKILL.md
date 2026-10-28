@@ -45,7 +45,7 @@ wat hij moet doen. Nooit een agentrapport doorplakken; vat samen en controleer.
 | Nieuwe sessie (**[Claude]** `scripts/lead/spawn.sh`) | geen idle sessie vrij en te groot voor een subagent |
 
 Nieuwe sessie: `spawn.sh --t3 --naam <n> --opdracht <bestand> --map <eigen worktree> [--model sonnet]`;
-zonder `--t3` in tmux als de T3-server niet draait. Details: `references/sessies-en-oogst.md`.
+zonder `--t3` in tmux als de T3-server niet draait. Wekelijkse oogst: `references/oogst.md`.
 - **`--map` bepaalt de tools.** MCP-servers met local scope (bv. mega-challenge, alleen voor
   `~/Desktop/LAB-BAWUAH`) zijn er alleen in die map. Start de sessie waar haar tools zijn.
 - **`--lead` is je echte naam.** Niet met `lead <onderwerp>` gestart? Neem de naam bovenaan `ListAgents`.

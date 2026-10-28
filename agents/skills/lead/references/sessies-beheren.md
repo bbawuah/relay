@@ -68,5 +68,5 @@ exacte commando (`! <commando>`) en controleer daarna zelf (launchctl, health-en
 
 Kies bij elke correctie de hoogste trede: architectuur (fout onmogelijk maken), poortstap of lint,
 regel in `AGENTS.md` met wat hem afdwingt, en pas als laatste review. Een soort fout telt na twee keer
-dezelfde oorzaak. Plan: `~/vault-b-status/flowplan/PLAN.md`. Wekelijkse oogst: `sessies-en-oogst.md`.
+dezelfde oorzaak. Plan: `~/vault-b-status/flowplan/PLAN.md`. Wekelijkse oogst: `oogst.md`.
 Opdrachten met een zichtbare wijziging aan tmux of watchparty eisen `bun run bekijk <app>` vóór "klaar".

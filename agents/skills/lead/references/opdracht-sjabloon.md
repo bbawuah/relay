@@ -79,6 +79,7 @@ Je mag subagents inzetten (<worktree of niet>); jij reviewt hun werk.   ← alle
 ## Overdracht
 Klaar als: <een controle die een ander kan draaien: poort groen + PR open, of "Brian ziet X op de telefoon">
 Stop als: <een bevroren bestand moet wijzigen | een check faalt twee keer | je wacht > 20 min | je mist een tool of recht>
+Een weigering die zelf de toegestane vorm noemt, herhaal je één keer in die vorm; stop pas als ook dat geweigerd wordt of als de melding geen correctie noemt.
 Meld aan: de lead via SendMessage; lukt dat niet, schrijf `~/vault-b-status/<onderwerp>/STATUS.md`.
 Start in: <map> · Nodig: <tools/MCP-servers>. Eerste stap: controleer dat ze er zijn; zo niet, meteen melden en stoppen.
 Gegevens die je meekrijgt (elk stuk met bron en status, sleutels precies zoals de volgende stap ze vraagt):

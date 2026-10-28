@@ -1,7 +1,7 @@
 # Sub-lead (concept voor ~/.claude/skills/lead/references/sublead.md)
 
 Een sub-lead is een sessie die een reeks taken uit haar eigen contract zelf rondt (bouw, review, herstel) en de lead alleen de uitkomst meldt. Zo groeit de context van de lead met één korte regel per taak, niet met elk rapport.
-Start: `scripts/lead/spawn.sh --t3 --sublead --naam <n> --opdracht <contract> --lead <lead> --map <eigen worktree>` (standaard in T3 Code, zie `sessies-en-oogst.md`; zonder `--t3` in tmux).
+Start: `scripts/lead/spawn.sh --sublead --naam <n> --opdracht <contract> --lead <lead> --map <eigen worktree>`.
 
 ## Stappenplan (Agent-tool, standaard)
 1. Lees het contract en de vaste grenzen (CONTRACT.md). Zet de taken in een lijst met per taak: id, tak, opdracht (bezit-bestanden erbij) en of de diff zwaar is (zie 3).
