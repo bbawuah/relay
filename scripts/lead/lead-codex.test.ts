@@ -38,8 +38,6 @@ beforeEach(() => {
   git(repo, "commit", "-q", "-m", "init");
   git(repo, "worktree", "add", "-q", "-b", "lead/test", werkboom);
   Bun.spawnSync(["mkdir", bin]);
-  writeFileSync(join(bin, "bun"), "#!/bin/sh\nexit ${FAKE_BUN_CODE:-0}\n");
-  chmodSync(join(bin, "bun"), 0o755);
   writeFileSync(
     join(bin, "codex"),
     `#!/bin/sh
@@ -49,6 +47,19 @@ printf 'home=%s\\nrole=%s\\nnaam=%s\\nlead=%s\\nargs=%s\\n' "$CODEX_HOME" "$LAB_
 `,
   );
   chmodSync(join(bin, "codex"), 0o755);
+  writeFileSync(
+    join(bin, "bun"),
+    `#!/bin/sh
+if [ "\${FAKE_VERWACHT_PROFIEL:-}" = 1 ]; then
+  test "$1" = "$FAKE_CONTROLE" || exit 91
+  test -f "$2" || exit 92
+  grep -Fx 'sandbox_mode = "danger-full-access"' "$2" >/dev/null || exit 93
+  grep -Fx 'approval_policy = "on-request"' "$2" >/dev/null || exit 94
+fi
+exit \${FAKE_BUN_CODE:-0}
+`,
+  );
+  chmodSync(join(bin, "bun"), 0o755);
 });
 afterEach(() => rmSync(dir, { recursive: true, force: true }));
 
@@ -90,6 +101,18 @@ describe("lead-codex.sh", () => {
     expect(login.exitCode).toBe(1);
     expect(login.stderr.toString()).toContain("geen Codex-inlog");
     expect(existsSync(join(staat, "identiteit"))).toBe(false);
+  });
+
+  test("start met een danger-full-access-profiel zonder CLI-sandboxomweg", () => {
+    const profiel = join(dir, ".codex-lead");
+    mkdirSync(profiel, { recursive: true });
+    writeFileSync(join(profiel, "config.toml"), 'sandbox_mode = "danger-full-access"\napproval_policy = "on-request"\n');
+    const r = run({ FAKE_VERWACHT_PROFIEL: "1", FAKE_CONTROLE: join(import.meta.dir, "hooks", "codex-controle.ts") });
+    expect(r.exitCode).toBe(0);
+    const regels = readFileSync(log, "utf8");
+    expect(regels).toContain(`home=${profiel}`);
+    expect(regels).toContain(`args=-C ${realpathSync(dirname(werkboom))} start-opdracht`);
+    expect(regels).not.toContain("--sandbox");
   });
 
   test("de werkruimte-identiteit bindt aan één SessionStart; hoofdcheckout en zusterworktree krijgen geen lek", () => {

@@ -78,6 +78,17 @@ describe("installeer-skills", () => {
     expect(r.join("\n")).toContain("+ ");
     expect(readFileSync(join(claude, "lead", "SKILL.md"), "utf8")).toBe(voor);
   });
+  test("droog toont ook een bestandsdiff in references zonder het doel te wijzigen", () => {
+    installeer(opties(claude));
+    writeFileSync(join(claude, "lead", "references", "hulp.md"), "oud hulpmiddel\n");
+    const voor = readFileSync(join(claude, "lead", "references", "hulp.md"), "utf8");
+    const r = installeer(opties(claude, { droog: true })).join("\n");
+    expect(r).toContain(`--- ${join(claude, "lead", "references", "hulp.md")}`);
+    expect(r).toContain(`+++ ${join(repo, "lead", "references", "hulp.md")}`);
+    expect(r).toContain("- oud hulpmiddel");
+    expect(r).toContain("+ hulp");
+    expect(readFileSync(join(claude, "lead", "references", "hulp.md"), "utf8")).toBe(voor);
+  });
   test("controle meldt drift zonder te installeren", () => {
     installeer(opties(claude));
     writeFileSync(join(claude, "lead", "SKILL.md"), "afwijkend\n");
@@ -86,6 +97,28 @@ describe("installeer-skills", () => {
     expect(r.join("\n")).toContain("drift");
     expect(r.join("\n")).toContain("lead");
     expect(readFileSync(join(claude, "lead", "SKILL.md"), "utf8")).toBe(voor);
+  });
+  test("controle meldt een eigen ongemarkeerde skillmap als info, zonder drift of schrijven", () => {
+    installeer(opties(claude));
+    mkdirSync(join(claude, "oude-skill")); writeFileSync(join(claude, "oude-skill", "SKILL.md"), "eigen\n");
+    const voor = readFileSync(join(claude, "oude-skill", "SKILL.md"), "utf8");
+    const r = installeer(opties(claude, { controle: true })).join("\n");
+    expect(r).toContain("info onbeheerd oude-skill");
+    expect(r).not.toContain("drift");
+    expect(readFileSync(join(claude, "oude-skill", "SKILL.md"), "utf8")).toBe(voor);
+  });
+  test("controle-CLI laat eigen ongemarkeerde map door, maar weigert een vreemde gemarkeerde map", () => {
+    const doel = join(dir, "cli", "skills");
+    installeer({ doel, repo: join(import.meta.dir, "../../..", "agents/skills"), lokaal: join(dir, "lege-vault") });
+    mkdirSync(join(doel, "react-grab"));
+    const info = cliControle(doel);
+    expect(info.exitCode).toBe(0);
+    expect(info.stdout.toString()).toContain("info onbeheerd react-grab");
+    mkdirSync(join(doel, "vreemd")); writeFileSync(join(doel, "vreemd", marker), "{}\n");
+    const drift = cliControle(doel);
+    expect(drift.exitCode).not.toBe(0);
+    expect(drift.stdout.toString()).toContain("drift");
+    expect(drift.stdout.toString()).toContain("vreemd");
   });
   test("controle-CLI is nul bij gelijkheid en niet-nul met skillnaam bij drift, zonder schrijven", () => {
     const doel = join(dir, "cli", "skills");
@@ -115,13 +148,20 @@ describe("installeer-skills", () => {
     expect(existsSync(join(claude, ".system"))).toBe(true);
     expect(existsSync(join(claude, "synced"))).toBe(true);
   });
-  test("vervangt alleen een eigen gemarkeerde map met backup buiten skills en laat bronnen ongemoeid", () => {
+  test("bewaart elke backup buiten skills en laat eerdere backups ongemoeid", () => {
     installeer(opties(claude));
     writeFileSync(join(claude, "lead", "SKILL.md"), "oud\n");
     const bron = readFileSync(join(repo, "lead", "SKILL.md"), "utf8");
     installeer(opties(claude));
     expect(existsSync(join(claude, "lead.voor-beleid"))).toBe(false);
-    expect(readFileSync(join(dir, "claude", ".lab-beleid-backups", "lead", "SKILL.md"), "utf8")).toBe("oud\n");
+    const backups = readdirSync(join(dir, "claude", ".lab-beleid-backups")).filter((naam) => naam.startsWith("lead.voor-beleid-"));
+    expect(backups).toHaveLength(1);
+    expect(readFileSync(join(dir, "claude", ".lab-beleid-backups", backups[0]!, "SKILL.md"), "utf8")).toBe("oud\n");
+    writeFileSync(join(claude, "lead", "SKILL.md"), "nieuwer oud\n");
+    installeer(opties(claude));
+    const tweede = readdirSync(join(dir, "claude", ".lab-beleid-backups")).filter((naam) => naam.startsWith("lead.voor-beleid-"));
+    expect(tweede).toHaveLength(2);
+    expect(tweede.some((naam) => readFileSync(join(dir, "claude", ".lab-beleid-backups", naam, "SKILL.md"), "utf8") === "oud\n")).toBe(true);
     expect(readFileSync(join(claude, "lead", "SKILL.md"), "utf8")).toBe(bron);
     expect(readFileSync(join(repo, "lead", "SKILL.md"), "utf8")).toBe(bron);
   });
