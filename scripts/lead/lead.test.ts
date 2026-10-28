@@ -10,7 +10,6 @@ import { dirname, join } from "node:path";
 import { identiteitEnv } from "./hooks/codex-wrap";
 import { GELIJK_AAN_REPO } from "./hooks/codex-controle";
 import { commando } from "./hooks/codex-installeer";
-import { spawnCArgs } from "./beleid/codex-werker";
 
 const SPAWN = join(import.meta.dir, "spawn.sh");
 const MERGE = join(import.meta.dir, "merge.sh");
@@ -1282,9 +1281,8 @@ describe("spawn.sh --vendor codex", () => {
     LAB_LEAD_STAAT: staat,
     ...extra,
   });
-  // Een T3-codex-thread weigert zonder --zonder-sandbox; de meeste tests gaan daar niet over, dus zet de helper hem erbij (`geenSandboxVlag`: niet).
-  const codex = (args: string[], extra: Record<string, string> = {}, naam = "cx1", geenSandboxVlag = false) =>
-    draai(SPAWN, ["--naam", naam, "--opdracht", opdracht(), "--lead", "lead-x", "--vendor", "codex", ...(args.includes("--t3") && !geenSandboxVlag ? ["--zonder-sandbox"] : []), ...args], basis(extra));
+  const codex = (args: string[], extra: Record<string, string> = {}, naam = "cx1") =>
+    draai(SPAWN, ["--naam", naam, "--opdracht", opdracht(), "--lead", "lead-x", "--vendor", "codex", ...args], basis(extra));
   const idDir = () => join(staat, "identiteit");
   const idBestanden = () => (existsSync(idDir()) ? readdirSync(idDir()) : []);
 
@@ -1358,95 +1356,14 @@ exit 1
     expect(zonder.uit).not.toContain("mcp_servers.peers");
   });
 
-  test("sandbox: tmux start de werker met een permissieprofiel (netwerk uit, -a never); de gedeelde .git is niet als geheel schrijfbaar", () => {
-    writeFileSync(join(dir, "pane.txt"), "Ask Codex\n• Ran ls\n");
-    const r = codex(["--map", wt, "--droog"], { TMPDIR: join(dir, "sbtmp") });
-    const gem = realpathSync(join(repo, ".git"));
-    const eigen = realpathSync(join(gem, "worktrees", "eigen-worktree"));
-    expect(r.uit).toContain(" -a never ");
-    expect(r.uit).toContain(`-c 'default_permissions="lab-werker"'`);
-    expect(r.uit).toContain(`-c 'permissions.lab-werker.network={enabled=false}'`);
-    expect(r.uit).not.toContain("enabled=true");
-    const fs = /-c 'permissions\.lab-werker\.filesystem=\{([^']*)\}'/.exec(r.uit)?.[1] ?? "";
-    const regels = fs.split(",").map((x) => x.replace(/"/g, ""));
-    const heeft = (pad: string, toegang: string) => regels.includes(`${pad}=${toegang}`);
-    for (const d of ["objects", "refs", "logs"]) expect(heeft(`${gem}/${d}`, "write")).toBe(true);
-    expect(heeft(eigen, "write")).toBe(true);
-    for (const f of ["commondir", "gitdir", "config.worktree"]) expect(heeft(`${eigen}/${f}`, "read")).toBe(true);
-    expect(heeft(realpathSync(wt), "write")).toBe(true);
-    // nooit de hele common .git, hooks of config als schrijfbaar
-    for (const pad of [gem, `${gem}/hooks`, `${gem}/config`, `${gem}/info`, `${gem}/worktrees`]) expect(regels.some((x) => x === `${pad}=write`)).toBe(false);
-    // sleutelmappen onleesbaar
-    expect(regels.some((x) => x.endsWith("/.config/klaarover=none"))).toBe(true);
-    // ~/.codex als geheel dicht, met een paar leesmappen erin weer open (een diepere regel wint)
-    expect(regels.some((x) => x.endsWith("/.codex=none"))).toBe(true);
-    expect(regels.some((x) => x.endsWith("/.codex/skills=read"))).toBe(true);
-    // de standalone codex-binary staat in ~/.codex/packages; dicht laat de sandboxhelper van Codex hem niet starten (echte demo, 27 okt)
-    expect(regels.some((x) => x.endsWith("/.codex/packages=read"))).toBe(true);
-    expect(regels.some((x) => x.endsWith("/.codex/sessions=none") || x.endsWith("/.codex/auth.json=none"))).toBe(false);
-  });
-
-  test("sandbox: de drie -c-waarden blijven byte-gelijk aan de gedeelde beleidsgenerator", () => {
-    const gem = realpathSync(join(repo, ".git"));
-    const eigen = realpathSync(join(gem, "worktrees", "eigen-worktree"));
-    for (const netwerk of [false, true]) {
-      const r = codex(["--map", wt, ...(netwerk ? ["--netwerk"] : []), "--droog"], { TMPDIR: join(dir, "sbtmp") });
-      const werkelijk = [...r.uit.matchAll(/-c '((?:default_permissions|permissions\.)[^']*)'/g)].map((m) => m[1]);
-      expect(werkelijk).toEqual(
-        spawnCArgs({
-          worktree: realpathSync(wt), gitCommon: gem, gitDir: eigen, home: realpathSync(process.env.HOME!), tmp: realpathSync(werkWortel()), naam: "cx1", codexHome, netwerk,
-        }),
-      );
-    }
-  });
-
-  test("sandbox: een bunfig.toml of BUN_OPTIONS in de werkmap van de aanroeper raakt de beleidsgenerator niet", () => {
-    const marker = join(dir, "preload-gedraaid");
-    const preload = join(dir, "preload.ts");
-    // Alleen de generator telt; andere bun-aanroepen van spawn.sh vallen buiten deze test.
-    writeFileSync(preload, `if (process.argv.some((a) => a.includes("codex-werker"))) require("node:fs").writeFileSync(${JSON.stringify(marker)}, "ja");\n`);
-    writeFileSync(join(repo, "bunfig.toml"), `preload = [${JSON.stringify(preload)}]\n`);
-    try {
-      const r = codex(["--map", wt, "--droog"], { TMPDIR: join(dir, "sbtmp"), BUN_OPTIONS: `--preload ${preload}`, NODE_OPTIONS: `--require ${preload}` });
-      expect(r.uit).toContain("default_permissions");
-      expect(existsSync(marker)).toBe(false);
-    } finally {
-      rmSync(join(repo, "bunfig.toml"), { force: true });
-    }
-  });
-
-  test("sandbox: een falende profielgenerator weigert droog zonder -c-uitvoer", () => {
-    const kopie = join(dir, "lead-kopie");
-    cpSync(import.meta.dir, kopie, { recursive: true });
-    writeFileSync(join(kopie, "beleid", "codex-werker.ts"), `
-console.log('default_permissions="lab-werker"');
-console.log('permissions.lab-werker.filesystem={"/"="read"}');
-console.log('permissions.lab-werker.network={enabled=false}');
-process.exit(1);
-`);
-    const r = draai(join(kopie, "spawn.sh"), ["--naam", "cx1", "--opdracht", opdracht(), "--lead", "lead-x", "--vendor", "codex", "--map", wt, "--droog"], basis({ TMPDIR: join(dir, "sbtmp") }));
-    expect(r.code).not.toBe(0);
-    expect(r.uit).not.toContain(" -c '");
-  });
-
-  test("sandbox: een pad met een quote of backslash weigert spawn (nooit een halve sandbox)", () => {
-    const slecht = join(dir, "slecht'pad");
-    mkdirSync(slecht);
-    const r = draai(SPAWN, ["--naam", "cx1", "--opdracht", opdracht(), "--lead", "lead-x", "--vendor", "codex", "--map", wt, "--droog"], basis({ HOME: slecht }));
-    expect(r.code).toBe(1);
-    expect(r.fout).toMatch(/kan niet in de sandbox-config/);
-  });
-
-  test("sandbox: --t3 met --vendor codex weigert zonder --zonder-sandbox, ook met --droog; met de vlag start hij", () => {
-    for (const extra of [["--t3"], ["--t3", "--droog"]]) {
-      const r = codex(["--map", wt, ...extra], {}, "cx1", true);
-      expect(r.code).toBe(1);
-      expect(r.fout).toMatch(/weigert.*--zonder-sandbox/);
-      expect(r.fout).toMatch(/alleen op aanwijzing van Brian/);
-    }
-    expect(idBestanden()).toEqual([]);
-    expect(log("t3.log")).toBe("");
-    expect(codex(["--map", wt, "--t3", "--droog"]).code).toBe(0); // de helper zet --zonder-sandbox erbij
+  // test-weg: vijf tests voor het verwijderde runtime-sandboxprofiel zijn vervangen door deze afwezigheidscontrole.
+  test("tmux voegt geen runtime-sandboxprofiel of approval-override toe; T3 start zonder ontsnappingsvlag", () => {
+    const tmux = codex(["--map", wt, "--droog"]);
+    expect(tmux.code).toBe(0);
+    for (const verboden of ["default_permissions", "permissions.lab-werker", " -a never", "TMPDIR="]) expect(tmux.uit).not.toContain(verboden);
+    const t3 = codex(["--map", wt, "--t3", "--droog"]);
+    expect(t3.code).toBe(0);
+    expect(t3.fout).not.toMatch(/zonder-sandbox/);
   });
 
   // Echte afdwinging: het profiel uit spawn.sh in een echte Codex (seatbelt), met een nep-Responses-server die één shellcommando
