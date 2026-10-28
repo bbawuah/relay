@@ -31,7 +31,7 @@ function diffs(bron: string, doel: string): string[] {
   if (!existsSync(doel)) {
     const stat = lstatSync(bron);
     if (stat.isDirectory()) return readdirSync(bron).filter((n) => n !== MARKER).flatMap((n) => diffs(join(bron, n), join(doel, n)));
-    return diffTekst("/dev/null", bron, "", readFileSync(bron, "utf8"));
+    return [diffTekst("/dev/null", bron, "", readFileSync(bron, "utf8"))];
   }
   const bs = lstatSync(bron); const ds = lstatSync(doel);
   if (bs.isDirectory() && ds.isDirectory()) return [...new Set([...readdirSync(bron), ...readdirSync(doel)])]
