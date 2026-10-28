@@ -316,14 +316,15 @@ schrijf_identiteit() {
 #  2. De Codex-config heeft de grenzen-hook (grenzen.sh) mét een geldige trusted_hash; zonder draait hij stil niet.
 CODEX_HOME_GEKOZEN=""
 codex_controles() {
-  CODEX_HOME_GEKOZEN="${CODEX_HOME:-$HOME/.codex}"
-  case $CODEX_HOME_GEKOZEN in /*) ;; *) CODEX_HOME_GEKOZEN="$PWD/$CODEX_HOME_GEKOZEN" ;; esac
+  CODEX_HOME_GEKOZEN="$HOME/.codex-werker"
   local cfg="$CODEX_HOME_GEKOZEN/config.toml" uit rc
+  [ -d "$CODEX_HOME_GEKOZEN" ] || fout "--vendor codex: werker-home ontbreekt: $CODEX_HOME_GEKOZEN. Draai het uitrolcommando voor ~/.codex-werker"
   eigen_worktree || fout "--vendor codex eist een eigen worktree als --map (git worktree add), niet de hoofdcheckout of een map zonder eigen worktree: $map"
   if [ -e "$map/.codex" ] || [ -L "$map/.codex" ]; then
     fout "--vendor codex weigert: $map/.codex bestaat (getrackt of niet). Codex laadt <worktree>/.codex/config.toml bij de start; zijn mcp_servers draaien buiten de sandbox en hij kan het profiel aanvullen. Haal de map weg of start in een andere worktree"
   fi
   command -v "$BUN" >/dev/null 2>&1 || fout "--vendor codex heeft bun nodig om de grenzen-hook in $cfg te controleren"
+  CODEX_HOME="$CODEX_HOME_GEKOZEN" codex login status >/dev/null 2>&1 || fout "--vendor codex: login ontbreekt of faalt in $CODEX_HOME_GEKOZEN. Draai: CODEX_HOME=~/.codex-werker codex login"
   # In T3 kan hosted web search niet per thread uit (geen -c); dan moet de config het zelf niet aanzetten (--web-search).
   # Exit 1 = de grenzen-hook ontbreekt of is niet vertrouwd; exit 3 = web search staat aan (alleen met --web-search).
   rc=0
@@ -495,7 +496,8 @@ if [ "$vendor" = codex ]; then
   # Hosted web search uit voor werkers (de uitkomst loopt langs geen hook); --search nooit meegeven. In T3 kan dit niet per
   # thread: codex_controles weigert daar als de config het aanzet. Het -c zet de TUI in embedded mode (zoals de MCP-c's).
   [ "$t3" = 1 ] || cmd="$cmd -c 'web_search=\"disabled\"'"
-  # De peers-MCP alleen voor deze sessie (-c), nooit globaal in ~/.codex.
+  # De peers-MCP blijft per spawn (-c), nooit in ~/.codex-werker: de home is een gedeeld, vertrouwd profiel;
+  # de identiteit en de lead horen uitsluitend bij deze sessie, net als bij Claude.
   if [ "$t3" = 1 ]; then
     :   # een T3-thread krijgt geen -c per thread: de peers-MCP leest de identiteit uit <staat>/identiteit (zie peers/server.ts)
   elif [ -f "$server" ] && [ -n "$bun_abs" ] && [[ $server$bun_abs != *"'"* && $server$bun_abs != *'"'* ]]; then

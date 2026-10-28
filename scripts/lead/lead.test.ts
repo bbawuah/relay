@@ -1268,7 +1268,7 @@ describe("spawn.sh --vendor codex", () => {
   };
   const basis = (extra: Record<string, string> = {}) => ({
     LAB_WERKER_TMPWORTEL: werkWortel(),
-    CODEX_HOME: codexHome,
+    HOME: join(dir, "home"),
     LAB_SPAWN_SCRIPT: join(bin, "nep-agent-spawn.sh"),
     LAB_SPAWN_POLS: "0",
     LAB_SPAWN_WACHT: "0",
@@ -1288,10 +1288,17 @@ describe("spawn.sh --vendor codex", () => {
 
   beforeEach(() => {
     staat = join(dir, "staat");
-    codexHome = join(dir, "codex-home");
+    codexHome = join(dir, "home", ".codex-werker");
     schrijfConfig();
     wt = join(dir, "eigen-worktree");
     git(repo, "worktree", "add", "-q", "-b", "werk", wt);
+    schrijfBin(
+      "codex",
+      `#!/usr/bin/env bash
+if [ "$1 $2" = "login status" ]; then exit 0; fi
+exit 1
+`,
+    );
     schrijfBin(
       "t3",
       `#!/usr/bin/env bash
@@ -1341,6 +1348,16 @@ exit 1
     expect(r.uit).toContain("schrijf de identiteit (naam=cx1 rol=agent)");
     expect(idBestanden()).toEqual([]); // droog schrijft niets
     expect(log("spawn.log")).toBe("");
+  });
+
+  test("werker-home: ontbrekend of ongeldige config weigert; de start pinnt ~/.codex-werker", () => {
+    rmSync(codexHome, { recursive: true, force: true });
+    expect(codex(["--map", wt, "--droog"]).fout).toMatch(/werker-home ontbreekt/);
+    mkdirSync(codexHome, { recursive: true });
+    expect(codex(["--map", wt, "--droog"]).fout).toMatch(/Codex-config niet in orde/);
+    schrijfConfig();
+    const r = codex(["--map", wt, "--droog"]);
+    expect(r.uit).toContain(`CODEX_HOME=${codexHome} codex -C ${wt}`);
   });
 
   test("tmux: de peers-MCP gaat per spawn mee als -c met een statische env-tabel, nooit als env_vars", () => {
