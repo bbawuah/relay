@@ -7,8 +7,10 @@ export const LOKALE_SKILLS = ["naar-mod", "tailnet", "vault", "scrawl"] as const
 
 export type Opties = { doel: string; repo?: string; lokaal?: string; droog?: boolean; controle?: boolean };
 const veilig = (n: string) => /^[a-z][a-z0-9-]*$/.test(n) && n !== ".system" && n !== "synced";
+function geenSymlink(p: string): void { const s = lstatSync(p); if (s.isSymbolicLink()) throw new Error(`${p}: symlinks zijn niet toegestaan`); if (s.isDirectory()) for (const e of readdirSync(p)) geenSymlink(join(p, e)); }
 function kopieer(bron: string, doel: string, droog: boolean, regels: string[]) {
   if (!existsSync(join(bron, "SKILL.md"))) throw new Error(`${bron}: SKILL.md ontbreekt`);
+  geenSymlink(bron);
   if (lstatSync(bron).isSymbolicLink() || lstatSync(join(bron, "SKILL.md")).isSymbolicLink()) throw new Error(`${bron}: symlinks zijn niet toegestaan`);
   if (existsSync(doel) && (!existsSync(join(doel, MARKER)) || lstatSync(join(doel, MARKER)).isSymbolicLink())) throw new Error(`${doel}: niet door beleid gemarkeerd of marker is symlink`);
   regels.push(`${existsSync(doel) ? "vervang" : "installeer"} ${doel}`);

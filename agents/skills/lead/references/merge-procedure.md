@@ -1,6 +1,6 @@
 # Merge-procedure (LAB-BAWUAH-monorepo)
 
-Repo: `~/Desktop/LAB-BAWUAH/lab-bawuah`, GitHub `bbawuah/LAB-BAWUAH`. `main` is beschermd:
+Repo: de hoofdcheckout, GitHub `bbawuah/LAB-BAWUAH`. `main` is beschermd:
 PR verplicht, verplichte check `poort` (GitHub Actions), tak moet up-to-date zijn met main (strict, sinds 5 okt), geen force-push, geen bypass.
 Pre-push-hook draait `bun run check` (de poort zonder e2e).
 
@@ -10,7 +10,7 @@ Laat een aparte subagent (`model: "sonnet"`, zonder worktree, alleen lezen) de P
 voordat je merget. Hij krijgt **alleen**: `gh pr diff <n>`, de regeltabel in `AGENTS.md`, het
 `CONTRACT.md` van het spoor of de app, en de PR-body. Niet het plan, niet je gesprek. Prompt:
 
-> Je bent reviewer van PR <n> in ~/Desktop/LAB-BAWUAH/lab-bawuah. Lees alleen `gh pr diff <n>`,
+> Je bent reviewer van PR <n> in de hoofdcheckout. Lees alleen `gh pr diff <n>`,
 > `gh pr view <n>`, AGENTS.md (regeltabel) en <pad>/CONTRACT.md. Meld per bevinding: regel of
 > contractpunt, bestand:regel, wat er mis is, en of het blokkeert. Ook: bestanden buiten het
 > bezit van het spoor, nieuwe "niets"-regels die een check verdienen, workarounds zonder datum.
@@ -22,16 +22,16 @@ noteer je voor de oogst (SKILL.md §9a). Een PR die alleen docs of de vault raak
 ## Eén PR
 
 ```bash
-cd ~/Desktop/LAB-BAWUAH/lab-bawuah && git fetch -q origin
+cd <hoofdcheckout> && git fetch -q origin
 gh pr view <n> --json files,baseRefName,mergeable --jq '...'      # scope controleren
 gh pr update-branch <n>                                           # achterstand op main weg
-W=~/Desktop/LAB-BAWUAH/lab-bawuah-poort-<n>
+W=../lab-bawuah-poort-<n>
 git worktree add -q --detach $W origin/<tak>
-(cd $W && bun install >/dev/null && ln -sf ~/Desktop/LAB-BAWUAH/lab-bawuah/apps/site/.env.local apps/site/.env.local && bun run poort)
+(cd $W && bun install --ignore-scripts >/dev/null && bun run poort)
 git worktree remove --force $W
 gh pr checks <n> --watch --interval 15   # na update-branch: wacht op de NIEUWE run
 gh pr comment <n> --body "Lead-review: akkoord … poortuitslag … wie akkoord gaf"
-gh pr merge <n> --merge
+LAB_AGENT_ROL=lead scripts/lead/merge.sh <n>
 git pull --ff-only origin main && git push origin --delete <tak>
 ```
 
