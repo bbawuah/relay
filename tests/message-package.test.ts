@@ -3,6 +3,7 @@ import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, 
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { install, messageRuntimeFiles, MESSAGE_RUNTIME_DIRECTORIES, MESSAGE_RUNTIME_FILES } from "../src/install";
+import { bunArgs } from "../src/runtime";
 
 const ROOT = resolve(import.meta.dir, "..");
 const BASELINE = "567767912dd6d9845d20f279e25f0f51e6cece40";
@@ -33,6 +34,9 @@ test("actual runtime has a closed message-only import graph and no retired produ
   const files = messageRuntimeFiles(ROOT);
   expect(files).toContain("src/cli.ts");
   expect(files).toContain("src/mcp/server.ts");
+  expect(files).toContain("src/migration/index.ts");
+  expect(files).toContain("src/migration/ledger.ts");
+  expect(files).toContain("src/migration/source.ts");
   for (const path of ["scripts/lead", "agents", "src/launch.ts", "src/identity.ts", "src/session-child.ts", "relay.toml"]) expect(existsSync(join(ROOT, path))).toBe(false);
   expect(files.some((file) => file.startsWith("scripts/") || file.startsWith("agents/") || file.endsWith(".test.ts"))).toBe(false);
 });
@@ -55,6 +59,31 @@ test("installed copy contains exactly validated runtime files and explicit docs;
   expect(existsSync(join(home, ".claude"))).toBe(false);
   expect(existsSync(join(home, ".codex"))).toBe(false);
   expect(existsSync(join(home, ".local/state"))).toBe(false);
+  expect(existsSync(join(target, "docs/message-migration.md"))).toBe(true);
+});
+
+test("installed migration module loads its copied dependencies and imports disposable legacy data", () => {
+  const root = scratch(), home = join(root, "home"), prefix = join(root, "prefix");
+  mkdirSync(home);
+  const source = join(root, "old"), destination = join(root, "new");
+  const message = { id: "package-legacy", van: "Alice", naar: "Bob", draad: "package-conversation", ts: "2026-10-01T12:00:00.000Z", tekst: "installed migration", hop: 1, herkomst: "schoon", soort: "bericht" };
+  const input = JSON.stringify(message) + "\n";
+  put(source, "peers/inbox/bob.jsonl", input);
+  install(["--prefix", prefix], { HOME: home, PATH: process.env.PATH });
+  const driver = join(root, "migration-smoke.ts");
+  writeFileSync(driver, `import { migrateLegacy } from ${JSON.stringify(join(prefix, "lib/relay/src/migration/index.ts"))};\nconsole.log(JSON.stringify(migrateLegacy(${JSON.stringify({ sourceDir: source, destinationDir: destination, namespace: "local", sourceQuiesced: true, held: "quarantine" })})));\n`);
+  const result = Bun.spawnSync([process.execPath, ...bunArgs(driver)], { cwd: root, env: { HOME: home, PATH: process.env.PATH! }, stdin: "ignore", stdout: "pipe", stderr: "pipe", timeout: 10_000 });
+  expect(result.exitCode, result.stderr.toString()).toBe(0);
+  const report = JSON.parse(result.stdout.toString());
+  expect(report.completed).toBe(true); expect(report.importedThisRun).toBe(1);
+  expect(readFileSync(join(source, "peers/inbox/bob.jsonl"), "utf8")).toBe(input);
+  expect(existsSync(join(destination, "messages.sqlite"))).toBe(true);
+});
+
+test("migration code receives the same retired-import validation as the rest of the runtime", () => {
+  const root = boundaryFixture();
+  put(root, "src/migration/index.ts", 'import "../../scripts/lead/peers/bus";\n');
+  expect(() => messageRuntimeFiles(root)).toThrow("retired or missing");
 });
 
 for (const path of ["../scripts/lead/peers/bus", "./launch", "./identity", "./session-child", "third-party"]) {

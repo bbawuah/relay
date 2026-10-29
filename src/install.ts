@@ -13,7 +13,7 @@ export const MESSAGE_RUNTIME_FILES = [
   "bin/relay.ts", "src/cli.ts", "src/environment.ts", "src/install.ts", "src/runtime.ts", "package.json",
 ] as const;
 export const MESSAGE_RUNTIME_DIRECTORIES = [
-  "src/messages", "src/directory", "src/storage", "src/dispatch", "src/adapters",
+  "src/messages", "src/directory", "src/storage", "src/dispatch", "src/adapters", "src/migration",
 ] as const;
 const OPTIONAL_RUNTIME_DIRECTORIES = ["src/app", "src/mcp"] as const;
 const DOCUMENTATION = [

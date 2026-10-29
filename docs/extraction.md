@@ -12,6 +12,11 @@ harness safeguards.
 
 The remainder is historical evidence of the extraction and its then-current tests.
 
+`STATUS-D3.md`, an obsolete developer handoff report containing an old local home
+path, was retired in the E2 package follow-up. It was not runtime or product
+documentation; its historical content remains in Git. Development hooks under
+`.githooks` and their configuration are outside this retirement and remain intact.
+
 Source: `bbawuah/LAB-BAWUAH`, commit `10173799bedfbd712551025301e80925385217cb` (29 October 2026).
 
 Relay builds on the existing local, history-filtered extraction at `6c9bbd12782761da20ced5cc090527711473f8b2`. Its history and portability fixes are retained. The source monorepo and the other local Relay worktrees were not changed. The current Codex-lead MCP identity fix and boundary-hook wording were synchronized from the source.

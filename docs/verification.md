@@ -1,5 +1,39 @@
 # Verification handoff
 
+## E2 package follow-up after independent review R3
+
+29 October 2026. Review `REVIEW-PACKAGE-R3.md` was read from the lead's explicitly
+authorized durable read-only handoff. Its only Medium, M1, is addressed in README
+and configuration: **manual, Claude, Codex and T3 all poll**. The shipped CLI has
+no adapters; `serve` only records deferrals and cannot deliver host notifications.
+Send/read/ack work without notifications. D2 owns the corresponding CLI help and
+doctor correction. The review's other Low findings were not expanded into repairs.
+
+Exact authorized F commit `80c65d95395e5fb79d67961753835c419d4df499` was
+cherry-picked as `66ddcb9` without edits to its three migration modules, test or
+guide. `src/migration` is now an explicit runtime directory, subject to the same
+copy, symlink and import validation as every other module. The package contains
+23 runtime/package files. An injected retired import from the migration directory
+is rejected, and an actual isolated Bun process imports a legacy envelope through
+the installed migration module while preserving the source bytes.
+
+Focused package/install/startup verification passed **56 tests, zero failed,
+2,177 assertions** (`/tmp/relay-e2-package.klGd4I/tests.log`). Bun typecheck passed
+(`/tmp/relay-e2-types.Hyu4SP/typecheck.log`); package-boundary validation passed
+(`/tmp/relay-e2-boundary.XzCraD/boundary.log`). These are targeted checks, not the
+full gate. All runs use disposable HOME/state/prefix/cwd.
+
+README/configuration use the agreed direct `migrate --source DIR
+--source-quiesced --held quarantine|import|skip` interface with global `--state`
+as the new destination. CLI migrate wiring/help changes (D2), store initialization
+(B3) and F's small cutover-guide follow-up remain owner integrations; the installed
+module smoke is not a claim that CLI migration was exercised in this worker.
+
+The explicitly authorized obsolete root `STATUS-D3.md` developer report was
+retired with its reason in `docs/extraction.md`. `.githooks`, hook configuration,
+Git policy, CLI/storage source, package privacy/dependencies and lockfile remain
+unchanged. No full gate, live host/state, global changes, push or subagents.
+
 ## Message package 0.2.0 — E focused verification
 
 29 October 2026, `feat/message-package`, T3-bound worktree
