@@ -15,7 +15,7 @@ export function environment(input: Environment = process.env): Environment {
     if (input[relay]) env[legacy!] = input[relay];
   }
   env.LAB_LEAD_STAAT = resolve(env.LAB_LEAD_STAAT || join(input.HOME || homedir(), ".local", "state", "relay"));
-  // Never inherit arbitrary preload code into helper processes.
+  // Environment injection is separate from startup config; use bunArgs as well.
   delete env.BUN_OPTIONS;
   delete env.NODE_OPTIONS;
   return env;
