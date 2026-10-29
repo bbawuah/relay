@@ -4,8 +4,36 @@ import type { MessageAdapter, Notification, NotifyResult } from "../messages/con
 export const T3_HOST = "t3";
 export const T3_DEFAULT_TIMEOUT_MS = 10_000;
 export const T3_DEFAULT_RETRY_MS = 30_000;
+export const T3_MAX_TIMEOUT_MS = 120_000;
+export const T3_MAX_RETRY_MS = 86_400_000;
+export const T3_MAX_NOTIFICATION_ID_LENGTH = 256;
 
 const THREAD_ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
+
+/**
+ * Every diagnosis the adapter can produce. Nothing from the host, the
+ * transport, a thrown value or the endpoint is ever copied into a diagnosis, so
+ * credentials and unbounded text cannot reach the dispatcher's stored errors.
+ */
+export const T3_DIAGNOSTICS = {
+  nothingUnread: "nothing unread to announce",
+  badNotificationId: "notification has no usable id; cannot derive a stable T3 request ID",
+  badHost: "endpoint host is not t3",
+  badThread: "endpoint has no valid target.threadId",
+  ambiguousBinding: "endpoint sessionId and target.threadId disagree; binding is ambiguous",
+  unreadableBinding: "endpoint binding is unreadable",
+  noTransport: "no authenticated external T3 route configured; mailbox is polled with the peers inbox tool",
+  noRequestId: "T3 route has no stable request ID; a lost reply could duplicate the notice, polling instead",
+  notPendingSafe: "T3 route cannot refuse a notice for a pending user question atomically; polling instead",
+  pendingQuestion: "thread has a pending user question; not notified",
+  timeout: "no T3 answer within the time budget; outcome unknown, retry is idempotent",
+  unknownOutcome: "T3 route returned an unrecognized outcome; will retry",
+  unavailable: "T3 host unavailable; will retry",
+  unauthenticated: "T3 credential missing or expired; will retry",
+  unknownThread: "T3 thread unknown; binding is stale",
+  rejected: "T3 rejected the notice",
+  routeFailed: "T3 route failed with an unclassified error; will retry",
+} as const;
 
 /**
  * What a transport proves about the host route. Both must be true before the
@@ -17,7 +45,7 @@ const THREAD_ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
 export type T3Capabilities = {
   stableRequestId: boolean;
   pendingSafeSend: boolean;
-  /** Tested host version, reported in diagnoses. */
+  /** Tested host version, reported in documentation, never in diagnoses. */
   hostVersion?: string;
 };
 
@@ -46,6 +74,7 @@ export type T3FailureKind =
   /** The host answered but declined for a lasting reason. */
   | "rejected";
 
+/** Only `kind` is used by the adapter; the message is for the transport's own logs. */
 export class T3TransportError extends Error {
   constructor(readonly kind: T3FailureKind, message: string) {
     super(message);
@@ -62,7 +91,9 @@ export interface T3Transport {
 export type T3AdapterOptions = {
   /** Without a transport every notification is unsupported and mailboxes poll. */
   transport?: T3Transport;
+  /** Integer milliseconds, 1..T3_MAX_TIMEOUT_MS. */
   timeoutMs?: number;
+  /** Integer milliseconds, 1..T3_MAX_RETRY_MS. */
   retryAfterMs?: number;
 };
 
@@ -77,23 +108,45 @@ export function t3RequestId(notificationId: string): string {
 
 /** Only an explicit, immutable T3 binding is accepted; never cwd or environment. */
 export function resolveT3Thread(notification: Notification): { threadId: string } | { reason: string } {
-  const { endpoint } = notification;
-  if (endpoint.host !== T3_HOST) return { reason: `endpoint host is ${JSON.stringify(endpoint.host)}, not t3` };
-  const threadId = endpoint.target.threadId;
-  if (typeof threadId !== "string" || !THREAD_ID.test(threadId)) return { reason: "endpoint has no valid target.threadId" };
-  if (endpoint.sessionId !== threadId) return { reason: "endpoint sessionId and target.threadId disagree; binding is ambiguous" };
-  return { threadId };
+  try {
+    const { endpoint } = notification;
+    if (endpoint.host !== T3_HOST) return { reason: T3_DIAGNOSTICS.badHost };
+    const threadId = endpoint.target.threadId;
+    if (typeof threadId !== "string" || !THREAD_ID.test(threadId)) return { reason: T3_DIAGNOSTICS.badThread };
+    if (endpoint.sessionId !== threadId) return { reason: T3_DIAGNOSTICS.ambiguousBinding };
+    return { threadId };
+  } catch {
+    return { reason: T3_DIAGNOSTICS.unreadableBinding };
+  }
 }
 
-function safeDetail(error: unknown): string {
-  const text = error instanceof Error ? error.message : String(error);
-  return text.replace(/\s+/g, " ").replace(/Bearer\s+\S+/gi, "Bearer [redacted]").slice(0, 200);
+function boundedInteger(name: string, value: number | undefined, fallback: number, max: number): number {
+  if (value === undefined) return fallback;
+  if (!Number.isSafeInteger(value) || value < 1 || value > max) {
+    throw new RangeError(`createT3Adapter: ${name} must be an integer from 1 to ${max}`);
+  }
+  return value;
 }
+
+/** Reads only the closed `kind` field; a hostile value falls through to "unclassified". */
+function failureKind(error: unknown): T3FailureKind | null {
+  try {
+    if (error instanceof T3TransportError) {
+      const kind = error.kind;
+      if (kind === "unavailable" || kind === "unauthenticated" || kind === "unknown_thread" || kind === "rejected") return kind;
+    }
+  } catch {
+    // fall through
+  }
+  return null;
+}
+
+const TIMED_OUT = Symbol("t3-timeout");
 
 export function createT3Adapter(options: T3AdapterOptions = {}): MessageAdapter {
-  const { transport } = options;
-  const timeoutMs = options.timeoutMs ?? T3_DEFAULT_TIMEOUT_MS;
-  const retryAfterMs = options.retryAfterMs ?? T3_DEFAULT_RETRY_MS;
+  const transport = options.transport;
+  const timeoutMs = boundedInteger("timeoutMs", options.timeoutMs, T3_DEFAULT_TIMEOUT_MS, T3_MAX_TIMEOUT_MS);
+  const retryAfterMs = boundedInteger("retryAfterMs", options.retryAfterMs, T3_DEFAULT_RETRY_MS, T3_MAX_RETRY_MS);
 
   const unsupported = (detail: string): NotifyResult => ({ status: "unsupported", detail });
   const deferred = (detail: string): NotifyResult => ({ status: "deferred", detail, retryAfterMs });
@@ -102,43 +155,57 @@ export function createT3Adapter(options: T3AdapterOptions = {}): MessageAdapter 
     host: T3_HOST,
     async notify(notification: Notification): Promise<NotifyResult> {
       try {
-        if (!Number.isSafeInteger(notification.unread) || notification.unread < 1) {
-          return unsupported("nothing unread to announce");
+        if (!Number.isSafeInteger(notification.unread) || notification.unread < 1) return unsupported(T3_DIAGNOSTICS.nothingUnread);
+        const notificationId = notification.notificationId;
+        if (typeof notificationId !== "string" || notificationId.length < 1 || notificationId.length > T3_MAX_NOTIFICATION_ID_LENGTH) {
+          return unsupported(T3_DIAGNOSTICS.badNotificationId);
         }
         const bound = resolveT3Thread(notification);
         if ("reason" in bound) return unsupported(bound.reason);
-        if (!transport) {
-          return unsupported("no authenticated external T3 route configured; mailbox is polled with the peers inbox tool");
-        }
+        if (!transport) return unsupported(T3_DIAGNOSTICS.noTransport);
         const { capabilities } = transport;
-        if (!capabilities.stableRequestId) return unsupported("T3 route has no stable request ID; a lost reply could duplicate the notice, polling instead");
-        if (!capabilities.pendingSafeSend) return unsupported("T3 route cannot refuse a notice for a pending user question atomically; polling instead");
+        if (capabilities.stableRequestId !== true) return unsupported(T3_DIAGNOSTICS.noRequestId);
+        if (capabilities.pendingSafeSend !== true) return unsupported(T3_DIAGNOSTICS.notPendingSafe);
 
         const controller = new AbortController();
-        const timer = setTimeout(() => controller.abort(), timeoutMs);
+        let timer: ReturnType<typeof setTimeout> | undefined;
         try {
-          const outcome = await Promise.race([
+          const expired = new Promise<typeof TIMED_OUT>((resolve) => {
+            timer = setTimeout(() => {
+              controller.abort();
+              resolve(TIMED_OUT);
+            }, timeoutMs);
+          });
+          const outcome: unknown = await Promise.race([
             transport.send({
               threadId: bound.threadId,
               text: t3NotificationText(notification.unread),
-              requestId: t3RequestId(notification.notificationId),
+              requestId: t3RequestId(notificationId),
               signal: controller.signal,
             }),
-            new Promise<never>((_, reject) => {
-              controller.signal.addEventListener("abort", () => reject(new T3TransportError("unavailable", `no T3 answer within ${timeoutMs} ms; outcome unknown, retry is idempotent`)), { once: true });
-            }),
+            expired,
           ]);
-          return outcome.status === "accepted" ? { status: "sent" } : deferred("thread has a pending user question; not notified");
+          if (outcome === TIMED_OUT) return deferred(T3_DIAGNOSTICS.timeout);
+          const status = typeof outcome === "object" && outcome !== null ? (outcome as { status?: unknown }).status : undefined;
+          if (status === "accepted") return { status: "sent" };
+          if (status === "pending_request") return deferred(T3_DIAGNOSTICS.pendingQuestion);
+          return deferred(T3_DIAGNOSTICS.unknownOutcome);
         } finally {
           clearTimeout(timer);
         }
       } catch (error) {
-        if (error instanceof T3TransportError) {
-          if (error.kind === "unknown_thread") return unsupported(`T3 thread unknown: ${safeDetail(error)}`);
-          if (error.kind === "rejected") return unsupported(`T3 rejected the notice: ${safeDetail(error)}`);
-          return deferred(`T3 ${error.kind}: ${safeDetail(error)}`);
+        switch (failureKind(error)) {
+          case "unknown_thread":
+            return unsupported(T3_DIAGNOSTICS.unknownThread);
+          case "rejected":
+            return unsupported(T3_DIAGNOSTICS.rejected);
+          case "unauthenticated":
+            return deferred(T3_DIAGNOSTICS.unauthenticated);
+          case "unavailable":
+            return deferred(T3_DIAGNOSTICS.unavailable);
+          default:
+            return deferred(T3_DIAGNOSTICS.routeFailed);
         }
-        return deferred(`T3 route failed: ${safeDetail(error)}`);
       }
     },
   };
