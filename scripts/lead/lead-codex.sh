@@ -40,7 +40,7 @@ GIT_COMMON=$(git_hard rev-parse --path-format=absolute --git-common-dir 2>/dev/n
 [ "$GIT_DIR" != "$GIT_COMMON" ] || fout "weiger de hoofdcheckout; start vanuit een eigen linked worktree"
 
 "$BUN" "$HIER/hooks/codex-controle.ts" "$CODEX_HOME_LEAD/config.toml" ||
-  fout "het profiel in $CODEX_HOME_LEAD is niet bruikbaar; Brian moet eerst uitrol-codex-lead-home.sh draaien"
+  fout "het profiel in $CODEX_HOME_LEAD is niet bruikbaar; draai: $BUN $HIER/hooks/codex-installeer.ts --codex-home $CODEX_HOME_LEAD --doel $CODEX_HOME_LEAD/hooks/lab-lead-hooks"
 CODEX_HOME="$CODEX_HOME_LEAD" "$CODEX" login status >/dev/null 2>&1 ||
   fout "geen Codex-inlog in $CODEX_HOME_LEAD; Brian moet eerst CODEX_HOME=$CODEX_HOME_LEAD codex login draaien"
 
