@@ -600,7 +600,7 @@ if tool == "Bash":
             pos = gh_posities(a)
             namen = [y for _, y in pos]
             if namen[:2] == ["pr", "merge"] and rauwe_merge_dicht:
-                return "merget geen PR via gh; gebruik scripts/lead/merge.sh <pr> (controleert review, poort en state)."
+                return "mergen gaat alleen via scripts/lead/merge.sh <pr> (controleert review, poort en state)."
             if namen[:1] == ["alias"] and namen[1:2] in (["set"], ["import"]):
                 return "gh alias set|import mag niet: een alias kan een merge of push verstoppen. Vraag het Brian."
             if namen[:1] != ["api"]:
@@ -1208,7 +1208,7 @@ if tool == "Bash":
         if re.search(r"bun run (poort|bekijk|test:tmux|test:e2e)|playwright", c):
             weiger("stiltevenster 05:00–07:15: geen poort, e2e of bekijk. Plan het na 07:15.")
     if rauwe_merge_dicht and re.search(r"\bgh\s+pr\s+merge\b", cz):
-        weiger("merget geen PR via gh; gebruik scripts/lead/merge.sh <pr> (controleert review, poort en state).")
+        weiger("mergen gaat alleen via scripts/lead/merge.sh <pr> (controleert review, poort en state).")
 sys.exit(0)
 PY
 # De invoer van de hook (stdin) gaat rechtstreeks naar python; de code staat in argv.

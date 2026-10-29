@@ -21,6 +21,7 @@ export type ClaudeOpties = {
   /** Map van hook.sh (eindigt op `lab-lead-hooks`). */
   doel: string;
   bun: string;
+  staat?: string;
   /** Extra Stop-entry met asyncRewake (H11). */
   metWekker: boolean;
   verwijder: boolean;
@@ -40,8 +41,8 @@ export type Spec = { event: string; matcher?: string; timeout: number; hook: Hoo
 const shq = (s: string) => (/^[A-Za-z0-9_/.:@+=-]+$/.test(s) ? s : `'${s.replaceAll("'", `'\\''`)}'`);
 const kopie = <T>(v: T): T => JSON.parse(JSON.stringify(v));
 
-export function commando(doel: string, bun: string, arg = ""): string {
-  return `LAB_LEAD_BUN=${shq(bun)} ${shq(join(doel, "hook.sh"))}${arg ? ` ${arg}` : ""}`;
+export function commando(doel: string, bun: string, arg = "", staat?: string): string {
+  return `LAB_LEAD_BUN=${shq(bun)}${staat ? ` LAB_LEAD_STAAT=${shq(staat)}` : ""} ${shq(join(doel, "hook.sh"))}${arg ? ` ${arg}` : ""}`;
 }
 
 /** De hooks voor Claude, in de volgorde van de bron, met hostevent en matcher uit de vertaaltabel. */
@@ -81,18 +82,18 @@ export function claudeSpecs(beleid: Beleid, o: Pick<ClaudeOpties, "metGrenzen" |
   return uit;
 }
 
-function commandoVoor(spec: Spec, o: Pick<ClaudeOpties, "doel" | "bun" | "grensPad">): string {
+function commandoVoor(spec: Spec, o: Pick<ClaudeOpties, "doel" | "bun" | "grensPad" | "staat">): string {
   if (spec.hook.script === "grenzen") return `${BELEID_MERK}${spec.hook.id} ${shq(o.grensPad ?? "")}`;
-  return commando(o.doel, o.bun);
+  return commando(o.doel, o.bun, "", o.staat);
 }
 
-function eigenGroepen(o: Pick<ClaudeOpties, "doel" | "bun" | "metWekker" | "grensPad">, spec: Spec): Groep[] {
+function eigenGroepen(o: Pick<ClaudeOpties, "doel" | "bun" | "metWekker" | "grensPad" | "staat">, spec: Spec): Groep[] {
   const g: Groep = {};
   if (spec.matcher) g.matcher = spec.matcher;
   g.hooks = [{ type: "command", command: commandoVoor(spec, o), timeout: spec.timeout }];
   const uit = [g];
   if (spec.event === "Stop" && spec.hook.script === "lead-hook" && o.metWekker) {
-    uit.push({ hooks: [{ type: "command", command: commando(o.doel, o.bun, "wekker"), timeout: WEKKER_TIMEOUT, asyncRewake: true }] });
+    uit.push({ hooks: [{ type: "command", command: commando(o.doel, o.bun, "wekker", o.staat), timeout: WEKKER_TIMEOUT, asyncRewake: true }] });
   }
   return uit;
 }
@@ -115,7 +116,7 @@ function strip(groepen: Groep[], eigen: (h: HookCfg) => boolean): { rest: Groep[
 }
 
 /** Pure functie: de nieuwe `.hooks` voor een bestaande. */
-export function nieuweHooks(oud: unknown, specs: Spec[], o: Pick<ClaudeOpties, "doel" | "bun" | "metWekker" | "verwijder" | "metGrenzen" | "grensPad">): Json | undefined {
+export function nieuweHooks(oud: unknown, specs: Spec[], o: Pick<ClaudeOpties, "doel" | "bun" | "metWekker" | "verwijder" | "metGrenzen" | "grensPad" | "staat">): Json | undefined {
   if (oud !== undefined && (typeof oud !== "object" || oud === null || Array.isArray(oud))) throw new Error("`.hooks` in settings.json is geen object");
   const grensCmd = o.grensPad;
   const eigen = (h: HookCfg) =>

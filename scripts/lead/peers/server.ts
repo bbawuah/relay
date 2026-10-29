@@ -4,7 +4,8 @@
 // vrijgeven en vasthouden bestaan hier bewust niet: dat is voor Brian of de lead (CLI).
 // Zonder LAB_AGENT_NAAM (een Codex-thread in T3 krijgt geen omgeving per thread) komt de identiteit uit
 // <staat>/identiteit/<hash>.json van de checkout waarin de server draait (zie metIdentiteit). Zonder dat bestand, zonder naam en
-// zonder rol (Brians eigen Codex) volgt de naam uit _meta.threadId van de aanroep (afgeleide-naam.ts).
+// zonder rol (Brians eigen Codex) volgt de naam uit _meta.threadId van de aanroep (afgeleide-naam.ts). De Codex-lead (lead-proef)
+// krijgt haar naam per aanroep, alleen voor de sessie waaraan de identiteit gebonden is (leadProefNaam).
 
 import { identiteitEnv } from "../hooks/codex-wrap";
 import { type Omgeving, staatMap } from "../hooks/register";
@@ -97,17 +98,36 @@ export function metIdentiteit(env: Omgeving, cwd: string, nu = Date.now()): Omge
   return i.LAB_AGENT_NAAM ? { ...env, LAB_AGENT_NAAM: i.LAB_AGENT_NAAM, ...(i.LAB_LEAD_NAAM ? { LAB_LEAD_NAAM: i.LAB_LEAD_NAAM } : {}) } : env;
 }
 
-/** De afgeleide naam uit `_meta` van de aanroep (door Codex gezet, niet door het model); `arguments` telt nooit mee. */
-function metaNaam(meta: unknown, env: Omgeving): string | null {
+/** Het sessie-id uit `_meta` van de aanroep (door Codex gezet, niet door het model); `arguments` telt nooit mee. Staan threadId en sessionId er allebei, dan moeten ze gelijk zijn. */
+function metaId(meta: unknown): string | null {
   if (!meta || typeof meta !== "object" || Array.isArray(meta)) return null;
   const m = meta as Record<string, unknown>;
-  // Staan beide id's er, dan moeten ze gelijk zijn; anders weigert de server.
   if (m.threadId !== undefined && m.sessionId !== undefined && m.threadId !== m.sessionId) return null;
   const id = m.threadId ?? m.sessionId;
+  return typeof id === "string" && id ? id : null;
+}
+
+/** De afgeleide naam uit `_meta` van de aanroep. */
+function metaNaam(meta: unknown, env: Omgeving): string | null {
+  const id = metaId(meta);
   const naam = afgeleideNaam(id);
-  if (!naam || typeof id !== "string") return null;
+  if (!naam || !id) return null;
   // De naam van een levende andere sessie (bijvoorbeeld een werker die zo heet) is nooit de onze.
   return botstMetLevendeSessie(staatMap(env), naam, id) ? null : naam;
+}
+
+/**
+ * De naam van de Codex-lead (`lead-proef`) voor één aanroep. De identiteit van de werkruimte is bij SessionStart aan precies één
+ * Codex-sessie gebonden (`bindLeadProefSessie`, `sessie_id`); `metIdentiteit` geeft haar daarom bewust niet aan de server, die
+ * de sessie bij de start niet kent. Hier komt het sessie-id per aanroep uit `_meta` (Codex: threadId = sessionId = `session_id`
+ * van de hookinvoer, gemeten, zie README "Afgeleide naam") en geldt de naam alleen als dat id het gebonden id is. Elke andere
+ * sessie, een aanroep zonder `_meta` en een identiteit met een andere rol geven null (dan geldt het gedrag van vóór deze regel).
+ */
+export function leadProefNaam(meta: unknown, env: Omgeving, cwd: string, nu = Date.now()): string | null {
+  const id = metaId(meta);
+  if (!id) return null;
+  const i = identiteitEnv(env, cwd, nu, id);
+  return i.LAB_AGENT_ROL === "lead-proef" && i.LAB_AGENT_NAAM ? i.LAB_AGENT_NAAM : null;
 }
 
 const PROTOCOLLEN = ["2024-11-05", "2025-03-26", "2025-06-18"];
@@ -116,7 +136,7 @@ const logFout = (wat: string, e: unknown): void => void process.stderr.write(`pe
 const VASTE_FOUT = "interne fout: de peerbus kon dit niet uitvoeren (details staan in de serverlog).";
 
 /** Verwerkt één JSON-RPC-bericht. Notificaties (zonder id) krijgen geen antwoord. */
-export async function verwerk(m: Rpc, bus: Bus, env: Omgeving, afleiden = false): Promise<Verwerkt> {
+export async function verwerk(m: Rpc, bus: Bus, env: Omgeving, afleiden = false, leadProefCwd = "", nu = Date.now()): Promise<Verwerkt> {
   const geldigId = (i: unknown) => i === undefined || i === null || typeof i === "string" || typeof i === "number";
   if (!m || typeof m !== "object" || Array.isArray(m) || !geldigId(m.id)) {
     return { antwoord: { jsonrpc: "2.0", id: null, error: { code: -32600, message: "ongeldig verzoek (batches en losse waarden worden niet ondersteund)" } } };
@@ -140,7 +160,7 @@ export async function verwerk(m: Rpc, bus: Bus, env: Omgeving, afleiden = false)
       const a = args && typeof args === "object" && !Array.isArray(args) ? (args as Record<string, unknown>) : {};
       let r: Awaited<ReturnType<typeof roepAan>>;
       try {
-        r = await roepAan(bus, env.LAB_AGENT_NAAM || (afleiden ? metaNaam(m.params?._meta, env) : "") || "", naam, a);
+        r = await roepAan(bus, (leadProefCwd ? leadProefNaam(m.params?._meta, env, leadProefCwd, nu) : null) || env.LAB_AGENT_NAAM || (afleiden ? metaNaam(m.params?._meta, env) : "") || "", naam, a);
       } catch (e) {
         logFout(`tool ${naam}`, e);
         return goed(tekst(VASTE_FOUT, true));
@@ -169,7 +189,7 @@ if (import.meta.main) {
       if (regel.trim()) await schrijf({ jsonrpc: "2.0", id: null, error: { code: -32700, message: "geen geldige JSON" } });
       return;
     }
-    const v = await verwerk(m, bus, omgeving, afleiden);
+    const v = await verwerk(m, bus, omgeving, afleiden, process.cwd());
     const geschreven = v.antwoord ? await schrijf(v.antwoord) : true;
     if (!geschreven) return logFout("antwoord niet geschreven", "stdout dicht; bijwerkingen overgeslagen");
     try {

@@ -10,6 +10,9 @@
     "types": ["bun"]
   },
   "include": [
+    "bin/**/*.ts",
+    "src/**/*.ts",
+    "tests/**/*.ts",
     "scripts/lead/beleid/**/*.ts",
     "scripts/lead/hooks/**/*.ts",
     "scripts/lead/peers/**/*.ts",

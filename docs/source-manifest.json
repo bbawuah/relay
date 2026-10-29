@@ -1,0 +1,966 @@
+{
+  "sourceRepository": "bbawuah/LAB-BAWUAH",
+  "sourceCommit": "10173799bedfbd712551025301e80925385217cb",
+  "baseRelayCommit": "6c9bbd12782761da20ced5cc090527711473f8b2",
+  "files": [
+    {
+      "source": "scripts/lead/README.md",
+      "destination": "scripts/lead/README.md",
+      "category": "legacy-orchestration",
+      "sourceSha256": "65563a11e08a7c114ef5a8d9cd1cd1ab7472666a3ca98c812bab43b58c08423b",
+      "unchanged": true
+    },
+    {
+      "source": "scripts/lead/beleid/README.md",
+      "destination": "scripts/lead/beleid/README.md",
+      "category": "policy",
+      "sourceSha256": "f6a2247670c6089d0db9bb26bb810fc73c635c368427dfb25c9891339ef0e7f4",
+      "unchanged": true
+    },
+    {
+      "source": "scripts/lead/beleid/beleid.test.ts",
+      "destination": "scripts/lead/beleid/beleid.test.ts",
+      "category": "policy",
+      "sourceSha256": "c1ba44dce89212618730cab3865c42eee5cb492e19043dec3819edc5801695e5",
+      "unchanged": true
+    },
+    {
+      "source": "scripts/lead/beleid/beleid.ts",
+      "destination": "scripts/lead/beleid/beleid.ts",
+      "category": "policy",
+      "sourceSha256": "25b827f06edcc16971a645a5ad9f22983c7a048096caf6b43b4c2e0c5c9d3de7",
+      "unchanged": true
+    },
+    {
+      "source": "scripts/lead/beleid/claude.ts",
+      "destination": "scripts/lead/beleid/claude.ts",
+      "category": "policy",
+      "sourceSha256": "954690707fbbc66f320d9223bca5a5d5b60e915ae3865e17ef29acf1d6fe7097",
+      "unchanged": false
+    },
+    {
+      "source": "scripts/lead/beleid/codex-werker.test.ts",
+      "destination": "scripts/lead/beleid/codex-werker.test.ts",
+      "category": "policy",
+      "sourceSha256": "1f43c283ed154260cfd1a9f162290da211e375cf3583083a34999de3857f6449",
+      "unchanged": true
+    },
+    {
+      "source": "scripts/lead/beleid/codex-werker.ts",
+      "destination": "scripts/lead/beleid/codex-werker.ts",
+      "category": "policy",
+      "sourceSha256": "49b5250210c2e64605b9dab03371d8d62892dd873a3c5ccfefa0212a5e32c534",
+      "unchanged": true
+    },
+    {
+      "source": "scripts/lead/beleid/fixtures/claude-leeg.json",
+      "destination": "scripts/lead/beleid/fixtures/claude-leeg.json",
+      "category": "policy",
+      "sourceSha256": "fe8e1d957b3bc7fccd986eae7210c6fdbce9f6ae8a285998c448c9d3b0060e4f",
+      "unchanged": true
+    },
+    {
+      "source": "scripts/lead/beleid/fixtures/claude-met-grenzen.json",
+      "destination": "scripts/lead/beleid/fixtures/claude-met-grenzen.json",
+      "category": "policy",
+      "sourceSha256": "b616da1e7c9ea072eea8693b4d11e58e7b3f4f8966f454fda0abd3dcd6b26582",
+      "unchanged": true
+    },
+    {
+      "source": "scripts/lead/beleid/fixtures/installeer-hooks-oud.ts",
+      "destination": "scripts/lead/beleid/fixtures/installeer-hooks-oud.ts",
+      "category": "policy",
+      "sourceSha256": "95c535e48981953d9d923c322f5f29c89999fff626ef68362b448835a62b01fd",
+      "unchanged": true
+    },
+    {
+      "source": "scripts/lead/beleid/hosts.ts",
+      "destination": "scripts/lead/beleid/hosts.ts",
+      "category": "policy",
+      "sourceSha256": "ed73a934c244762f9e824742b21e83e6fcc005551289a2303a365da511f3ea01",
+      "unchanged": true
+    },
+    {
+      "source": "scripts/lead/beleid/installeer-skills.ts",
+      "destination": "scripts/lead/beleid/installeer-skills.ts",
+      "category": "policy",
+      "sourceSha256": "a7664dd056f8a8d8286d32cbb68efaed9f0a48aa38f6961a1f5e9c4a2ad20f2c",
+      "unchanged": true
+    },
+    {
+      "source": "scripts/lead/beleid/skills.test.ts",
+      "destination": "scripts/lead/beleid/skills.test.ts",
+      "category": "policy",
+      "sourceSha256": "818be0f3b39e4057f35ba193ffa4cea3e248f3820ad8675eb8ae1e82c9f8655b",
+      "unchanged": true
+    },
+    {
+      "source": "scripts/lead/beleid/typen.ts",
+      "destination": "scripts/lead/beleid/typen.ts",
+      "category": "policy",
+      "sourceSha256": "8f883e3cdb3316f40846d17905e1566503b5191f793907bb99afd89325962c08",
+      "unchanged": true
+    },
+    {
+      "source": "scripts/lead/besluit.test.ts",
+      "destination": "tests-uitgesloten/lead-besluit.test.ts.txt",
+      "category": "legacy-orchestration",
+      "sourceSha256": "4379e41819fc0ecd42552f3f7eca6eeb241275405c9c534563d457305e86263f",
+      "unchanged": true
+    },
+    {
+      "source": "scripts/lead/besluit.ts",
+      "destination": "scripts/lead/besluit.ts",
+      "category": "legacy-orchestration",
+      "sourceSha256": "bbfabe65bb29d40370cafdad84342e9b4a7f8a85e98ed82b58beca6cfd351028",
+      "unchanged": true
+    },
+    {
+      "source": "scripts/lead/commando/INSTALLEREN.md",
+      "destination": "scripts/lead/commando/INSTALLEREN.md",
+      "category": "legacy-orchestration",
+      "sourceSha256": "b2617ed0281417718f5f1f98a59a849f03fcb45a80991f6ed4709a134d655912",
+      "unchanged": true
+    },
+    {
+      "source": "scripts/lead/commando/nl.lab-b.commando.plist.sjabloon",
+      "destination": "scripts/lead/commando/nl.lab-b.commando.plist.sjabloon",
+      "category": "legacy-orchestration",
+      "sourceSha256": "f81ca44f8d5266dc26b6e0f0b4762c8d323042aed45fdaca1f78e8dc4a80822d",
+      "unchanged": true
+    },
+    {
+      "source": "scripts/lead/commando/runner.test.ts",
+      "destination": "tests-uitgesloten/lead-commando-runner.test.ts.txt",
+      "category": "legacy-orchestration",
+      "sourceSha256": "606a8b8232324ea151ba22ebfa935518689aab224eca4b126d19dc24a2bcefaf",
+      "unchanged": true
+    },
+    {
+      "source": "scripts/lead/commando/runner.ts",
+      "destination": "scripts/lead/commando/runner.ts",
+      "category": "legacy-orchestration",
+      "sourceSha256": "8ae6803ae19552683dcf4134d0ae532a7db0fed05acc38e014c3f016f6edd9af",
+      "unchanged": true
+    },
+    {
+      "source": "scripts/lead/commando/webauthn-proef.ts",
+      "destination": "scripts/lead/commando/webauthn-proef.ts",
+      "category": "legacy-orchestration",
+      "sourceSha256": "1ff9a9694b5b0d33aa306570f6171dd67f046165999a557e7b60ff93a77b9e62",
+      "unchanged": true
+    },
+    {
+      "source": "scripts/lead/commando-gelijk.test.ts",
+      "destination": "tests-uitgesloten/lead-commando-gelijk.test.ts.txt",
+      "category": "legacy-orchestration",
+      "sourceSha256": "924490143467c67a598ffd5630b407431ad74a1e8daf989e45bdc33a323cfddc",
+      "unchanged": true
+    },
+    {
+      "source": "scripts/lead/git-hard.test.ts",
+      "destination": "scripts/lead/git-hard.test.ts",
+      "category": "legacy-orchestration",
+      "sourceSha256": "e7e6f43cd05ae1ff4190026d136afc308635e3c38f5f2e93b37a0a76d32ceacd",
+      "unchanged": true
+    },
+    {
+      "source": "scripts/lead/git-hard.testhulp.ts",
+      "destination": "scripts/lead/git-hard.testhulp.ts",
+      "category": "legacy-orchestration",
+      "sourceSha256": "757ad8abc651b1bca5610e752a65e518ec53ca06392f54c01b1ab72e70bf273f",
+      "unchanged": true
+    },
+    {
+      "source": "scripts/lead/git-hard.ts",
+      "destination": "scripts/lead/git-hard.ts",
+      "category": "legacy-orchestration",
+      "sourceSha256": "cbf7d2f4d512877a37f2b5fdb8fd617d88ef7a081079de8e189a8d5750352d39",
+      "unchanged": true
+    },
+    {
+      "source": "scripts/lead/hernoem.test.ts",
+      "destination": "scripts/lead/hernoem.test.ts",
+      "category": "legacy-orchestration",
+      "sourceSha256": "01bb65149ff07b0b19b0de21c855563bebcdc232bb76371dc4e412cce199f2f8",
+      "unchanged": true
+    },
+    {
+      "source": "scripts/lead/hernoem.ts",
+      "destination": "scripts/lead/hernoem.ts",
+      "category": "legacy-orchestration",
+      "sourceSha256": "72ddc95821a3e26a8c2fd3459292b7ec681369e81d8159818deee153af133124",
+      "unchanged": true
+    },
+    {
+      "source": "scripts/lead/hooks/codex-adapter.test.ts",
+      "destination": "scripts/lead/hooks/codex-adapter.test.ts",
+      "category": "hooks",
+      "sourceSha256": "f07cc968b9253a2a9f0ec9ddf763f2826c2e6837c5250614c273f2a1fba2e13d",
+      "unchanged": true
+    },
+    {
+      "source": "scripts/lead/hooks/codex-adapter.ts",
+      "destination": "scripts/lead/hooks/codex-adapter.ts",
+      "category": "hooks",
+      "sourceSha256": "3a55ee32733431405f40979cd4882938b61ffe690163dc30f73ec83dd31b4f44",
+      "unchanged": true
+    },
+    {
+      "source": "scripts/lead/hooks/codex-appserver.test.ts",
+      "destination": "scripts/lead/hooks/codex-appserver.test.ts",
+      "category": "hooks",
+      "sourceSha256": "57f0728361cc3fa0331ead2f04ef14fb3e3685524423e85647537fcc7efd92ec",
+      "unchanged": true
+    },
+    {
+      "source": "scripts/lead/hooks/codex-appserver.ts",
+      "destination": "scripts/lead/hooks/codex-appserver.ts",
+      "category": "hooks",
+      "sourceSha256": "cbe26e41cc34fc1709d8502bbb67f8f022d8bd3bc3483d39c0462605c19555e4",
+      "unchanged": true
+    },
+    {
+      "source": "scripts/lead/hooks/codex-controle.ts",
+      "destination": "scripts/lead/hooks/codex-controle.ts",
+      "category": "hooks",
+      "sourceSha256": "271f273d03968a854382d70994745a74b30cfdde52d40ff753e27e9155211d6d",
+      "unchanged": true
+    },
+    {
+      "source": "scripts/lead/hooks/codex-fixtures/codex-PermissionRequest.json",
+      "destination": "scripts/lead/hooks/codex-fixtures/codex-PermissionRequest.json",
+      "category": "hooks",
+      "sourceSha256": "6493bcf85c8e469cdd547a5dc91efd700022bb979c9bcb38a1916d16e6c125e4",
+      "unchanged": true
+    },
+    {
+      "source": "scripts/lead/hooks/codex-fixtures/codex-PostCompact.json",
+      "destination": "scripts/lead/hooks/codex-fixtures/codex-PostCompact.json",
+      "category": "hooks",
+      "sourceSha256": "f2e57486e5ca2788917d4e7c43b783293987742eb0614a3f931fd0ad9fdd6135",
+      "unchanged": true
+    },
+    {
+      "source": "scripts/lead/hooks/codex-fixtures/codex-PostToolUse-Bash.json",
+      "destination": "scripts/lead/hooks/codex-fixtures/codex-PostToolUse-Bash.json",
+      "category": "hooks",
+      "sourceSha256": "7ea39e0488a43f7fdbce32eab722a3760366492c6bce9f159a5fda0ea8ec6236",
+      "unchanged": true
+    },
+    {
+      "source": "scripts/lead/hooks/codex-fixtures/codex-PostToolUse-apply_patch.json",
+      "destination": "scripts/lead/hooks/codex-fixtures/codex-PostToolUse-apply_patch.json",
+      "category": "hooks",
+      "sourceSha256": "0ed1c5bb67c50a62ab9b506880f20ddb17df179a374cfee00f0fa055421c8618",
+      "unchanged": true
+    },
+    {
+      "source": "scripts/lead/hooks/codex-fixtures/codex-PreCompact.json",
+      "destination": "scripts/lead/hooks/codex-fixtures/codex-PreCompact.json",
+      "category": "hooks",
+      "sourceSha256": "8a176e2cf7990faddd6766d65979a2c71d6f3974372ac1a94ca5458eae9c67d1",
+      "unchanged": true
+    },
+    {
+      "source": "scripts/lead/hooks/codex-fixtures/codex-PreToolUse-Bash.json",
+      "destination": "scripts/lead/hooks/codex-fixtures/codex-PreToolUse-Bash.json",
+      "category": "hooks",
+      "sourceSha256": "7be3d62a4e0b7a5260ce3a6dc50973656c50f8a75ccef077a15010113939c704",
+      "unchanged": true
+    },
+    {
+      "source": "scripts/lead/hooks/codex-fixtures/codex-PreToolUse-apply_patch.json",
+      "destination": "scripts/lead/hooks/codex-fixtures/codex-PreToolUse-apply_patch.json",
+      "category": "hooks",
+      "sourceSha256": "fa4b9b72ee0cde51be1d7865dadc86152dbd072b48cade752e083b5a04c15c24",
+      "unchanged": true
+    },
+    {
+      "source": "scripts/lead/hooks/codex-fixtures/codex-SessionEnd.json",
+      "destination": "scripts/lead/hooks/codex-fixtures/codex-SessionEnd.json",
+      "category": "hooks",
+      "sourceSha256": "f7b711fd8a11df5ace5b6b5386c6ece3e599068182e38f68c38fce701a8b6936",
+      "unchanged": true
+    },
+    {
+      "source": "scripts/lead/hooks/codex-fixtures/codex-SessionStart-compact.json",
+      "destination": "scripts/lead/hooks/codex-fixtures/codex-SessionStart-compact.json",
+      "category": "hooks",
+      "sourceSha256": "d4dc6f1be6187fbeda605ba3264cfb8d9e218f23dee528ba090df9a6cebae3b0",
+      "unchanged": true
+    },
+    {
+      "source": "scripts/lead/hooks/codex-fixtures/codex-SessionStart.json",
+      "destination": "scripts/lead/hooks/codex-fixtures/codex-SessionStart.json",
+      "category": "hooks",
+      "sourceSha256": "3e05be4a72abc24ff11986f603eab694fdf2b10cf3151f720b972d06328eac09",
+      "unchanged": true
+    },
+    {
+      "source": "scripts/lead/hooks/codex-fixtures/codex-Stop.json",
+      "destination": "scripts/lead/hooks/codex-fixtures/codex-Stop.json",
+      "category": "hooks",
+      "sourceSha256": "3befa75a7d1fc369b13fa5811c942cbbe91a44a93c0b31e740f0b5e3e1287766",
+      "unchanged": true
+    },
+    {
+      "source": "scripts/lead/hooks/codex-fixtures/codex-SubagentStop.json",
+      "destination": "scripts/lead/hooks/codex-fixtures/codex-SubagentStop.json",
+      "category": "hooks",
+      "sourceSha256": "48b729675dbea7c8b85807989464697b6e7aa9612f15f13e2b93191f16e861ee",
+      "unchanged": true
+    },
+    {
+      "source": "scripts/lead/hooks/codex-fixtures/codex-UserPromptSubmit-subagent.json",
+      "destination": "scripts/lead/hooks/codex-fixtures/codex-UserPromptSubmit-subagent.json",
+      "category": "hooks",
+      "sourceSha256": "a6a398f6dc12fa535ddf4c166064d9f24012a1b6cab7b7ada0c8722320e8b901",
+      "unchanged": true
+    },
+    {
+      "source": "scripts/lead/hooks/codex-fixtures/codex-UserPromptSubmit.json",
+      "destination": "scripts/lead/hooks/codex-fixtures/codex-UserPromptSubmit.json",
+      "category": "hooks",
+      "sourceSha256": "7be7de72466b1225ce0be1c52c7648825b8373aa780d22dab6779e13733a1203",
+      "unchanged": true
+    },
+    {
+      "source": "scripts/lead/hooks/codex-fixtures/codex-mcp-tools-call.json",
+      "destination": "scripts/lead/hooks/codex-fixtures/codex-mcp-tools-call.json",
+      "category": "hooks",
+      "sourceSha256": "065a1f186ef0159eabc04281910b9dfb639495bb3e3481cdd002256c9342ec7d",
+      "unchanged": true
+    },
+    {
+      "source": "scripts/lead/hooks/codex-installeer.test.ts",
+      "destination": "scripts/lead/hooks/codex-installeer.test.ts",
+      "category": "hooks",
+      "sourceSha256": "11bd4527e06ef9aaeb5c41115dc218ab8775e6ea5a4fbd9104f6b3a9897a54b3",
+      "unchanged": true
+    },
+    {
+      "source": "scripts/lead/hooks/codex-installeer.ts",
+      "destination": "scripts/lead/hooks/codex-installeer.ts",
+      "category": "hooks",
+      "sourceSha256": "c78a9a43770c9173b3e8c349882bb1bfe6b46e72619c6d3ee45a8032725ad1a3",
+      "unchanged": false
+    },
+    {
+      "source": "scripts/lead/hooks/codex-wrap.sh",
+      "destination": "scripts/lead/hooks/codex-wrap.sh",
+      "category": "hooks",
+      "sourceSha256": "8fb3503d737ebd0788c2b2060bdb4966204c60c347048b04a3adadb43090862d",
+      "unchanged": true
+    },
+    {
+      "source": "scripts/lead/hooks/codex-wrap.test.ts",
+      "destination": "scripts/lead/hooks/codex-wrap.test.ts",
+      "category": "hooks",
+      "sourceSha256": "cf793149827b3214623dac92956f7836a166b1e9b48d49ecd9585e9ba1c9dde5",
+      "unchanged": true
+    },
+    {
+      "source": "scripts/lead/hooks/codex-wrap.ts",
+      "destination": "scripts/lead/hooks/codex-wrap.ts",
+      "category": "hooks",
+      "sourceSha256": "75e20626de0e45431dfc1b49b7d2c6a9add153ee88cff25941ab24a7fac2fbc1",
+      "unchanged": true
+    },
+    {
+      "source": "scripts/lead/hooks/demo.sh",
+      "destination": "scripts/lead/hooks/demo.sh",
+      "category": "hooks",
+      "sourceSha256": "132739e4ef20ff4c68197e285a20903753bc44ff47528860ed3b7b3a84e42693",
+      "unchanged": true
+    },
+    {
+      "source": "scripts/lead/hooks/fixtures/cases.txt",
+      "destination": "scripts/lead/hooks/fixtures/cases.txt",
+      "category": "hooks",
+      "sourceSha256": "c68b582bd985db1d02d6c39d7636e050bac580913f8c05507f3e80d95d1d4255",
+      "unchanged": true
+    },
+    {
+      "source": "scripts/lead/hooks/fixtures/codex-PreToolUse-apply_patch.json",
+      "destination": "scripts/lead/hooks/fixtures/codex-PreToolUse-apply_patch.json",
+      "category": "hooks",
+      "sourceSha256": "fa4b9b72ee0cde51be1d7865dadc86152dbd072b48cade752e083b5a04c15c24",
+      "unchanged": true
+    },
+    {
+      "source": "scripts/lead/hooks/fixtures/grenzen-oud.sh",
+      "destination": "scripts/lead/hooks/fixtures/grenzen-oud.sh",
+      "category": "hooks",
+      "sourceSha256": "1984a61ade6a89040deb737a015a77070e01a244ddf27167814b23fb9b45ec7a",
+      "unchanged": true
+    },
+    {
+      "source": "scripts/lead/hooks/grenzen.sh",
+      "destination": "scripts/lead/hooks/grenzen.sh",
+      "category": "hooks",
+      "sourceSha256": "338ee9b4f2e849b80c02759ad8132d130dac3ae0cfca48d014b06dde55fc1a32",
+      "unchanged": true
+    },
+    {
+      "source": "scripts/lead/hooks/grenzen.test.ts",
+      "destination": "scripts/lead/hooks/grenzen.test.ts",
+      "category": "hooks",
+      "sourceSha256": "80077aae55774ed22fbd2400fb490158bc5b63741ad5f7c84ff5f9a32b434c91",
+      "unchanged": true
+    },
+    {
+      "source": "scripts/lead/hooks/hook-bus.test.ts",
+      "destination": "scripts/lead/hooks/hook-bus.test.ts",
+      "category": "hooks",
+      "sourceSha256": "0f89d78fc15d75d904f53572c422dd5edd9caa0982fc14cc49a8db209fd3bb0f",
+      "unchanged": true
+    },
+    {
+      "source": "scripts/lead/hooks/hook.sh",
+      "destination": "scripts/lead/hooks/hook.sh",
+      "category": "hooks",
+      "sourceSha256": "55044f860db1094ba4b80c6ebe4e0011286fea9d8976f5169e4934a15ae1ba28",
+      "unchanged": true
+    },
+    {
+      "source": "scripts/lead/hooks/hook.test.ts",
+      "destination": "scripts/lead/hooks/hook.test.ts",
+      "category": "hooks",
+      "sourceSha256": "fb90697354dbd746b9a171838258c5802b12cb9ba99f619ff5a2ea22a4e7ef85",
+      "unchanged": true
+    },
+    {
+      "source": "scripts/lead/hooks/hook.ts",
+      "destination": "scripts/lead/hooks/hook.ts",
+      "category": "hooks",
+      "sourceSha256": "e1d7d00ddb0ca405e59c9d51bf194189e4c8b980f2017e18c40baea0d12e8e42",
+      "unchanged": true
+    },
+    {
+      "source": "scripts/lead/hooks/installatie.test.ts",
+      "destination": "scripts/lead/hooks/installatie.test.ts",
+      "category": "hooks",
+      "sourceSha256": "83eb1bff1568187bdce7009d2ee7a9fffec4d4e63e1703e63a671f8a116a7bda",
+      "unchanged": true
+    },
+    {
+      "source": "scripts/lead/hooks/peers-kopie.ts",
+      "destination": "scripts/lead/hooks/peers-kopie.ts",
+      "category": "hooks",
+      "sourceSha256": "2a92b80d7d6719e75c0d9a5e16addfb6c239b4d72e346f74ed5d2b46bd0d4237",
+      "unchanged": true
+    },
+    {
+      "source": "scripts/lead/hooks/register.ts",
+      "destination": "scripts/lead/hooks/register.ts",
+      "category": "hooks",
+      "sourceSha256": "1a6a41fe904649dbce81b0c865c831291c4111bc870aa1739c813723bb41c74d",
+      "unchanged": true
+    },
+    {
+      "source": "scripts/lead/hooks/status.test.ts",
+      "destination": "scripts/lead/hooks/status.test.ts",
+      "category": "hooks",
+      "sourceSha256": "4262e44d82116acfe73f952bbe299efe8c39de8de2a185d14f757b1f0c20afe7",
+      "unchanged": true
+    },
+    {
+      "source": "scripts/lead/hooks/status.ts",
+      "destination": "scripts/lead/hooks/status.ts",
+      "category": "hooks",
+      "sourceSha256": "efa5e0504b8521a584806597e977f18a6f18ae838c44c05d8c8006716a5a438f",
+      "unchanged": true
+    },
+    {
+      "source": "scripts/lead/installeer-grens.test.ts",
+      "destination": "scripts/lead/installeer-grens.test.ts",
+      "category": "legacy-orchestration",
+      "sourceSha256": "d740e43e3ed0b170a22d953e0830e08aadbc184097d1bb4044985bb205e0fcf3",
+      "unchanged": false
+    },
+    {
+      "source": "scripts/lead/installeer-grens.ts",
+      "destination": "scripts/lead/installeer-grens.ts",
+      "category": "legacy-orchestration",
+      "sourceSha256": "e0301660ea3405dfca5900ecc8119b01c0b32ff00ecc07477318b76082f388c7",
+      "unchanged": false
+    },
+    {
+      "source": "scripts/lead/installeer-hooks.test.ts",
+      "destination": "scripts/lead/installeer-hooks.test.ts",
+      "category": "legacy-orchestration",
+      "sourceSha256": "ae3a39462fea390eae861e2d93287ac3d6cc42119927e741c52bfc716eec10ab",
+      "unchanged": true
+    },
+    {
+      "source": "scripts/lead/installeer-hooks.ts",
+      "destination": "scripts/lead/installeer-hooks.ts",
+      "category": "legacy-orchestration",
+      "sourceSha256": "d0fdcc925178c54390f83e26d516a0417e023c9ee6ac03f119227501cc6aef5e",
+      "unchanged": false
+    },
+    {
+      "source": "scripts/lead/lab-lees.sh",
+      "destination": "scripts/lead/lab-lees.sh",
+      "category": "legacy-orchestration",
+      "sourceSha256": "7de2968ecfd0e257b81197beff54784e496adf725108e456b78e4a6a7cfa4b31",
+      "unchanged": true
+    },
+    {
+      "source": "scripts/lead/lab-lees.test.ts",
+      "destination": "scripts/lead/lab-lees.test.ts",
+      "category": "legacy-orchestration",
+      "sourceSha256": "ef467fc879ef6052a56e3ae9a49bc330465281d6a555c6823259aaf7ce225fd7",
+      "unchanged": true
+    },
+    {
+      "source": "scripts/lead/lead-codex.sh",
+      "destination": "scripts/lead/lead-codex.sh",
+      "category": "legacy-orchestration",
+      "sourceSha256": "9cbc3182e4c293a9cc33e64cc816d55931a32d2ca7181280d38be14c285db948",
+      "unchanged": true
+    },
+    {
+      "source": "scripts/lead/lead-codex.test.ts",
+      "destination": "scripts/lead/lead-codex.test.ts",
+      "category": "legacy-orchestration",
+      "sourceSha256": "f7a67eb1142bbf7d399bebee094eeab387a88e16f545963e7e0adb6de13a01d9",
+      "unchanged": true
+    },
+    {
+      "source": "scripts/lead/lead.conf",
+      "destination": "scripts/lead/lead.conf",
+      "category": "legacy-orchestration",
+      "sourceSha256": "a3a04cb97d303e3084f332b2c05bbfd33d7d2d833acd7457e5a84a29f973671e",
+      "unchanged": true
+    },
+    {
+      "source": "scripts/lead/lead.test.ts",
+      "destination": "scripts/lead/lead.test.ts",
+      "category": "legacy-orchestration",
+      "sourceSha256": "370466917ee8e6c2bc25c76c3ddc58f7a403e1c9753e646eefb0e74df267d6b2",
+      "unchanged": false
+    },
+    {
+      "source": "scripts/lead/leadnaam.ts",
+      "destination": "scripts/lead/leadnaam.ts",
+      "category": "legacy-orchestration",
+      "sourceSha256": "189230b50faad59d3ea362ad394198b230514df96ea7db75235b4e2aaaa468b9",
+      "unchanged": true
+    },
+    {
+      "source": "scripts/lead/merge.sh",
+      "destination": "scripts/lead/merge.sh",
+      "category": "legacy-orchestration",
+      "sourceSha256": "9fe73ebc253c18977f472a278197e251fe96a45c356d7780d6838e4863073b13",
+      "unchanged": true
+    },
+    {
+      "source": "scripts/lead/peers/README.md",
+      "destination": "scripts/lead/peers/README.md",
+      "category": "peerbus",
+      "sourceSha256": "d8fca47f43c65794425fc7b90668b12cb94f6226a6f5a080ef8741e4a4b94735",
+      "unchanged": true
+    },
+    {
+      "source": "scripts/lead/peers/afgeleide-naam.test.ts",
+      "destination": "scripts/lead/peers/afgeleide-naam.test.ts",
+      "category": "peerbus",
+      "sourceSha256": "71fcc8dd777c058da3f6bf94114c4d57a25d77f3ba133c440b057b05209250e4",
+      "unchanged": true
+    },
+    {
+      "source": "scripts/lead/peers/afgeleide-naam.ts",
+      "destination": "scripts/lead/peers/afgeleide-naam.ts",
+      "category": "peerbus",
+      "sourceSha256": "c705ef668aebb25c5532138e17b230a669a4ecf15b75ec249ef739ebc624176e",
+      "unchanged": true
+    },
+    {
+      "source": "scripts/lead/peers/bus.test.ts",
+      "destination": "scripts/lead/peers/bus.test.ts",
+      "category": "peerbus",
+      "sourceSha256": "a8f831679ec9b0028ec6baf467c9118f5046455ddc12f9e3ab1ba337688c5b12",
+      "unchanged": true
+    },
+    {
+      "source": "scripts/lead/peers/bus.ts",
+      "destination": "scripts/lead/peers/bus.ts",
+      "category": "peerbus",
+      "sourceSha256": "b42c6570754887acfdd14bc04d3de43e0c07bc1e8fff7079d1c07660118401eb",
+      "unchanged": true
+    },
+    {
+      "source": "scripts/lead/peers/cli.test.ts",
+      "destination": "scripts/lead/peers/cli.test.ts",
+      "category": "peerbus",
+      "sourceSha256": "8cc5b435def8238f86f804efa0e0eb0c2a4d16fc626caeb0db67628571ca94b6",
+      "unchanged": true
+    },
+    {
+      "source": "scripts/lead/peers/cli.ts",
+      "destination": "scripts/lead/peers/cli.ts",
+      "category": "peerbus",
+      "sourceSha256": "43c6cf6660979f69351146006d35777105e74f393a271f62be6178b53e1f59de",
+      "unchanged": true
+    },
+    {
+      "source": "scripts/lead/peers/e2e/codex-demo.test.ts",
+      "destination": "scripts/lead/peers/e2e/codex-demo.test.ts",
+      "category": "peerbus",
+      "sourceSha256": "914687882af51ccede6ee5d42d928e56b1bbc66008cd44c45a30f0ee8f46a7d3",
+      "unchanged": true
+    },
+    {
+      "source": "scripts/lead/peers/e2e/codex-demo.ts",
+      "destination": "scripts/lead/peers/e2e/codex-demo.ts",
+      "category": "peerbus",
+      "sourceSha256": "050f8eb525219800ff2422e42e984b3db986e2c3a3916636bbee07d33b53d196",
+      "unchanged": true
+    },
+    {
+      "source": "scripts/lead/peers/e2e/demo.test.ts",
+      "destination": "scripts/lead/peers/e2e/demo.test.ts",
+      "category": "peerbus",
+      "sourceSha256": "cda7caec8ebff635b12cee6bebc13841933c1f358548715083e7232b9bea0025",
+      "unchanged": true
+    },
+    {
+      "source": "scripts/lead/peers/e2e/demo.ts",
+      "destination": "scripts/lead/peers/e2e/demo.ts",
+      "category": "peerbus",
+      "sourceSha256": "ee3b993932089c96ac1ac860edb0f5b52febec473a0eaf1e550b1d02e8132c38",
+      "unchanged": true
+    },
+    {
+      "source": "scripts/lead/peers/e2e/nep-responses.ts",
+      "destination": "scripts/lead/peers/e2e/nep-responses.ts",
+      "category": "peerbus",
+      "sourceSha256": "611ec1f133a7ccab7d3f771610213ad4cca6a87edd495f3f43bf99ad7d079957",
+      "unchanged": true
+    },
+    {
+      "source": "scripts/lead/peers/e2e/standin-socket.ts",
+      "destination": "scripts/lead/peers/e2e/standin-socket.ts",
+      "category": "peerbus",
+      "sourceSha256": "b89c69b8743b9b45ba42bae40b016f895eba30cbe6d85fa8aa2a24af776249dd",
+      "unchanged": true
+    },
+    {
+      "source": "scripts/lead/peers/server.test.ts",
+      "destination": "scripts/lead/peers/server.test.ts",
+      "category": "peerbus",
+      "sourceSha256": "8bf7ea77541c5c982af71b2d16ceaf82ebc948475fd0fb1f809209f8476a1cfb",
+      "unchanged": true
+    },
+    {
+      "source": "scripts/lead/peers/server.ts",
+      "destination": "scripts/lead/peers/server.ts",
+      "category": "peerbus",
+      "sourceSha256": "15bc1120bd2d79d8136528bc02af5208231b65b0647f5bf3e07cac7eb77ba234",
+      "unchanged": true
+    },
+    {
+      "source": "scripts/lead/peers/standaard.ts",
+      "destination": "scripts/lead/peers/standaard.ts",
+      "category": "peerbus",
+      "sourceSha256": "a13a32884fc1070ee8e02b0d926e76a27620af749daf5396827d2465e3bbb8ab",
+      "unchanged": true
+    },
+    {
+      "source": "scripts/lead/peers/types.test.ts",
+      "destination": "scripts/lead/peers/types.test.ts",
+      "category": "peerbus",
+      "sourceSha256": "d4e56d04fd521e3bbedf877d1c3e8137c3d99f97c70b484e6c252c8cafad2533",
+      "unchanged": true
+    },
+    {
+      "source": "scripts/lead/peers/types.ts",
+      "destination": "scripts/lead/peers/types.ts",
+      "category": "peerbus",
+      "sourceSha256": "59600cb5549d71b2514f2e22ca4e71454d68f365b3b99da0274f38369fc96409",
+      "unchanged": true
+    },
+    {
+      "source": "scripts/lead/peers/uuid.test.ts",
+      "destination": "scripts/lead/peers/uuid.test.ts",
+      "category": "peerbus",
+      "sourceSha256": "0242978bd942714685468f926f030a65fc14f62c88ef02f5ae19cc0b98639047",
+      "unchanged": true
+    },
+    {
+      "source": "scripts/lead/peers/uuid.ts",
+      "destination": "scripts/lead/peers/uuid.ts",
+      "category": "peerbus",
+      "sourceSha256": "d1fa15c068daa8e8e9dabe56df3caedac893ad1a0a58d5341e245461963ad2ab",
+      "unchanged": true
+    },
+    {
+      "source": "scripts/lead/peers/wekker.test.ts",
+      "destination": "scripts/lead/peers/wekker.test.ts",
+      "category": "peerbus",
+      "sourceSha256": "170ace144071ec1fd1023d95fb11cd9fe25deacec38682bd5f1491e5c4cff2c2",
+      "unchanged": true
+    },
+    {
+      "source": "scripts/lead/peers/wekker.ts",
+      "destination": "scripts/lead/peers/wekker.ts",
+      "category": "peerbus",
+      "sourceSha256": "1cbbcd2747a3b20fa19c80b8a49d3b3d99375c3b2f8c83953d6f0f6577c6203b",
+      "unchanged": true
+    },
+    {
+      "source": "scripts/lead/push-werker.sh",
+      "destination": "scripts/lead/push-werker.sh",
+      "category": "legacy-orchestration",
+      "sourceSha256": "01194e4e549f794aa0fbd332e883f4d626329ba5fda76ed2af4f27109e9b98cf",
+      "unchanged": true
+    },
+    {
+      "source": "scripts/lead/push-werker.test.ts",
+      "destination": "scripts/lead/push-werker.test.ts",
+      "category": "legacy-orchestration",
+      "sourceSha256": "4a5545c0afbcede022daa6c3ce24cea299dfbd1454771d20637bc1ec53e6c217",
+      "unchanged": true
+    },
+    {
+      "source": "scripts/lead/push-werker.ts",
+      "destination": "scripts/lead/push-werker.ts",
+      "category": "legacy-orchestration",
+      "sourceSha256": "dbe856a50a1543e859c88ccef43d3f09b3584a033a6d38399d519d44cdab3957",
+      "unchanged": true
+    },
+    {
+      "source": "scripts/lead/push.sh",
+      "destination": "scripts/lead/push.sh",
+      "category": "legacy-orchestration",
+      "sourceSha256": "8f33228a74b5a69d84ec44df07f08e0977cdcc3e289ace97664fe3e480832b99",
+      "unchanged": true
+    },
+    {
+      "source": "scripts/lead/push.test.ts",
+      "destination": "scripts/lead/push.test.ts",
+      "category": "legacy-orchestration",
+      "sourceSha256": "210a4a345f84a5fb8164a59f06cfb2e96864589b61eb997e1269dab4ac6e0bf8",
+      "unchanged": true
+    },
+    {
+      "source": "scripts/lead/relay/g-split.sh",
+      "destination": "scripts/lead/relay/g-split.sh",
+      "category": "legacy-orchestration",
+      "sourceSha256": "c32c08387eb5242da22eee7a0d435c08704be004400facb9a8ce905ad347f8ff",
+      "unchanged": false
+    },
+    {
+      "source": "scripts/lead/relay/g-split.test.ts",
+      "destination": "scripts/lead/relay/g-split.test.ts",
+      "category": "legacy-orchestration",
+      "sourceSha256": "a18c281b0b0a17a6251c4cb4a2441f1308be586de7e561cbe6911bc7419bee89",
+      "unchanged": true
+    },
+    {
+      "source": "scripts/lead/relay.test.ts",
+      "destination": "scripts/lead/relay.test.ts",
+      "category": "legacy-orchestration",
+      "sourceSha256": "3644493686344fbffac9d9fa6f0bdd2e8fc48f47737d8bd876f00fd26f3d4866",
+      "unchanged": true
+    },
+    {
+      "source": "scripts/lead/relay.ts",
+      "destination": "scripts/lead/relay.ts",
+      "category": "legacy-orchestration",
+      "sourceSha256": "b5624bc785cf549951d215c621e7c8f926046099ccd86551e27507d8a61af41c",
+      "unchanged": true
+    },
+    {
+      "source": "scripts/lead/spawn-crash.test.ts",
+      "destination": "scripts/lead/spawn-crash.test.ts",
+      "category": "legacy-orchestration",
+      "sourceSha256": "3c90598c795b027c9f95405c2d9931a9fba9e6beb2805fa99ac2329e67b4986a",
+      "unchanged": true
+    },
+    {
+      "source": "scripts/lead/spawn-crash.ts",
+      "destination": "scripts/lead/spawn-crash.ts",
+      "category": "legacy-orchestration",
+      "sourceSha256": "3550976ce8a620a7fe2644a5ee611a6805d336fb0492ab69813fde04cd898c45",
+      "unchanged": true
+    },
+    {
+      "source": "scripts/lead/spawn-vertrouwen.test.ts",
+      "destination": "scripts/lead/spawn-vertrouwen.test.ts",
+      "category": "legacy-orchestration",
+      "sourceSha256": "ab4e8b86e772c7d7d81bb8cabb28a2d217be5899acede87173c3dd3b6417f87f",
+      "unchanged": true
+    },
+    {
+      "source": "scripts/lead/spawn.sh",
+      "destination": "scripts/lead/spawn.sh",
+      "category": "legacy-orchestration",
+      "sourceSha256": "b13367475e138d632852014d5bb87caeefea86097b3642739c98665d73077809",
+      "unchanged": true
+    },
+    {
+      "source": "scripts/lead/status.sh",
+      "destination": "scripts/lead/status.sh",
+      "category": "legacy-orchestration",
+      "sourceSha256": "3294a699dac28b9912d14d899b291abcfeaba38780dae53d4ecb77296547add2",
+      "unchanged": true
+    },
+    {
+      "source": "scripts/lead/sublead.md",
+      "destination": "scripts/lead/sublead.md",
+      "category": "legacy-orchestration",
+      "sourceSha256": "e1a65e795c31d6ed003aeea245afc849ceb68abcc5a38ab8b7cbdb84bfeb50b4",
+      "unchanged": true
+    },
+    {
+      "source": "scripts/lead/tmux/agent-state.sh",
+      "destination": "scripts/lead/tmux/agent-state.sh",
+      "category": "legacy-orchestration",
+      "sourceSha256": "3280efbfe6edf82d1c86ed940a12d58f5b155d9281ca6d5a381c444d82fd7f5c",
+      "unchanged": true
+    },
+    {
+      "source": "scripts/lead/tmux/pane-info-clear.sh",
+      "destination": "scripts/lead/tmux/pane-info-clear.sh",
+      "category": "legacy-orchestration",
+      "sourceSha256": "5d7f8f34d7f9c3d02f3b27d36dd809ee06537f6371449e696d2bac1bad601d32",
+      "unchanged": true
+    },
+    {
+      "source": "scripts/lead/tmux/pane-info.sh",
+      "destination": "scripts/lead/tmux/pane-info.sh",
+      "category": "legacy-orchestration",
+      "sourceSha256": "8e75e6ab7991c9cc6484b7de6b80b1ba44a89466d53e809fd8996994d73cb78d",
+      "unchanged": true
+    },
+    {
+      "source": "scripts/lead/tmux/vendor.conf",
+      "destination": "scripts/lead/tmux/vendor.conf",
+      "category": "legacy-orchestration",
+      "sourceSha256": "876c0288a696f2d7b40e99df9a01a950a10f0c3626a49a8e233411ab258a66d0",
+      "unchanged": true
+    },
+    {
+      "source": "scripts/lead/tmux/vendor.test.ts",
+      "destination": "scripts/lead/tmux/vendor.test.ts",
+      "category": "legacy-orchestration",
+      "sourceSha256": "3b9facd6c0451806c1858bd351f43c4bb5331a10f4b3cb329e8f4ed712ad11db",
+      "unchanged": true
+    },
+    {
+      "source": "scripts/lead/vaste-cyclus.js",
+      "destination": "scripts/lead/vaste-cyclus.js",
+      "category": "legacy-orchestration",
+      "sourceSha256": "9731b9cf66b7adb8e29418d664487d49e45735416d33d8b21eeb4ef3098a7ac8",
+      "unchanged": true
+    },
+    {
+      "source": "scripts/lead/vaste-cyclus.test.ts",
+      "destination": "scripts/lead/vaste-cyclus.test.ts",
+      "category": "legacy-orchestration",
+      "sourceSha256": "eb839651fbfc93df1c4f421f5c989c31437c25584f839d2417f5e2e32e758edc",
+      "unchanged": true
+    },
+    {
+      "source": "scripts/lead/vraag-brian.test.ts",
+      "destination": "tests-uitgesloten/lead-vraag-brian.test.ts.txt",
+      "category": "legacy-orchestration",
+      "sourceSha256": "8dd6f3f378b04e32ef25753bfe976728d3824ad53a7556f475c95b1246a3ee3f",
+      "unchanged": true
+    },
+    {
+      "source": "scripts/lead/vraag-brian.ts",
+      "destination": "scripts/lead/vraag-brian.ts",
+      "category": "legacy-orchestration",
+      "sourceSha256": "36f4427b27c13b09fea5a28f6e6f306330be98ab4bdcafb7fde33ba60b37898c",
+      "unchanged": true
+    },
+    {
+      "source": "scripts/lead/wachtrij.test.ts",
+      "destination": "scripts/lead/wachtrij.test.ts",
+      "category": "legacy-orchestration",
+      "sourceSha256": "0e00911c1ffc2b070fc81aae0a614255b87a1aa0f23aeb2b6dcfad6f0b8a18e0",
+      "unchanged": true
+    },
+    {
+      "source": "scripts/lead/wachtrij.ts",
+      "destination": "scripts/lead/wachtrij.ts",
+      "category": "legacy-orchestration",
+      "sourceSha256": "6e9006ffdd4c9e82f6454d338ea46e3175aeb606180beebb50d5e2a08a949f2e",
+      "unchanged": true
+    },
+    {
+      "source": "agents/skills/grill-me/SKILL.md",
+      "destination": "agents/skills/grill-me/SKILL.md",
+      "category": "skills",
+      "sourceSha256": "4e9eceb44c0cf6c0b555f31840bd3c4bd7771942a2d6f610fc9cd0f625ba28f5",
+      "unchanged": true
+    },
+    {
+      "source": "agents/skills/lead/SKILL.md",
+      "destination": "agents/skills/lead/SKILL.md",
+      "category": "skills",
+      "sourceSha256": "afaf7c51125330c47752d933b64339a31567f16b861d1ae11b0237a96694d28d",
+      "unchanged": true
+    },
+    {
+      "source": "agents/skills/lead/references/merge-procedure.md",
+      "destination": "agents/skills/lead/references/merge-procedure.md",
+      "category": "skills",
+      "sourceSha256": "4cb091d6e6e9142b29cd6c171bbea89956b85d54dedcb64ded2333a8032955e5",
+      "unchanged": true
+    },
+    {
+      "source": "agents/skills/lead/references/oogst.md",
+      "destination": "agents/skills/lead/references/oogst.md",
+      "category": "skills",
+      "sourceSha256": "d89d621598e49b75e67e2cae6d5f3cd8c378825f828eccf8c972a448b8df3249",
+      "unchanged": true
+    },
+    {
+      "source": "agents/skills/lead/references/opdracht-sjabloon.md",
+      "destination": "agents/skills/lead/references/opdracht-sjabloon.md",
+      "category": "skills",
+      "sourceSha256": "c67f60b4218b11ca8002a507ca3043aed1edccbbecf33ffefcc4302bfd45f441",
+      "unchanged": true
+    },
+    {
+      "source": "agents/skills/lead/references/sessies-beheren.md",
+      "destination": "agents/skills/lead/references/sessies-beheren.md",
+      "category": "skills",
+      "sourceSha256": "53eb8421319d95e613d5b58b8760af26a5e925b70ac90cfbb718dcfba1b084a9",
+      "unchanged": true
+    },
+    {
+      "source": "agents/skills/lead/references/sublead.md",
+      "destination": "agents/skills/lead/references/sublead.md",
+      "category": "skills",
+      "sourceSha256": "d68b7a91c3c387afeb2cc4638d706b86aff19a87215b350a63cdd81755a143f6",
+      "unchanged": true
+    },
+    {
+      "source": "agents/skills/retro/SKILL.md",
+      "destination": "agents/skills/retro/SKILL.md",
+      "category": "skills",
+      "sourceSha256": "4924f8e9993855b2d9e758f36586f99a6653a3b39febc3be6f57387162e92866",
+      "unchanged": true
+    },
+    {
+      "source": "agents/skills/retro/scripts/sessie-samenvatting.py",
+      "destination": "agents/skills/retro/scripts/sessie-samenvatting.py",
+      "category": "skills",
+      "sourceSha256": "f0cf4724e8f1f741d87af78729a031e461dcba8f6c0be2fdd397c0185e9462c7",
+      "unchanged": true
+    },
+    {
+      "source": "agents/skills/retro/scripts/test_sessie_samenvatting.py",
+      "destination": "agents/skills/retro/scripts/test_sessie_samenvatting.py",
+      "category": "skills",
+      "sourceSha256": "cb63a8bb674fcd6cc2a9434ea6ba4018c9b7b63a030eb82a3317c65f336b10b4",
+      "unchanged": true
+    }
+  ]
+}

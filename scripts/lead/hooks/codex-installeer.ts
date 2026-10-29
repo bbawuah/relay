@@ -50,23 +50,25 @@ export const EVENTS: EventSpec[] = [
   { event: "SessionEnd", timeout: 2 },
 ];
 
-export type Opties = { droog: boolean; verwijder: boolean; codexHome: string; doel: string; bun: string; codex: string; bron: string };
+export type Opties = { droog: boolean; verwijder: boolean; codexHome: string; doel: string; bun: string; codex: string; bron: string; staat?: string };
 export type Uitslag = { code: number; stdout: string; stderr: string };
 export type Deps = { start?: (codex: string, home: string, cwd: string) => Promise<AppServer> };
 
 const shq = (s: string) => (/^[A-Za-z0-9_/.:@+=-]+$/.test(s) ? s : `'${s.replaceAll("'", `'\\''`)}'`);
 
-export function commando(doel: string, bun: string, script = "hook.sh"): string {
+export const staatOmgeving = (staat: string): string => `LAB_LEAD_STAAT=${shq(staat)}`;
+
+export function commando(doel: string, bun: string, script = "hook.sh", staat?: string): string {
   const args = script === "hook.sh" ? " --bron codex" : "";
-  return `env LAB_LEAD_BUN=${shq(bun)} ${shq(join(doel, "codex-wrap.sh"))} ${shq(join(doel, script))}${args}`;
+  return `env LAB_LEAD_BUN=${shq(bun)}${staat ? ` ${staatOmgeving(staat)}` : ""} ${shq(join(doel, "codex-wrap.sh"))} ${shq(join(doel, script))}${args}`;
 }
 
-export function maakBlok(o: Pick<Opties, "doel" | "bun">): string {
+export function maakBlok(o: Pick<Opties, "doel" | "bun" | "staat">): string {
   const regels = [START];
   for (const e of EVENTS) {
     regels.push(`[[hooks.${e.event}]]`);
     if (e.matcher) regels.push(`matcher = ${JSON.stringify(e.matcher)}`);
-    regels.push(`[[hooks.${e.event}.hooks]]`, 'type = "command"', `command = ${JSON.stringify(commando(o.doel, o.bun, e.script))}`, `timeout = ${e.timeout}`, "");
+    regels.push(`[[hooks.${e.event}.hooks]]`, 'type = "command"', `command = ${JSON.stringify(commando(o.doel, o.bun, e.script, o.staat))}`, `timeout = ${e.timeout}`, "");
   }
   regels.push(EINDE);
   return regels.join("\n");
@@ -136,7 +138,7 @@ export async function installeer(o: Opties, deps: Deps = {}): Promise<Uitslag> {
   uit.push(`${dr}blok: ${verandert ? (o.verwijder ? "wordt weggehaald" : blokIn(oud) !== null ? "wordt vervangen" : "wordt toegevoegd") : "ongewijzigd"}`);
   if (!o.verwijder) {
     uit.push(`${dr}te kopiëren naar ${o.doel}:`, ...BESTANDEN.map((b) => `  ${join(o.bron, b)} -> ${join(o.doel, b)}`), ...peersKopieen(o.bron, o.doel).map(([van, naar]) => `  ${van} -> ${naar}`));
-    uit.push(`${dr}hookcommando: ${commando(o.doel, o.bun)}`);
+    uit.push(`${dr}hookcommando: ${commando(o.doel, o.bun, "hook.sh", o.staat)}`);
     uit.push(`${dr}events: ${EVENTS.map((e) => e.event).join(", ")}`);
   }
   uit.push(`${dr}backup: ${existsSync(backup) ? `${backup} bestaat al en blijft staan` : existsSync(cfg) ? `${backup} wordt gemaakt vóór de eerste wijziging` : "geen (er is nog geen config.toml)"}`);
@@ -216,6 +218,7 @@ export function leesArgs(argv: string[], env: { [k: string]: string | undefined 
       else if (a === "--doel") doel = resolve(w());
       else if (a === "--codex") o.codex = w();
       else if (a === "--bun") o.bun = resolve(w());
+      else if (a === "--staat") o.staat = resolve(w());
       else return `onbekende optie: ${a}`;
     } catch (e) {
       return (e as Error).message;

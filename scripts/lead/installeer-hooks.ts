@@ -42,6 +42,7 @@ export type Opties = {
   settings: string;
   doel: string;
   bun: string;
+  staat?: string;
   nu: Date;
   /** Map met hook.sh, hook.ts en register.ts. */
   bron: string;
@@ -49,7 +50,7 @@ export type Opties = {
 export type Uitslag = { code: number; stdout: string; stderr: string };
 
 /** Pure functie: de nieuwe `.hooks` voor een bestaande (de generator in beleid/claude.ts). */
-export function nieuweHooks(oud: unknown, o: Pick<Opties, "doel" | "bun" | "metWekker" | "verwijder">): Json | undefined {
+export function nieuweHooks(oud: unknown, o: Pick<Opties, "doel" | "bun" | "metWekker" | "verwijder" | "staat">): Json | undefined {
   return nieuweHooksUitBron(oud, claudeSpecs(beleid, {}), o);
 }
 
@@ -94,7 +95,7 @@ export function installeer(o: Opties): Uitslag {
 
   let nieuw: Json;
   try {
-    const g = genereer(beleid, "claude", { doel: o.doel, bun: o.bun, metWekker: o.metWekker, verwijder: o.verwijder, settings: o.settings, bestaand: origineel });
+    const g = genereer(beleid, "claude", { doel: o.doel, bun: o.bun, staat: o.staat, metWekker: o.metWekker, verwijder: o.verwijder, settings: o.settings, bestaand: origineel });
     nieuw = JSON.parse(g.bestanden[0]!.inhoud) as Json;
   } catch (e) {
     return fout(`${(e as Error).message}; niets aangepast`);
@@ -157,16 +158,17 @@ export function installeer(o: Opties): Uitslag {
 }
 
 export function leesArgs(argv: string[], home = homedir()): Omit<Opties, "bun" | "nu" | "bron"> | string {
-  const o = { droog: false, verwijder: false, metWekker: false, settings: join(home, ".claude", "settings.json"), doel: join(home, ".claude", "hooks", "lab-lead-hooks") };
+  const o: Omit<Opties, "bun" | "nu" | "bron"> = { droog: false, verwijder: false, metWekker: false, settings: join(home, ".claude", "settings.json"), doel: join(home, ".claude", "hooks", "lab-lead-hooks") };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     if (a === "--droog") o.droog = true;
     else if (a === "--verwijder") o.verwijder = true;
     else if (a === "--met-wekker") o.metWekker = true;
-    else if (a === "--settings" || a === "--doel") {
+    else if (a === "--settings" || a === "--doel" || a === "--staat") {
       const w = argv[++i];
       if (!w) return `${a} heeft een waarde nodig`;
       if (a === "--settings") o.settings = resolve(w);
+      else if (a === "--staat") o.staat = resolve(w);
       else o.doel = resolve(w);
     } else return `onbekende optie: ${a}`;
   }

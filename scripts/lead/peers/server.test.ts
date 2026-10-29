@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { type Rec, identiteitPad, nieuwRecord, schrijfIdentiteit, schrijfRecord } from "../hooks/register";
 import { maakBus } from "./bus";
-import { metIdentiteit, verwerk } from "./server";
+import { leadProefNaam, metIdentiteit, verwerk } from "./server";
 import { toon } from "./types";
 
 // Echte serverprocessen op een tijdelijke staatmap; de echte ~/.local/state/lab-lead blijft ongemoeid.
@@ -294,5 +294,60 @@ describe("afgeleide naam voor een Codex-sessie zonder identiteit (CONTRACT.md, W
     expect(tekstVan(goed.antwoord)).not.toContain("LAB_AGENT_NAAM ontbreekt");
     const fout = await verwerk(metaRoep(2, "list", { threadId: tid, sessionId: ander }) as any, bus1(), { LAB_LEAD_STAAT: staat }, true);
     expect(tekstVan(fout.antwoord)).toContain("LAB_AGENT_NAAM ontbreekt");
+  });
+});
+
+describe("de Codex-lead (lead-proef): naam alleen voor de gebonden sessie", () => {
+  const gebonden = "01a17ebe-4fe1-79b1-807b-0e8515a20120"; // threadId = sessionId = session_id van de hook (fixture codex-mcp-tools-call.json)
+  const ander = "01a17ebd-76bc-7472-a451-ac8ef9f536d4";
+  const proef = (extra = {}) => ({ naam: "codex-lead", rol: "lead-proef", lead: "codex-lead", opdracht: "", spawn_id: "lead", ts: T0, ...extra });
+  let wt: string;
+  beforeEach(() => {
+    wt = join(dir, "werkruimte");
+    mkdirSync(wt, { recursive: true });
+    wt = realpathSync(wt);
+  });
+  const inbox = async (meta: unknown, env: Record<string, string | undefined> = { LAB_LEAD_STAAT: staat }) =>
+    tekstVan((await verwerk({ jsonrpc: "2.0", id: 1, method: "tools/call", params: { name: "inbox", arguments: {}, ...(meta === undefined ? {} : { _meta: meta }) } } as any, bus(), env, false, wt, T0)).antwoord);
+
+  test("de gebonden sessie spreekt als codex-lead; de server-omgeving zelf kent de naam niet", async () => {
+    schrijfIdentiteit(staat, wt, proef({ sessie_id: gebonden }));
+    expect(metIdentiteit({ LAB_LEAD_STAAT: staat }, wt, T0).LAB_AGENT_NAAM).toBeUndefined();
+    expect(leadProefNaam({ threadId: gebonden, sessionId: gebonden }, { LAB_LEAD_STAAT: staat }, wt, T0)).toBe("codex-lead");
+    expect(await inbox({ threadId: gebonden })).not.toContain("LAB_AGENT_NAAM ontbreekt");
+  });
+
+  test("een andere sessie, een aanroep zonder _meta of met afwijkende id's krijgt geen naam", async () => {
+    schrijfIdentiteit(staat, wt, proef({ sessie_id: gebonden }));
+    for (const meta of [{ threadId: ander }, undefined, {}, { threadId: 5 }, { threadId: gebonden, sessionId: ander }]) {
+      expect(leadProefNaam(meta, { LAB_LEAD_STAAT: staat }, wt, T0)).toBeNull();
+      expect(await inbox(meta)).toContain("LAB_AGENT_NAAM ontbreekt");
+    }
+  });
+
+  test("een ongebonden identiteit geeft niemand de naam", async () => {
+    schrijfIdentiteit(staat, wt, proef());
+    expect(leadProefNaam({ threadId: gebonden }, { LAB_LEAD_STAAT: staat }, wt, T0)).toBeNull();
+    expect(await inbox({ threadId: gebonden })).toContain("LAB_AGENT_NAAM ontbreekt");
+  });
+
+  test("een argument-threadId telt niet; de identiteit wint van een geërfde naam voor de gebonden sessie", async () => {
+    schrijfIdentiteit(staat, wt, proef({ sessie_id: gebonden }));
+    const r = await verwerk({ jsonrpc: "2.0", id: 1, method: "tools/call", params: { name: "inbox", arguments: { threadId: gebonden } } } as any, bus(), { LAB_LEAD_STAAT: staat }, false, wt, T0);
+    expect(tekstVan(r.antwoord)).toContain("LAB_AGENT_NAAM ontbreekt");
+    expect(leadProefNaam({ threadId: gebonden }, { LAB_LEAD_STAAT: staat, LAB_AGENT_NAAM: "lead-x" }, wt, T0)).toBe("codex-lead");
+  });
+
+  test("een andere rol blijft zoals voorheen: geen leadProef-naam, de identiteit uit metIdentiteit wint", async () => {
+    schrijfIdentiteit(staat, wt, { ...proef({ sessie_id: gebonden }), naam: "a", rol: "agent" });
+    expect(leadProefNaam({ threadId: gebonden }, { LAB_LEAD_STAAT: staat }, wt, T0)).toBeNull();
+    expect(metIdentiteit({ LAB_LEAD_STAAT: staat }, wt, T0).LAB_AGENT_NAAM).toBe("a");
+    expect(await inbox({ threadId: gebonden }, metIdentiteit({ LAB_LEAD_STAAT: staat }, wt, T0))).not.toContain("LAB_AGENT_NAAM ontbreekt");
+  });
+
+  test("zonder leadProefCwd (oude aanroep) verandert er niets", async () => {
+    schrijfIdentiteit(staat, wt, proef({ sessie_id: gebonden }));
+    const r = await verwerk({ jsonrpc: "2.0", id: 1, method: "tools/call", params: { name: "inbox", arguments: {}, _meta: { threadId: gebonden } } } as any, bus(), { LAB_LEAD_STAAT: staat }, false);
+    expect(tekstVan(r.antwoord)).toContain("LAB_AGENT_NAAM ontbreekt");
   });
 });

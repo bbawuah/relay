@@ -1,7 +1,14 @@
 {
   "name": "relay",
+  "version": "0.1.0",
+  "description": "Local peer messaging, session hooks and wake-up adapters for Claude, Codex and T3 Code",
+  "engines": { "bun": ">=1.4.2" },
+  "bin": { "relay": "bin/relay.ts" },
   "private": true,
   "scripts": {
+    "relay": "bun bin/relay.ts",
+    "install:local": "bun bin/relay.ts install",
+    "doctor": "bun bin/relay.ts doctor",
     "test": "bun test",
     "typecheck": "tsc -p tsconfig.json",
     "check": "bun run test && bun run typecheck",
