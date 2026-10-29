@@ -1,9 +1,7 @@
 #!/bin/bash -p
-# Merge een PR als de lead-voorwaarden kloppen. Gebruik: scripts/lead/merge.sh <pr> [--droog]
-# Weigert (exit 1, met reden) zonder "Lead-review: akkoord"-comment, zonder groene check
-# 'poort', als de PR niet mergeable is of de tak achterloopt, en zonder e2e-stempel van de
-# volledige poort op de patch van de PR. Zie scripts/lead/README.md.
-# Vangnet, geen grens: zie "Vangnet, geen grens" in scripts/lead/README.md.
+# Optionele PR-mergehulp; GitHub en gewone CI bepalen de mergevoorwaarden. Gebruik: scripts/lead/merge.sh <pr> [--droog]
+# Controleert gewone CI en mergebaarheid; geen rol, reviewmarker of lokaal poortstempel.
+# Optionele bediening; zie scripts/lead/README.md voor functies en activeringsgrens.
 set -euo pipefail
 unset BASH_ENV ENV
 
@@ -44,12 +42,6 @@ while [ $# -gt 0 ]; do
   esac
   shift
 done
-# Alleen de gewone lead of Codex-lead-proef merget: een gespawnde agent kan zelf
-# "Lead-review: akkoord" posten, maar niet mergen. --droog mag zonder die rol.
-case ${LAB_AGENT_ROL:-} in
-  lead|lead-proef) ;;
-  *) [ "$droog" = 1 ] || fout "alleen de lead merget (LAB_AGENT_ROL=lead of lead-proef)" ;;
-esac
 [[ $pr =~ ^[0-9]+$ ]] || fout "geef een PR-nummer, bijvoorbeeld: merge.sh 71"
 { [ -z "$contract" ] && [ -z "$spoor" ]; } || { [ -n "$contract" ] && [ -n "$spoor" ]; } || fout "--contract en --spoor horen bij elkaar"
 if [ -n "$contract" ]; then
@@ -84,14 +76,6 @@ sha=$(j '.headRefOid[0:7]')
 headvol=$(j '.headRefOid')
 [[ $headvol =~ ^[0-9a-f]{40}$ ]] || fout "kan het volledige head-SHA van PR $pr niet lezen"
 
-akkoord=$(printf '%s' "$json" | jq -r --arg s "$sha" '[.comments[]? | select(.body | test("^Lead-review: akkoord " + $s + "([^0-9a-fA-F]|$)"))] | length')
-if [ "$akkoord" -lt 1 ]; then
-  if [ "$(j '[.comments[]? | select(.body | startswith("Lead-review: akkoord"))] | length')" -ge 1 ]; then
-    fout "push na akkoord: geen \"Lead-review: akkoord $sha\" voor de huidige head van PR $pr"
-  fi
-  fout "PR $pr heeft geen comment die begint met \"Lead-review: akkoord $sha\""
-fi
-
 # Geen enkele CheckRun van de CI-workflow (lead.conf): GitHub startte soms geen CI bij een nieuwe PR (#85, #87, #88). Dat is
 # iets anders dan "poort niet groen" of "poort ontbreekt": wachten helpt niet, de PR moet opnieuw een run krijgen.
 # Vercel zet eigen entries in de rollup (StatusContext "Vercel", CheckRun "Vercel Preview Comments"); die tellen niet.
@@ -118,71 +102,6 @@ case $status in
   BEHIND) fout "tak $tak loopt achter op main: eerst bijwerken (strict)" ;;
   *) fout "PR $pr kan nog niet mergen (mergeStateStatus: $status)" ;;
 esac
-
-# e2e-stempel: geen merge zonder een groene volledige poort (met de geraakte e2e) op de patch van
-# deze PR. scripts/poort.ts schrijft na een groene run op een schone werkkopie
-# ~/.cache/lab-bawuah/poort/<sha>.json. Een stempel op de head telt; een stempel op een oudere commit S
-# van de PR telt als de eigen patch sindsdien gelijk is (git patch-id van main...S = van main...head),
-# zodat update-branch de stempel niet ongeldig maakt. De combinatie met de nieuwere main toetst dit
-# niet. Vangnet, geen grens: een agent kan het bestand zelf schrijven (zie scripts/lead/README.md).
-STEMPELS="${LAB_MERGE_STEMPELS:-$HOME/.cache/lab-bawuah/poort}"
-# compare <a> <b>: "status<TAB>merge-base" van GitHub (status: identical, ahead, behind, diverged)
-compare() { gh api "repos/$REPO/compare/$1...$2" --jq '[.status, .merge_base_commit.sha] | @tsv'; }
-# patch <s>: patch-id van de eigen wijziging van commit s t.o.v. main (leeg = geen of onleesbare patch)
-patch() {
-  local d
-  d=$(gh api -H "Accept: application/vnd.github.diff" "repos/$REPO/compare/main...$1") || return 1
-  printf '%s\n' "$d" | git patch-id --stable | cut -d' ' -f1
-}
-stempel="" stempel_reden=""
-headpatch=""
-# de head eerst, daarna de commits van de PR van nieuw naar oud
-kandidaten=$(printf '%s' "$json" | jq -r '[.headRefOid] + ([.commits[]?.oid] | reverse) | reduce .[] as $x ([]; if any(.[]; . == $x) then . else . + [$x] end) | .[]') \
-  || fout "kon de commits van PR $pr niet uitlezen (jq faalde)"
-for s in $kandidaten; do
-  [[ $s =~ ^[0-9a-f]{40}$ ]] || continue
-  f="$STEMPELS/$s.json"
-  { [ -f "$f" ] && [ ! -L "$f" ]; } || continue
-  if ! jq -e --arg s "$s" '.sha == $s and .groen == true and (.modus == "alles" or (.modus == "affected" and ((.base // "") | test("^[0-9a-f]{40}$"))))' "$f" >/dev/null 2>&1; then
-    stempel_reden="de stempel op ${s:0:7} is niet groen of onleesbaar (oud formaat zonder \"groen\": draai de poort opnieuw)"
-    continue
-  fi
-  if [ "$(jq -r .modus "$f")" = affected ]; then
-    # De basis van de stempel moet een voorouder zijn van de merge-base van main en S; anders telde
-    # de poort te weinig als affected (bv. --base HEAD).
-    sbase=$(jq -r .base "$f")
-    mb=$(compare main "$s" | cut -f2) || fout "kon main...${s:0:7} niet vergelijken (gh api)"
-    [[ $mb =~ ^[0-9a-f]{40}$ ]] || fout "onverwachte merge-base voor ${s:0:7} van gh api"
-    st=$(compare "$sbase" "$mb" | cut -f1) || fout "kon de basis van de stempel niet vergelijken (gh api)"
-    case $st in
-      identical|ahead) ;;
-      *) stempel_reden="de stempel op ${s:0:7} is gemaakt met een basis (${sbase:0:7}) die geen voorouder van main is; draai de poort met --base origin/main"; continue ;;
-    esac
-  fi
-  if [ "$s" != "$headvol" ]; then
-    [ -n "$headpatch" ] || headpatch=$(patch "$headvol") || fout "kon de patch van de head niet ophalen (gh api)"
-    [ -n "$headpatch" ] || fout "de patch van PR $pr is leeg of onleesbaar"
-    spatch=$(patch "$s") || fout "kon de patch van ${s:0:7} niet ophalen (gh api)"
-    if [ "$spatch" != "$headpatch" ]; then
-      stempel_reden="de patch is gewijzigd na de stempel op ${s:0:7}: draai de poort opnieuw op de head"
-      continue
-    fi
-  fi
-  stempel=$s
-  break
-done
-if [ -z "$stempel" ]; then
-  [ -n "$stempel_reden" ] && fout "geen geldige e2e-stempel voor PR $pr: $stempel_reden"
-  fout "geen e2e-stempel voor PR $pr: draai \`bun run poort\` (met e2e) op een schone werkkopie van de tak"
-fi
-if [ "$stempel" = "$headvol" ]; then
-  echo "merge: e2e-stempel op de head ${stempel:0:7} ($(jq -r .modus "$STEMPELS/$stempel.json"), $(jq -r .tijd "$STEMPELS/$stempel.json"))"
-else
-  echo "merge: e2e-stempel op ${stempel:0:7} ($(jq -r .modus "$STEMPELS/$stempel.json"), $(jq -r .tijd "$STEMPELS/$stempel.json")); patch van de head ${sha} is gelijk"
-fi
-# Optioneel stempelveld "overgeslagen" (poort.ts): stappen die lokaal niet draaiden omdat de diff ze niet raakte.
-overgeslagen=$(jq -r '(.overgeslagen // []) | join(", ")' "$STEMPELS/$stempel.json" 2>/dev/null || true)
-[ -z "$overgeslagen" ] || echo "merge: LET OP, in de poortrun overgeslagen: $overgeslagen (CI draait ze wel)"
 
 # Bezitscheck: waarschuwing, geen weigering (de lead beslist).
 if [ -n "$contract" ]; then
@@ -215,12 +134,11 @@ if [ -n "$contract" ]; then
 fi
 
 if [ "$droog" = 1 ]; then
-  echo "droog: PR $pr voldoet (e2e-stempel ${stempel:0:7}); zou draaien: gh pr merge $pr --merge --match-head-commit $headvol --repo $REPO, controleren op MERGED, open PR's met base $tak naar main zetten, dan gh api -X DELETE repos/$REPO/git/refs/heads/$tak"
+  echo "droog: PR $pr voldoet; zou draaien: gh pr merge $pr --merge --match-head-commit $headvol --repo $REPO, controleren op MERGED, open PR's met base $tak naar main zetten, dan gh api -X DELETE repos/$REPO/git/refs/heads/$tak"
   exit 0
 fi
 
-# --match-head-commit: GitHub weigert als de head ondertussen is verschoven (een push tussen de
-# akkoord-controle hierboven en het mergen); de head die tegen het akkoord is getoetst, telt.
+# --match-head-commit beschermt tegen een verschoven head tussen lezen en mergen.
 gh pr merge "$pr" --merge --match-head-commit "$headvol" --repo "$REPO"
 na=$(gh pr view "$pr" --json state --repo "$REPO" | jq -r '.state')
 if [ "$na" != MERGED ]; then

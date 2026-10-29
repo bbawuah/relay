@@ -1,0 +1,147 @@
+{
+  "capturedAt": "2026-10-29T20:54:46.518076+00:00",
+  "access": "read-only code hashes; no settings, credentials or mailbox contents",
+  "relaySymlink": "/Users/labbawuah/relay/scripts/lead/relay.ts",
+  "files": [
+    {
+      "path": "/Users/labbawuah/relay/scripts/lead/hooks/grenzen.sh",
+      "bytes": 68316,
+      "sha256": "85f21161f3fb8395309467ce59f324d2ce448ed73437059b95f780d486736666"
+    },
+    {
+      "path": "/Users/labbawuah/relay/scripts/lead/hooks/hook.ts",
+      "bytes": 26183,
+      "sha256": "e1d7d00ddb0ca405e59c9d51bf194189e4c8b980f2017e18c40baea0d12e8e42"
+    },
+    {
+      "path": "/Users/labbawuah/relay/scripts/lead/hooks/hook.sh",
+      "bytes": 1002,
+      "sha256": "55044f860db1094ba4b80c6ebe4e0011286fea9d8976f5169e4934a15ae1ba28"
+    },
+    {
+      "path": "/Users/labbawuah/relay/scripts/lead/hooks/codex-wrap.sh",
+      "bytes": 1027,
+      "sha256": "8fb3503d737ebd0788c2b2060bdb4966204c60c347048b04a3adadb43090862d"
+    },
+    {
+      "path": "/Users/labbawuah/relay/scripts/lead/hooks/codex-wrap.ts",
+      "bytes": 7267,
+      "sha256": "75e20626de0e45431dfc1b49b7d2c6a9add153ee88cff25941ab24a7fac2fbc1"
+    },
+    {
+      "path": "/Users/labbawuah/relay/scripts/lead/hooks/register.ts",
+      "bytes": 19130,
+      "sha256": "1a6a41fe904649dbce81b0c865c831291c4111bc870aa1739c813723bb41c74d"
+    },
+    {
+      "path": "/Users/labbawuah/.codex-lead/hooks/lab-lead-hooks/grenzen.sh",
+      "bytes": 229,
+      "sha256": "069ef0a540fd0027ed42a060af4300fb21f67acf7779d887eda671dbc85bb56a"
+    },
+    {
+      "path": "/Users/labbawuah/.codex-lead/hooks/lab-lead-hooks/hook.ts",
+      "bytes": 26183,
+      "sha256": "e1d7d00ddb0ca405e59c9d51bf194189e4c8b980f2017e18c40baea0d12e8e42"
+    },
+    {
+      "path": "/Users/labbawuah/.codex-lead/hooks/lab-lead-hooks/hook.sh",
+      "bytes": 1002,
+      "sha256": "55044f860db1094ba4b80c6ebe4e0011286fea9d8976f5169e4934a15ae1ba28"
+    },
+    {
+      "path": "/Users/labbawuah/.codex-lead/hooks/lab-lead-hooks/codex-wrap.sh",
+      "bytes": 1027,
+      "sha256": "8fb3503d737ebd0788c2b2060bdb4966204c60c347048b04a3adadb43090862d"
+    },
+    {
+      "path": "/Users/labbawuah/.codex-lead/hooks/lab-lead-hooks/codex-wrap.ts",
+      "bytes": 7267,
+      "sha256": "75e20626de0e45431dfc1b49b7d2c6a9add153ee88cff25941ab24a7fac2fbc1"
+    },
+    {
+      "path": "/Users/labbawuah/.codex-lead/hooks/lab-lead-hooks/register.ts",
+      "bytes": 19130,
+      "sha256": "1a6a41fe904649dbce81b0c865c831291c4111bc870aa1739c813723bb41c74d"
+    },
+    {
+      "path": "/Users/labbawuah/.codex-werker/hooks/lab-lead-hooks/grenzen.sh",
+      "bytes": 229,
+      "sha256": "069ef0a540fd0027ed42a060af4300fb21f67acf7779d887eda671dbc85bb56a"
+    },
+    {
+      "path": "/Users/labbawuah/.codex-werker/hooks/lab-lead-hooks/hook.ts",
+      "bytes": 23131,
+      "sha256": "1e0362c0ee4a2fcf3f9cb28e10311e1b9a165aace717c392c418f9f5795421c9"
+    },
+    {
+      "path": "/Users/labbawuah/.codex-werker/hooks/lab-lead-hooks/hook.sh",
+      "bytes": 1024,
+      "sha256": "5d01bcd6d15377c49d2dae25a4d4844e1a882c8d0bcab513a1452706f8fedde6"
+    },
+    {
+      "path": "/Users/labbawuah/.codex-werker/hooks/lab-lead-hooks/codex-wrap.sh",
+      "bytes": 667,
+      "sha256": "f1323db4ef5f3ab239eddd6cdd75f622f01e1dc51e204a0712d71438695e5756"
+    },
+    {
+      "path": "/Users/labbawuah/.codex-werker/hooks/lab-lead-hooks/codex-wrap.ts",
+      "bytes": 4609,
+      "sha256": "4cd29e95fae64907c961bcecc6fa233c9f42cd8c699074f13f86950ae717f04f"
+    },
+    {
+      "path": "/Users/labbawuah/.codex-werker/hooks/lab-lead-hooks/register.ts",
+      "bytes": 18783,
+      "sha256": "f486f52d2a9583df5149eca8129d20a71fb96af0043a039c453b6a90903665bb"
+    },
+    {
+      "path": "/Users/labbawuah/.codex/hooks/lab-lead-hooks/grenzen.sh",
+      "bytes": 229,
+      "sha256": "069ef0a540fd0027ed42a060af4300fb21f67acf7779d887eda671dbc85bb56a"
+    },
+    {
+      "path": "/Users/labbawuah/.codex/hooks/lab-lead-hooks/hook.ts",
+      "bytes": 23131,
+      "sha256": "1e0362c0ee4a2fcf3f9cb28e10311e1b9a165aace717c392c418f9f5795421c9"
+    },
+    {
+      "path": "/Users/labbawuah/.codex/hooks/lab-lead-hooks/hook.sh",
+      "bytes": 1024,
+      "sha256": "5d01bcd6d15377c49d2dae25a4d4844e1a882c8d0bcab513a1452706f8fedde6"
+    },
+    {
+      "path": "/Users/labbawuah/.codex/hooks/lab-lead-hooks/codex-wrap.sh",
+      "bytes": 667,
+      "sha256": "f1323db4ef5f3ab239eddd6cdd75f622f01e1dc51e204a0712d71438695e5756"
+    },
+    {
+      "path": "/Users/labbawuah/.codex/hooks/lab-lead-hooks/codex-wrap.ts",
+      "bytes": 4609,
+      "sha256": "4cd29e95fae64907c961bcecc6fa233c9f42cd8c699074f13f86950ae717f04f"
+    },
+    {
+      "path": "/Users/labbawuah/.codex/hooks/lab-lead-hooks/register.ts",
+      "bytes": 18783,
+      "sha256": "f486f52d2a9583df5149eca8129d20a71fb96af0043a039c453b6a90903665bb"
+    },
+    {
+      "path": "/Users/labbawuah/.claude/hooks/lab-lead-hooks/hook.ts",
+      "bytes": 23131,
+      "sha256": "1e0362c0ee4a2fcf3f9cb28e10311e1b9a165aace717c392c418f9f5795421c9"
+    },
+    {
+      "path": "/Users/labbawuah/.claude/hooks/lab-lead-hooks/hook.sh",
+      "bytes": 1024,
+      "sha256": "5d01bcd6d15377c49d2dae25a4d4844e1a882c8d0bcab513a1452706f8fedde6"
+    },
+    {
+      "path": "/Users/labbawuah/.claude/hooks/lab-lead-hooks/register.ts",
+      "bytes": 18783,
+      "sha256": "f486f52d2a9583df5149eca8129d20a71fb96af0043a039c453b6a90903665bb"
+    },
+    {
+      "path": "/Users/labbawuah/.claude/hooks/grenzen.sh",
+      "bytes": 229,
+      "sha256": "069ef0a540fd0027ed42a060af4300fb21f67acf7779d887eda671dbc85bb56a"
+    }
+  ]
+}

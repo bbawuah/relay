@@ -85,24 +85,6 @@ describe("hook.ts met Codex-invoer (echte fixtures uit de spike)", () => {
     expect(leesRecord(staat, SID)).toMatchObject({ id: SID, naam: "cx1", rol: "agent", lead: "lead", vendor: "codex", host: "tui", thread_id: SID, codex_home: "/tmp/codexhome-x", herkomst: "schoon", toestand: "bezig" });
   });
 
-  test("een hele beurt zonder rapport: Stop blokkeert (de gate blijft aan voor Codex); bij stop_hook_active gaat hij door als idle", async () => {
-    const e = env();
-    await verwerk("SessionStart", fixture("SessionStart"), e, opt());
-    await verwerk("UserPromptSubmit", fixture("UserPromptSubmit"), e, opt());
-    await verwerk("PreToolUse", fixture("PreToolUse-Bash"), e, opt());
-    await verwerk("PostToolUse", fixture("PostToolUse-Bash"), e, opt());
-    await verwerk("PreToolUse", fixture("PreToolUse-apply_patch"), e, opt());
-    await verwerk("PostToolUse", fixture("PostToolUse-apply_patch"), e, opt());
-    expect(leesRecord(staat, SID)).toMatchObject({ tools_in_beurt: 2, laatste_tool: "apply_patch" });
-    const stop = await verwerk("Stop", fixture("Stop"), e, opt());
-    expect(JSON.parse(stop.stdout).decision).toBe("block");
-    const door = await verwerk("Stop", { ...fixture("Stop"), stop_hook_active: true }, e, opt());
-    expect(door.stdout).toBe("");
-    expect(leesRecord(staat, SID)?.toestand).toBe("idle");
-    await verwerk("SessionEnd", fixture("SessionEnd"), e, opt());
-    expect(leesRecord(staat, SID)?.toestand).toBe("weg");
-  });
-
   test("rapport-gate: peers.send naar de eigen lead telt als rapport (klaar); naar een ander niet", async () => {
     const e = env();
     await verwerk("SessionStart", fixture("SessionStart"), e, opt());
@@ -140,22 +122,9 @@ describe("hook.ts met Codex-invoer (echte fixtures uit de spike)", () => {
       expect(leesRecord(staat, SID)?.vrij).toBe(false);
     }
     const geblokt = await verwerk("Stop", fixture("Stop"), e, opt());
-    expect(JSON.parse(geblokt.stdout).decision).toBe("block");
+    expect(geblokt.stdout).toBe("");
     await verwerk("PostToolUse", send("afgeleverd m-10"), e, opt());
     expect(leesRecord(staat, SID)).toMatchObject({ rapport_in_beurt: true, vrij: true });
-  });
-
-  test("K2: de Stop-gate noemt voor Codex mcp__peers__send, voor Claude SendMessage", async () => {
-    await verwerk("SessionStart", fixture("SessionStart"), env(), opt());
-    await verwerk("PreToolUse", fixture("PreToolUse-Bash"), env(), opt());
-    const codex = JSON.parse((await verwerk("Stop", fixture("Stop"), env(), opt())).stdout);
-    expect(codex.reason).toContain("mcp__peers__send(naar: lead");
-    expect(codex.reason).not.toContain("SendMessage");
-    const o: Opties = { nu: () => klok };
-    await verwerk("SessionStart", { session_id: "c2", cwd: "/w" }, env(), o);
-    await verwerk("PreToolUse", { session_id: "c2", cwd: "/w", tool_name: "Bash", tool_input: {} }, env(), o);
-    const claude = JSON.parse((await verwerk("Stop", { session_id: "c2", cwd: "/w" }, env(), o)).stdout);
-    expect(claude.reason).toContain("SendMessage(to: lead)");
   });
 
   test("Z3: bij resume blijft de herkomst extern (en de markering van de bus staan); startup en clear maken schoon", async () => {

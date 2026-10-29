@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { type Opties, installeer } from "../installeer-hooks";
 import { installeer as installeerOud } from "./fixtures/installeer-hooks-oud";
 import { beleid } from "./beleid";
-import { BELEID_MERK, MERK, genereer } from "./claude";
+import { MERK, genereer } from "./claude";
 import { hosts } from "./hosts";
 
 // Alles in een wegwerpmap; de echte ~/.claude wordt nooit gelezen of geschreven.
@@ -149,7 +149,7 @@ describe("beleidslaag fase 1: eigen entries en de rest", () => {
     installeer(opties());
     const pre = lees().hooks.PreToolUse as any[];
     expect(pre.filter((g) => JSON.stringify(g).includes("grenzen.sh"))).toHaveLength(1);
-    expect(JSON.stringify(lees())).not.toContain(BELEID_MERK);
+    expect(JSON.stringify(lees())).not.toContain("LAB_BELEID_ID=");
   });
   test("een installatie van vóór de beleidslaag wordt als eigen herkend: vervangen, niet verdubbeld", () => {
     schrijf(BRIAN());
@@ -169,10 +169,7 @@ describe("beleidslaag fase 1: de generator", () => {
   test("snapshot: lead-hooks op een lege settings", () => {
     snapshot("claude-leeg.json", genereer(beleid, "claude", o));
   });
-  test("snapshot: met grenzen en wekker in Brians settings", () => {
-    const r = genereer(beleid, "claude", { ...o, metWekker: true, metGrenzen: true, grensPad: "/nep/home/.claude/hooks/grenzen.sh", bestaand: BRIAN() });
-    snapshot("claude-met-grenzen.json", r);
-  });
+
   test("deterministisch en pure invoer: dezelfde uitvoer, de invoer is niet gewijzigd", () => {
     const b = BRIAN();
     const a1 = genereer(beleid, "claude", { ...o, bestaand: b });
@@ -180,25 +177,12 @@ describe("beleidslaag fase 1: de generator", () => {
     expect(a1).toEqual(a2);
     expect(b).toEqual(BRIAN());
   });
-  test("met grenzen: Brians entry zonder markering wordt overgenomen (één entry, gemarkeerd) en verwijderen haalt hem weg", () => {
-    const m = { ...o, metGrenzen: true, grensPad: "/nep/home/.claude/hooks/grenzen.sh" };
-    const een = genereer(beleid, "claude", { ...m, bestaand: BRIAN() });
-    const pre = hooksVan(een).PreToolUse as any[];
-    const grenzen = pre.filter((g) => JSON.stringify(g).includes("grenzen.sh"));
-    expect(grenzen).toHaveLength(1);
-    expect(grenzen[0].matcher).toBe("Bash|Read|Grep|Glob|NotebookRead");
-    expect(grenzen[0].hooks[0].command).toContain(`${BELEID_MERK}grenzen`);
-    // tweede run verandert niets
-    const twee = genereer(beleid, "claude", { ...m, bestaand: JSON.parse(een.bestanden[0]!.inhoud) });
-    expect(twee.bestanden[0]!.inhoud).toBe(een.bestanden[0]!.inhoud);
-    const weg = genereer(beleid, "claude", { ...m, verwijder: true, bestaand: JSON.parse(een.bestanden[0]!.inhoud) });
-    expect(JSON.parse(weg.bestanden[0]!.inhoud).hooks.PreToolUse.some((g: any) => JSON.stringify(g).includes("grenzen.sh"))).toBe(false);
-  });
+
   test("alsBestaat: ontbreekt het pad, dan wordt de hook overgeslagen met een melding", () => {
-    const b = { ...beleid, hooks: beleid.hooks.map((h) => (h.id === "grenzen" ? { ...h, alsBestaat: "/nep/bestaat-niet" } : h)) };
-    const r = genereer(b, "claude", { ...o, metGrenzen: true, bestaat: () => false });
+    const b = { ...beleid, hooks: beleid.hooks.map((h) => (h.id === "lead-sessie-start" ? { ...h, alsBestaat: "/nep/bestaat-niet" } : h)) };
+    const r = genereer(b, "claude", { ...o, bestaat: () => false });
     expect(r.waarschuwingen.join("\n")).toContain("/nep/bestaat-niet bestaat niet");
-    expect(JSON.stringify(hooksVan(r))).not.toContain("grenzen");
+    expect(hooksVan(r).SessionStart).toBeUndefined();
   });
   test("niet vertaalbaar: een melding in plaats van stil weglaten", () => {
     const b = { ...beleid, hooks: [{ id: "x", event: "toestemming" as const, script: "lead-hook" as const, timeoutS: 5, hosts: ["claude" as const] }, { id: "y", event: "voor-tool" as const, tools: ["shell" as const], script: "werknotities-pre" as const, timeoutS: 5 }] };

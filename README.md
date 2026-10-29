@@ -1,6 +1,6 @@
 # relay
 
-Zelfstandige lead-, worker-, peerbus- en beleidsautomatisering, los van een
+Zelfstandige launchers, sessiestatus en lokale peerberichten, los van een
 productrepository.
 
 ## Lokaal controleren
@@ -23,7 +23,7 @@ projectspecificieke checks en regels horen daar, niet in deze repository.
 
 ## Codex starten
 
-De korte vorm opent een gecontroleerde Codex-lead; een taak is optioneel. Vanuit
+De korte vorm opent een Codex-sessie met de bestaande providerconfiguratie; een taak is optioneel. Vanuit
 de hoofdcheckout maakt Relay een sibling-worktree `<repo>-codex-lead` op
 `lead/codex`; vanuit een linked worktree gebruikt hij die direct.
 Ook buiten een Git-map werkt `relay codex`: dan gebruikt Relay zijn eigen
@@ -38,9 +38,9 @@ relay codex "onderzoek de falende test"
 werker gebruikt bewust de expliciete vorm `relay codex -w <naam> <opdracht>`:
 die heeft een eigen worktree en een controleerbare opdracht nodig.
 
-De enige echte-Codex e2e-test is standaard overgeslagen, omdat hij een lokale
-Codex-app-server en maximaal vier minuten wachttijd nodig heeft. Draai hem
-bewust met `RELAY_E2E_CODEX=1 bun test scripts/lead/lead.test.ts`.
+De gewone suite gebruikt geen modeloproepen. `scripts/lead/peers/e2e/codex-demo.ts` is een afzonderlijke opt-in demonstratie met een lokale nep-Responses-server; dit is geen live-activeringstest en is tijdens deze opdracht niet uitgevoerd.
 
 Zie [TESTS-UITGESLOTEN.md](TESTS-UITGESLOTEN.md) voor de bewaarde,
 productgebonden tests die bewust niet in deze zelfstandige suite draaien.
+
+Agentrollen verlenen geen privileges. Nieuwe peerberichten worden direct afgeleverd, ook tussen niet-gerelateerde sessies en met oude inboundwaarden. Historische heldpost vereist expliciet herstel via de CLI. Zie [inventaris](docs/policy-reset/INVENTARIS.md), [activering en herstel](docs/policy-reset/ACTIVERING.md) en [testpensioen](scripts/lead/TESTPENSIOEN.md).

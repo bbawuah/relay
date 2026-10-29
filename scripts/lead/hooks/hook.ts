@@ -1,6 +1,6 @@
 // Hooks H1-H11 van de lead-skill: één dispatch op het event.
 //
-// Gebruik (via hook.sh, dat bij lege LAB_AGENT_ROL meteen stopt):
+// Gebruik (via hook.sh, dat zonder sessienaam of rol meteen stopt):
 //   hook.sh                  event uit `hook_event_name` op stdin (SessionStart, UserPromptSubmit,
 //                            PreToolUse, PostToolUse, Notification, Stop, StopFailure,
 //                            SubagentStart, SubagentStop, SessionEnd)
@@ -16,11 +16,10 @@
 // Codex: hook.sh --bron codex <event>; de invoer is bijna gelijk (codex-adapter.ts). Het record krijgt vendor, host,
 // thread_id en codex_home (Codex) of socket (Claude), en herkomst (`extern` na WebFetch/WebSearch/MCP buiten peers).
 //
-// Peerbus: UserPromptSubmit geeft het seintje (aantal ongelezen peer-berichten, nooit de inhoud), Stop blokt één keer met het
-// seintje en Stop/SessionEnd melden de toestand aan de bus (idleGemeld). De bus wordt dynamisch geladen (laadPeers) en
+// Peerbus: UserPromptSubmit geeft alleen een telling; Stop/SessionEnd melden de toestand aan de bus (idleGemeld). De bus wordt dynamisch geladen (laadPeers) en
 // ontbreekt hij, dan doen de hooks alleen het werk hierboven.
 //
-// Alleen H6, H7 en H11 mogen blokkeren/wekken; alles faalt open (exit 0, geen uitvoer).
+// Alleen de expliciete optionele wekker kan wekken; Stop blokkeert nooit; alles faalt open (exit 0, geen uitvoer).
 // Nooit opgeslagen: prompt, tool_input (behalve SendMessage.to en een boolean "vrij"),
 // last_assistant_message, transcripts. Geen netwerk, geen git, geen gh.
 
@@ -51,9 +50,7 @@ export type Opties = {
 export const IDLE_BUDGET_STOP_MS = 1000;
 export const IDLE_BUDGET_EINDE_MS = 500;
 
-export const MAX_BLOKKADES = 3;
-const ROLLEN = ["lead", "lead-proef", "agent", "sublead", "vervolg"];
-const isLeadRol = (rol: string): boolean => rol === "lead" || rol === "lead-proef";
+const isLeadRol = (rol: string): boolean => rol === "lead";
 const LEEG: Uitslag = { code: 0, stdout: "", stderr: "" };
 
 type Invoer = { [k: string]: unknown };
@@ -137,15 +134,6 @@ export function wachtTot(bericht: string, t: number): number | null {
   return null;
 }
 
-export function gateReden(lead: string, bron: Bron = "claude"): string {
-  const stuur = bron === "codex" ? `mcp__peers__send(naar: ${lead}, tekst: …)` : `SendMessage(to: ${lead})`;
-  return (
-    `Je stopt zonder rapport aan ${lead}. Stuur eerst ${stuur} met PR, sha, uitslag en open punten. ` +
-    "Het is ook een geldig antwoord om in één zin te zeggen waarop je wacht (bijvoorbeeld een vraag aan Brian): " +
-    `stuur die zin met ${bron === "codex" ? "mcp__peers__send" : "SendMessage"} aan ${lead}, of zeg hem in je antwoord en stop dan opnieuw; de tweede stop wordt doorgelaten.`
-  );
-}
-
 type Peers = { bus: Bus; seintje: (aantal: number) => string };
 
 /**
@@ -193,14 +181,17 @@ async function idleGemeld(bus: Bus | null, naam: string, toestand: Toestand, ms:
 
 export async function verwerk(event: string, invoer: Invoer, env: Omgeving, opties: Opties = {}): Promise<Uitslag> {
   const rol = env.LAB_AGENT_ROL || "";
-  if (!ROLLEN.includes(rol)) return LEEG;
+  if (!env.LAB_AGENT_NAAM && !rol) return LEEG;
   const nu = opties.nu ?? Date.now;
   const staat = staatMap(env);
   // Een kindproces (bijvoorbeeld `claude -p`) erft de omgeving van een geregistreerde sessie maar is geen sessie.
   if (event !== "wekker" && isKindProces(staat, env.LAB_SPAWN_ID || "", tekst(invoer.session_id), nu())) return LEEG;
   const sessieId = tekst(invoer.session_id);
   const rec0 = sessieId ? leesRecord(staat, sessieId) : null;
-  if (event === "wekker") return rol === "lead" ? wekker(staat, leadNaamVan(env, rec0), nu, opties) : LEEG;
+  if (event === "wekker") {
+    const naam = rec0?.naam || env.LAB_AGENT_NAAM || "";
+    return naam ? wekker(staat, naam, nu, opties) : LEEG;
+  }
   if (!sessieId) return LEEG;
   const cwd = tekst(invoer.cwd) || process.cwd();
   const isLead = isLeadRol(rol);
@@ -208,7 +199,7 @@ export async function verwerk(event: string, invoer: Invoer, env: Omgeving, opti
   const agentId = tekst(invoer.agent_id);
   const t = nu();
   // Een subagent deelt het session_id van de hoofdsessie (Codex geeft zijn UserPromptSubmit met agent_id): zijn prompt is geen
-  // nieuwe beurt van de hoofdsessie. Stop blijft ongemoeid: een Stop met agent_id valt gewoon onder de rapport-gate.
+  // nieuwe beurt van de hoofdsessie. Stop werkt uitsluitend de toestand en optionele meldingen bij.
   if (agentId && event === "UserPromptSubmit") return LEEG;
 
   const bron = opties.bron ?? "claude";
@@ -404,66 +395,19 @@ function leesSub(staat: string, agentId: string, ouder: string, env: Omgeving, i
 
 async function stop(staat: string, r: Rec, invoer: Invoer, isLead: boolean, lead: string, naamVan: (r: Rec) => string, t: number, peers: Peers | null, bron: Bron, opties: Opties): Promise<Uitslag> {
   const bus = peers?.bus ?? null;
-  const actief = invoer.stop_hook_active === true;
-  // Peerbus: één keer blokkeren met het seintje (nooit de inhoud); de tweede stop (stop_hook_active) gaat door. Alleen een
-  // stijging sinds het laatste seintje blokkeert: een sessie die niet kan lezen (geen peers-MCP, tweelingnaam) krijgt niet
-  // bij elke Stop een extra ronde. (Gemeten op Codex 0.164.0: na een block is stop_hook_active bij de volgende Stop true.)
-  const geteld = ongelezen(bus, naamVan(r));
-  const n = !actief && geteld > (r.seintje_n ?? 0) ? geteld : 0;
-  const seintjeTekst = n > 0 && peers ? ` ${peers.seintje(n)}` : "";
-  const onthoud = () => {
-    r.seintje_n = geteld;
-  };
-
+  // Stop rapporteert toestand, maar blokkeert nooit op rapportage of inbox.
+  r.seintje_n = ongelezen(bus, naamVan(r));
+  const naam = naamVan(r);
+  const wachtOpSubagents = lopendeSubagents(staat, r.id, t).length > 0;
+  const wachtOpRun = (r.wacht_tot ?? 0) > t;
   if (isLead) {
-    // H7: alleen regels die nieuw zijn sinds de laatste keer dat de lead ze zag (H2, H7 of H11).
-    if (!actief) {
-      const o = pakOngelezen(staat, lead, t);
-      if (o.regels.length > 0) {
-        const reden = `Nieuwe meldingen van je sessies: ${regelsTekst(o)}. Verwerk ze voordat je stopt.${seintjeTekst}`;
-        onthoud();
-        schrijfRecord(staat, r);
-        return { code: 0, stdout: JSON.stringify({ decision: "block", reason: reden }), stderr: "" };
-      }
-      if (n > 0) {
-        onthoud();
-        schrijfRecord(staat, r);
-        return { code: 0, stdout: JSON.stringify({ decision: "block", reason: seintjeTekst.trim() }), stderr: "" };
-      }
-    }
-    onthoud();
     zetToestand(r, "idle", t);
     r.tools_in_beurt = 0;
     r.rapport_in_beurt = false;
     schrijfRecord(staat, r);
-    await idleGemeld(bus, naamVan(r), "idle", IDLE_BUDGET_STOP_MS, opties);
+    await idleGemeld(bus, naam, "idle", IDLE_BUDGET_STOP_MS, opties);
     return LEEG;
   }
-
-  // H6: gate voor agent, sublead en vervolg.
-  const naam = naamVan(r);
-  const wachtOpSubagents = lopendeSubagents(staat, r.id, t).length > 0;
-  const wachtOpRun = (r.wacht_tot ?? 0) > t;
-  const wilBlokkeren = lead !== "" && !actief && r.tools_in_beurt >= 1 && !r.rapport_in_beurt && !wachtOpSubagents && !wachtOpRun;
-  let stopte3 = false;
-  if (wilBlokkeren) {
-    if (r.blokkades < MAX_BLOKKADES) {
-      r.blokkades += 1;
-      if (n > 0) onthoud();
-      schrijfRecord(staat, r);
-      return { code: 0, stdout: JSON.stringify({ decision: "block", reason: `${gateReden(lead, bron)}${seintjeTekst}` }), stderr: "" };
-    }
-    inboxMelding(staat, lead, naam, `${naam} stopte ${MAX_BLOKKADES}× zonder rapport`, t);
-    stopte3 = true;
-    r.blokkades = 0; // de volgende reeks begint opnieuw; anders komt de melding bij elke Stop terug
-  }
-  // Geen gate, wel ongelezen peer-berichten: één keer blokkeren met alleen het seintje.
-  if (!wilBlokkeren && n > 0) {
-    onthoud();
-    schrijfRecord(staat, r);
-    return { code: 0, stdout: JSON.stringify({ decision: "block", reason: seintjeTekst.trim() }), stderr: "" };
-  }
-  onthoud();
   const toestand = r.rapport_in_beurt ? (r.vrij ? "vrij" : "klaar") : "idle";
   // Idle is alleen nieuws bij een overgang: een sessie die idle was en zonder tools weer stopt, meldt niets.
   const herhaaldIdle = toestand === "idle" && r.toestand === "idle" && r.tools_in_beurt === 0;
@@ -472,7 +416,7 @@ async function stop(staat: string, r: Rec, invoer: Invoer, isLead: boolean, lead
   r.rapport_in_beurt = false;
   schrijfRecord(staat, r);
   // Idle omdat de sessie op eigen lopende subagents wacht is ruis voor de lead; het register toont het wel.
-  const zwijg = toestand === "idle" && (wachtOpSubagents || wachtOpRun || stopte3 || herhaaldIdle);
+  const zwijg = toestand === "idle" && (wachtOpSubagents || wachtOpRun || herhaaldIdle);
   if (lead && !zwijg) inboxMelding(staat, lead, naam, toestand === "vrij" ? `${naam} klaar en vrij` : toestand === "klaar" ? `${naam} klaar (rapport binnen)` : `${naam} is idle`, t);
   await idleGemeld(bus, naam, toestand, IDLE_BUDGET_STOP_MS, opties);
   return LEEG;
@@ -532,4 +476,3 @@ async function main(): Promise<void> {
 }
 
 if (import.meta.main) await main();
-

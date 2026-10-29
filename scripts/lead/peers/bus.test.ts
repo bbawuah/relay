@@ -3,6 +3,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, 
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { type Rec, alleRecords, nieuwRecord, schrijfRecord } from "../hooks/register";
+import { oudePost } from "./testhulp";
 import { KLAAR_MAX_MS, RETENTIE_MS, geldigeNaam, maakBus } from "./bus";
 import { DUBBEL_VENSTER_MS, MAX_HOP, MAX_PER_MINUUT, MAX_TEKST, MAX_WACHTRIJ, type PeerVelden, WEK_VENSTER_MS, type WekDoel, type WekUitslag, type Wekker } from "./types";
 
@@ -160,23 +161,21 @@ describe("send: beleid in volgorde", () => {
     expect(await bus.send("a", "b", "y")).toMatchObject({ status: "afgeleverd" });
   });
 
-  test("inbound refuse: geweigerd, niets opgeslagen", async () => {
+  test("legacy refuse heeft geen invloed op aflevering", async () => {
     open("a");
     sessie("b", "", { inbound: { standaard: "accept", per_afzender: { a: "refuse" } } });
     const bus = maak();
-    expect(await bus.send("a", "b", "hoi")).toMatchObject({ ok: false, reden: "geweigerd" });
-    expect(bus.inbox("b")).toEqual([]);
+    expect(await bus.send("a", "b", "hoi")).toMatchObject({ ok: true, status: "afgeleverd" });
+    expect(bus.inbox("b")).toHaveLength(1);
     expect(bus.vastgehouden("b")).toEqual([]);
   });
 
-  test("inbound hold: status vastgehouden, niet in de inbox, niet gewekt; vrijgeven zet hem in de inbox en wekt", async () => {
-    open("a");
-    sessie("b", "", { inbound: { standaard: "hold" } });
+  test("oude holdpost blijft staan tot expliciet herstel en wordt daarna gewekt", async () => {
+    open("a", "b");
+    oudePost(staat, "b", "wacht maar");
     const bus = maak();
-    const u = await bus.send("a", "b", "wacht maar");
-    expect(u).toMatchObject({ ok: true, status: "vastgehouden", gewekt: null });
-    expect(wekken).toHaveLength(0);
     expect(bus.inbox("b")).toEqual([]);
+    expect(wekken).toHaveLength(0);
     expect(bus.vastgehouden("b").map((e) => e.tekst)).toEqual(["wacht maar"]);
     expect(await bus.vrijgeven("b")).toBe(1);
     expect(bus.vastgehouden("b")).toEqual([]);
@@ -188,8 +187,8 @@ describe("send: beleid in volgorde", () => {
     open("a");
     sessie("b", "", { inbound: { standaard: "hold" } });
     const bus = maak();
-    await bus.send("a", "b", "een");
-    await bus.send("a", "b", "twee");
+    oudePost(staat, "b", "een");
+    oudePost(staat, "b", "twee");
     const [e1, e2] = bus.vastgehouden("b");
     expect(await bus.vrijgeven("b", ["nep"])).toBe(0);
     expect(await bus.vrijgeven("b", [e2!.id])).toBe(1);
@@ -197,28 +196,28 @@ describe("send: beleid in volgorde", () => {
     expect(bus.vastgehouden("b").map((e) => e.id)).toEqual([e1!.id]);
   });
 
-  test("inbound standaard zonder beleid: accept van de eigen lead en van eigen werkers, anders hold", async () => {
+  test("zonder beleid leveren ook niet-gerelateerde peers en collega’s af", async () => {
     sessie("lead", "");
     sessie("werker", "lead");
     sessie("vreemd", "andere-lead");
     const bus = maak();
     expect(await bus.send("lead", "werker", "opdracht")).toMatchObject({ status: "afgeleverd" }); // ontvanger.lead === van
     expect(await bus.send("werker", "lead", "rapport")).toMatchObject({ status: "afgeleverd" }); // afzender.lead === naar
-    expect(await bus.send("vreemd", "werker", "hoi")).toMatchObject({ status: "vastgehouden" });
-    expect(await bus.send("vreemd", "lead", "hoi")).toMatchObject({ status: "vastgehouden" });
+    expect(await bus.send("vreemd", "werker", "hoi")).toMatchObject({ status: "afgeleverd" });
+    expect(await bus.send("vreemd", "lead", "hoi")).toMatchObject({ status: "afgeleverd" });
     sessie("collega", "lead");
-    expect(await bus.send("collega", "werker", "hoi")).toMatchObject({ status: "vastgehouden" }); // zelfde lead is geen eigen lead
+    expect(await bus.send("collega", "werker", "hoi")).toMatchObject({ status: "afgeleverd" }); // zelfde lead is geen eigen lead
   });
 
-  test("per_afzender gaat voor standaard, in beide richtingen", async () => {
+  test("oude per_afzender- en standaardwaarden blokkeren geen richting", async () => {
     open("a", "c");
     sessie("b", "", { inbound: { standaard: "accept", per_afzender: { a: "hold" } } });
     sessie("d", "", { inbound: { standaard: "hold", per_afzender: { c: "accept" } } });
     const bus = maak();
-    expect(await bus.send("a", "b", "x")).toMatchObject({ status: "vastgehouden" });
+    expect(await bus.send("a", "b", "x")).toMatchObject({ status: "afgeleverd" });
     expect(await bus.send("c", "b", "x")).toMatchObject({ status: "afgeleverd" });
     expect(await bus.send("c", "d", "x")).toMatchObject({ status: "afgeleverd" });
-    expect(await bus.send("a", "d", "x")).toMatchObject({ status: "vastgehouden" });
+    expect(await bus.send("a", "d", "x")).toMatchObject({ status: "afgeleverd" });
   });
 
   test("wachtrij vol: MAX_WACHTRIJ ongelezen, daarna vol; na ack weer ruimte", async () => {
@@ -242,19 +241,19 @@ describe("send: beleid in volgorde", () => {
     const bus = maak();
     for (let i = 0; i < MAX_WACHTRIJ; i++) {
       klok += 10;
-      expect(await bus.send(afz[i % 5]!, "b", `m${i}`)).toMatchObject({ status: "vastgehouden" });
+      oudePost(staat, "b", `m${i}`, { van: afz[i % 5]! });
     }
     expect(await bus.send("s0", "b", "te veel")).toMatchObject({ ok: false, reden: "vol" });
   });
 
-  test("volgorde: refuse gaat voor vol; dubbel gaat voor refuse", async () => {
+  test("dedupe blijft gelden wanneer legacy inbound verandert", async () => {
     open("a");
     sessie("b", "", { inbound: { standaard: "accept" } });
     const bus = maak();
     await bus.send("a", "b", "zelfde");
     sessie("b", "", { inbound: { standaard: "refuse" }, sinds: klok + 1 });
     expect(await bus.send("a", "b", "zelfde")).toMatchObject({ ok: true, status: "dubbel" });
-    expect(await bus.send("a", "b", "anders")).toMatchObject({ ok: false, reden: "geweigerd" });
+    expect(await bus.send("a", "b", "anders")).toMatchObject({ ok: true, status: "afgeleverd" });
   });
 });
 
@@ -292,7 +291,7 @@ describe("envelop", () => {
     sessie("b", "", { sinds: 100, inbound: { standaard: "accept" } });
     sessie("b", "", { sinds: 200, inbound: { standaard: "refuse" } });
     const bus = maak();
-    expect(await bus.send("a", "b", "x")).toMatchObject({ reden: "geweigerd" });
+    expect(await bus.send("a", "b", "x")).toMatchObject({ ok: true });
     sessie("b", "", { sinds: 300, laatste_tool_om: 400, inbound: { standaard: "accept" } });
     expect(await bus.send("a", "b", "y")).toMatchObject({ ok: true });
   });
@@ -365,14 +364,14 @@ describe("contract na review: hop, herkomst, dubbel, wachtrij", () => {
     expect(existsSync(join(staat, "peers/extern"))).toBe(false);
   });
 
-  test("dubbel telt ongeacht de uitkomst van de eerste: een geweigerde poging, daarna dezelfde tekst, is dubbel", async () => {
+  test("dubbel blijft gelden bij oude refuse-waarden", async () => {
     open("a");
     sessie("b", "", { inbound: { standaard: "refuse" } });
     const bus = maak();
-    expect(await bus.send("a", "b", "nee")).toMatchObject({ reden: "geweigerd" });
+    expect(await bus.send("a", "b", "nee")).toMatchObject({ status: "afgeleverd" });
     sessie("b", "", { inbound: { standaard: "accept" }, sinds: klok + 1 });
     expect(await bus.send("a", "b", "nee")).toMatchObject({ ok: true, status: "dubbel" });
-    expect(bus.inbox("b")).toEqual([]);
+    expect(bus.inbox("b")).toHaveLength(1);
     klok += DUBBEL_VENSTER_MS;
     expect(await bus.send("a", "b", "nee")).toMatchObject({ status: "afgeleverd" });
   });
@@ -388,7 +387,7 @@ describe("contract na review: hop, herkomst, dubbel, wachtrij", () => {
     }
     for (let i = 0; i < 20; i++) {
       klok += 10;
-      expect(await bus.send("s4", "b", `v${i}`)).toMatchObject({ status: "vastgehouden" });
+      oudePost(staat, "b", `v${i}`, { van: "s4" });
     }
     expect(await bus.send("s0", "b", "te veel")).toMatchObject({ reden: "vol" });
     klok += 60_000; // tempo weer vrij
@@ -402,7 +401,7 @@ describe("contract na review: hop, herkomst, dubbel, wachtrij", () => {
     open("a");
     sessie("b", "", { inbound: { standaard: "hold" } });
     const bus = maak();
-    await bus.send("a", "b", "vast");
+    oudePost(staat, "b", "vast");
     expect(bus.list().find((p) => p.naam === "b")).toMatchObject({ ongelezen: 0, vastgehouden: 1 });
   });
 });
@@ -495,7 +494,7 @@ describe("inbox en ack", () => {
     const bus = maak();
     for (let i = 0; i < MAX_WACHTRIJ; i++) {
       klok += 10;
-      await bus.send(afz[i % 5]!, "b", `m${i}`);
+      oudePost(staat, "b", `m${i}`, { van: afz[i % 5]! });
     }
     expect(await bus.vrijgeven("b")).toBe(MAX_WACHTRIJ);
     expect(bus.inbox("b")).toHaveLength(MAX_WACHTRIJ);
@@ -820,17 +819,17 @@ describe("namen: geen bestandsnaam buiten NAAM", () => {
   });
 });
 
-describe("herstelronde: inbound faalt dicht", () => {
+describe("legacy inbound wordt niet meer uitgevoerd", () => {
   test("per_afzender[\"constructor\"] en andere prototype-namen tellen niet als beleid", async () => {
     sessie("constructor");
     sessie("toString");
     sessie("__proto__x");
     sessie("b", "", { inbound: { standaard: "refuse", per_afzender: {} } });
     const bus = maak();
-    for (const van of ["constructor", "toString"]) expect(await bus.send(van, "b", "x")).toMatchObject({ ok: false, reden: "geweigerd" });
+    for (const van of ["constructor", "toString"]) expect(await bus.send(van, "b", "x")).toMatchObject({ ok: true });
   });
 
-  test("een ongeldige waarde (\"Hold\", \"ACCEPT\", een getal, een object) telt als hold", async () => {
+  test("ongeldige legacy waarden blokkeren geen berichten", async () => {
     open("a");
     for (const [i, inbound] of [
       { per_afzender: { a: "Hold" } },
@@ -843,14 +842,14 @@ describe("herstelronde: inbound faalt dicht", () => {
       5,
     ].entries()) {
       sessie(`ont${i}`, "", { inbound } as unknown as Partial<Rec>);
-      expect(await maak().send("a", `ont${i}`, "x")).toMatchObject({ ok: true, status: "vastgehouden" });
+      expect(await maak().send("a", `ont${i}`, "x")).toMatchObject({ ok: true, status: "afgeleverd" });
     }
   });
 
-  test("een geldige waarde werkt nog: per_afzender refuse gaat voor standaard accept", async () => {
+  test("ook geldige legacy refuse heeft geen effect", async () => {
     open("a");
     sessie("b", "", { inbound: { standaard: "accept", per_afzender: { a: "refuse" } } });
-    expect(await maak().send("a", "b", "x")).toMatchObject({ reden: "geweigerd" });
+    expect(await maak().send("a", "b", "x")).toMatchObject({ ok: true });
   });
 });
 
@@ -1071,7 +1070,7 @@ describe("laatste kleine punten", () => {
     open("x");
     sessie("alice", "", { id: "t-1", inbound: { standaard: "hold" } });
     const bus = maak();
-    await bus.send("x", "alice", "voor alice (vast)");
+    oudePost(staat, "alice", "voor alice (vast)", { van: "x" });
     sessie("alice", "", { id: "t-1", inbound: { standaard: "accept" } });
     klok += 100;
     await bus.send("x", "alice", "voor alice");

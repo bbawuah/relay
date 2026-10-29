@@ -4,16 +4,7 @@
 #          [--map <pad>] [--lead <unieke naam>] [--sublead [--workflow <JJJJ-MM-DD>]] [--vervolg <tak>] [--t3] [--droog]
 #          [--vendor claude|codex] [--netwerk]
 #          --vendor codex: een Codex-sessie (`codex -C <map>`; --model is dan een Codex-model); standaard claude. Eist een eigen
-#          worktree als --map (nooit de hoofdcheckout) en een Codex-config met de grenzen-hook (grenzen.sh, vertrouwd door
-#          codex-installeer.ts); anders weigert spawn. De rol staat in de pane-omgeving (tmux) en altijd in
-#          <staat>/identiteit/<hash van de checkout>.json (codex-wrap.sh zet die in de omgeving van elke hook, ook in T3).
-#          Codex gebruikt het beleid van de gekozen CODEX_HOME, net als Claude. Spawn zet geen runtime-sandbox, netwerk- of
-#          goedkeuringsprofiel. Zonder --netwerk draait spawn eerst
-#          `bun install --ignore-scripts --frozen-lockfile` in de worktree (buiten de sandbox, als er een package.json is; geweigerd bij een
-#          bunfig.toml of .npmrc die afwijkt van origin/main) en pusht de werker niet en draait hij geen gh: hij meldt "klaar om te pushen
-#          op <sha>" en de lead pusht met scripts/lead/push-werker.sh. Een bestaande <map>/.codex weigert spawn (die config draait buiten
-#          de sandbox).
-#          De upstream van de werkertak (origin/<tak>) zet spawn vooraf, want .git/config is read-only.
+#          eigen worktree voor checkout-identiteit; het bestaande vendorprofiel blijft gelden.
 #          --t3: start de sessie als thread in T3 Code (server op deze machine) in plaats van in tmux; --map moet dan
 #          een eigen worktree zijn. Laatste regel van de uitvoer: t3:<thread-id>.
 #        scripts/lead/spawn.sh --meerdere <lijst> [--model ..] [--map ..] [--lead ..] [--droog]
@@ -66,41 +57,6 @@ done
 
 case $vendor in claude|codex) ;; *) fout "--vendor moet claude of codex zijn, niet '$vendor'" ;; esac
 [ "$netwerk" = 0 ] || [ "$vendor" = codex ] || fout "--netwerk hoort bij --vendor codex"
-
-# --- Controle 1: draait deze spawn.sh uit een checkout die achterloopt op origin/main? --------------------------
-# Een verouderde scripts/lead/ start werkers zonder de nieuwste grenzen (27 okt: Codex zonder netwerk-uit-sandbox, #683/#692).
-# Achter = origin/main heeft een commit in scripts/lead/ die HEAD mist (een tak die vooruit loopt of ongerelateerd werk heeft telt niet).
-# Weigert voor elke vendor en ook met --droog. Geen repo of geen origin/main: waarschuwing en door. Een mislukte fetch (10 s) ook.
-# LAB_SPAWN_REPO en LAB_SPAWN_FETCH_S zijn test-haken. Override: LAB_SPAWN_NIET_ACTUEEL_OK=1 (waarschuwing).
-HIER=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
-controleer_actueel() (
-  while IFS= read -r v; do unset "$v"; done < <(compgen -e | grep '^GIT_' || true)
-  local repo=${LAB_SPAWN_REPO:-$HIER/../..} fetch_s=${LAB_SPAWN_FETCH_S:-10} top fp wp rc=0 achter
-  g() { ${gexec:-} git -c core.fsmonitor= -c core.hooksPath=/dev/null -c core.untrackedCache=false -c diff.ignoreSubmodules=all -C "$repo" "$@"; }
-  top=$(g rev-parse --show-toplevel 2>/dev/null) || { echo "spawn: waarschuwing: $repo is geen git-repo; actualiteit van scripts/lead/ niet getoetst" >&2; return 0; }
-  if g remote get-url origin >/dev/null 2>&1; then
-    # De subshell vervangt zich door git (exec), zodat $! git zelf is en de kill na de grens git stopt (zonder exec blijft
-    # git als wees hangen). Nooit een prompt (wachtwoord, host-sleutel) die op de tty wacht.
-    ( export GIT_TERMINAL_PROMPT=0 GIT_SSH_COMMAND='ssh -oBatchMode=yes'; gexec=exec; g fetch --quiet origin main ) >/dev/null 2>&1 &
-    fp=$!
-    ( sleep "$fetch_s"; kill "$fp" 2>/dev/null ) >/dev/null 2>&1 &
-    wp=$!
-    wait "$fp" || rc=$?
-    kill "$wp" 2>/dev/null || true
-    [ "$rc" = 0 ] || echo "spawn: waarschuwing: ophalen van origin/main mislukte (exit $rc); vergelijk met de lokale origin/main" >&2
-  fi
-  g rev-parse --verify --quiet refs/remotes/origin/main >/dev/null || { echo "spawn: waarschuwing: geen origin/main in $top; actualiteit van scripts/lead/ niet getoetst" >&2; return 0; }
-  achter=$(g rev-list --count HEAD..origin/main -- scripts/lead/ 2>/dev/null) || { echo "spawn: waarschuwing: vergelijking met origin/main mislukte; actualiteit niet getoetst" >&2; return 0; }
-  [ "$achter" != 0 ] || return 0
-  if [ "${LAB_SPAWN_NIET_ACTUEEL_OK:-}" = 1 ]; then
-    echo "spawn: waarschuwing: scripts/lead/ in $top loopt $achter commit(s) achter op origin/main; doorgaan op LAB_SPAWN_NIET_ACTUEEL_OK=1" >&2
-    return 0
-  fi
-  echo "spawn: scripts/lead/ in $top loopt $achter commit(s) achter op origin/main (een werker zou zonder de nieuwste grenzen starten); draai: git -C $top pull --ff-only (op main) of git -C $top merge origin/main (op een tak) (bewust achterlopen: LAB_SPAWN_NIET_ACTUEEL_OK=1)" >&2
-  return 1
-)
-# --meerdere: de ouder toetst eenmaal; zijn kinderen (zelfde checkout) slaan het over, anders vechten N fetches om dezelfde ref.
-[ -n "${LAB_SPAWN_ACTUEEL_GETOETST:-}" ] && [ "$LAB_SPAWN_ACTUEEL_GETOETST" = "$PPID" ] || controleer_actueel || exit 1
 
 if [ -n "$meerdere" ]; then
   [ -z "$naam$opdracht$vervolg" ] && [ "$sublead" = 0 ] || fout "--meerdere sluit --naam, --opdracht, --vervolg en --sublead uit"
@@ -165,8 +121,7 @@ HIER=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 BUN="${LAB_LEAD_BUN:-bun}"
 BELEID_BUN=$(command -v bun 2>/dev/null || true)
 veilig_bun() ( cd "$HIER" && env -u BUN_OPTIONS -u NODE_OPTIONS "$BUN" "$@"; )
-# De beleidsgenerator draait vanuit $HIER zonder BUN_OPTIONS/NODE_OPTIONS: een bunfig.toml (preload) in de werkmap van de
-# aanroeper (vaak de worktree van een werker) of een geërfde --preload mag het sandboxprofiel niet veranderen (opus-review C).
+# Hulpscripts draaien vanuit de eigen bronmap zonder geërfde preloads.
 if [ -z "$lead" ] && command -v "$BUN" >/dev/null 2>&1; then
   lead=$(veilig_bun "$HIER/leadnaam.ts" eigen 2>/dev/null || true)
 fi
@@ -206,7 +161,6 @@ if command -v "$BUN" >/dev/null 2>&1; then
   [ "$rc" = 0 ] || echo "spawn: waarschuwing: controle op de leadnaam in het register mislukt (exit $rc); ga door. $onbekend" >&2
 fi
 [ -z "$workflow" ] || [ "$sublead" = 1 ] || fout "--workflow hoort bij --sublead"
-[ -z "$workflow" ] || [[ $workflow =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}$ ]] || fout "--workflow wil de datum van Brians toestemming (JJJJ-MM-DD), niet '$workflow'"
 [ "$sublead" = 0 ] || [ -z "$vervolg" ] || fout "--sublead en --vervolg sluiten elkaar uit"
 if [ -n "$vervolg" ]; then
   [[ $vervolg =~ ^[A-Za-z0-9._/-]+$ ]] || fout "tak '$vervolg' mag alleen letters, cijfers, punt, streepje, underscore en slash bevatten"
@@ -249,7 +203,7 @@ t3_bin() {
 }
 
 # Codex-threads in T3 hebben geen eigen omgeving: de identiteit gaat naar <staat>/identiteit/<sha256 van de checkout>.json,
-# dat codex-wrap.sh in de omgeving van elke hook zet (ook van grenzen.sh, dat LAB_AGENT_ROL nodig heeft).
+# dat codex-wrap.sh voor sessieregistratie en berichtroutering gebruikt.
 STAAT="${LAB_LEAD_STAAT:-$HOME/.local/state/lab-lead}"
 identiteit_pad() {
   local echt hash
@@ -300,7 +254,7 @@ schrijf_identiteit() {
   inst=$(identiteit_pad)
   mkdir -p "$STAAT/identiteit" && chmod 700 "$STAAT/identiteit"
   tmp=$(mktemp "$inst.XXXXXX")
-  # De tak van de worktree op dit moment, uit de gitdir aan de kant van de lead: push-werker.sh pusht alleen die tak.
+  # De tak van de worktree op dit moment als diagnostiek bij de sessie-identiteit.
   local tak=""
   if [ -n "${EIGEN_DIR:-}" ]; then tak=$(git_schoon --git-dir="$EIGEN_DIR" symbolic-ref -q --short HEAD 2>/dev/null || true); fi
   jq -n --arg n "$naam" --arg r "$rol" --arg l "$lead" --arg o "$opdracht" --arg s "$spawn_id" --arg k "$tak" --argjson ts "$(( $(date +%s) * 1000 ))" \
@@ -310,50 +264,10 @@ schrijf_identiteit() {
   ID_GESCHREVEN=$inst
 }
 
-# Voorwaarden voor een Codex-werker, vóór alles wat iets schrijft of start:
-#  1. --map is een eigen (linked) worktree (git-dir != git-common-dir): de identiteit is per checkout en de hoofdcheckout
-#     is van iedereen; zonder identiteit zou de werker zonder rol draaien en dan past grenzen.sh de rolregels niet toe.
-#  2. De Codex-config heeft de grenzen-hook (grenzen.sh) mét een geldige trusted_hash; zonder draait hij stil niet.
-CODEX_HOME_GEKOZEN=""
+# De checkout-identiteit mag niet naar een gedeelde hoofdcheckout lekken.
+# Geen profiel-, hooktrust-, login- of rolbeleid als startvoorwaarde.
 codex_controles() {
-  CODEX_HOME_GEKOZEN="$HOME/.codex-werker"
-  local cfg="$CODEX_HOME_GEKOZEN/config.toml" uit rc
-  [ -d "$CODEX_HOME_GEKOZEN" ] || fout "--vendor codex: werker-home ontbreekt: $CODEX_HOME_GEKOZEN. Draai het uitrolcommando voor ~/.codex-werker"
-  eigen_worktree || fout "--vendor codex eist een eigen worktree als --map (git worktree add), niet de hoofdcheckout of een map zonder eigen worktree: $map"
-  if [ -e "$map/.codex" ] || [ -L "$map/.codex" ]; then
-    fout "--vendor codex weigert: $map/.codex bestaat (getrackt of niet). Codex laadt <worktree>/.codex/config.toml bij de start; zijn mcp_servers draaien buiten de sandbox en hij kan het profiel aanvullen. Haal de map weg of start in een andere worktree"
-  fi
-  command -v "$BUN" >/dev/null 2>&1 || fout "--vendor codex heeft bun nodig om de grenzen-hook in $cfg te controleren"
-  CODEX_HOME="$CODEX_HOME_GEKOZEN" codex login status >/dev/null 2>&1 || fout "--vendor codex: login ontbreekt of faalt in $CODEX_HOME_GEKOZEN. Draai: CODEX_HOME=~/.codex-werker codex login"
-  # In T3 kan hosted web search niet per thread uit (geen -c); dan moet de config het zelf niet aanzetten (--web-search).
-  # Exit 1 = de grenzen-hook ontbreekt of is niet vertrouwd; exit 3 = web search staat aan (alleen met --web-search).
-  rc=0
-  if [ "$t3" = 1 ]; then
-    uit=$("$BUN" "$HIER/hooks/codex-controle.ts" "$cfg" --web-search --project "$map" 2>&1) || rc=$?
-  else
-    uit=$("$BUN" "$HIER/hooks/codex-controle.ts" "$cfg" 2>&1) || rc=$?
-  fi
-  case $rc in
-    0) ;;
-    3) fout "$uit" ;;
-    *) fout "Codex-config niet in orde, de grenzen zouden niet gelden: $uit" ;;
-  esac
-}
-
-# De sandbox laat de werker .git/config niet schrijven, dus `git push -u` zou na afloop mislukken. Zet de upstream van de werkertak
-# daarom hier vooraf (buiten de sandbox): origin + refs/heads/<tak>, ook als die tak op origin nog niet bestaat. Alleen als de tak
-# nog geen upstream heeft of die naar main/master wijst (een verse agenttak vanaf origin/main); een andere upstream blijft staan.
-# Een losse HEAD, main/master of een repo zonder remote origin: niets doen.
-codex_upstream() {
-  local tak merge
-  tak=$(git_schoon -C "$map" symbolic-ref -q --short HEAD 2>/dev/null) || return 0
-  case $tak in ""|main|master) return 0 ;; esac
-  git_schoon -C "$map" remote get-url origin >/dev/null 2>&1 || return 0
-  merge=$(git_schoon -C "$map" config --get "branch.$tak.merge" 2>/dev/null || true)
-  case $merge in ""|refs/heads/main|refs/heads/master) ;; *) return 0 ;; esac
-  git_schoon -C "$map" config "branch.$tak.remote" origin &&
-    git_schoon -C "$map" config "branch.$tak.merge" "refs/heads/$tak" ||
-    echo "spawn: let op: kon de upstream van $tak niet zetten; de werker pusht met 'git push origin $tak' (zonder -u)" >&2
+  eigen_worktree || fout "--vendor codex eist een eigen worktree als --map voor de sessie-identiteit, niet de hoofdcheckout: $map"
 }
 
 t3_controleer_map() {
@@ -487,17 +401,9 @@ if [ "$vendor" = claude ] && [ "$t3" = 0 ]; then
   fi
 fi
 if [ "$vendor" = codex ]; then
-  # LAB_AGENT_ROL staat altijd in de omgeving (grenzen.sh past de hoofdcheckout-regel alleen toe met een rol; Codex stuurt geen agent_id).
-  # CODEX_HOME vast in het startcommando: de pane erft de omgeving van de tmux-server, niet die van deze aanroep, en
-  # codex_controles heeft juist de config van dit pad gecontroleerd. (Een T3-thread draait onder T3's eigen CODEX_HOME.)
-  codex_home_q=" CODEX_HOME=$(printf '%q' "$CODEX_HOME_GEKOZEN")"
-  cmd="env LAB_AGENT_NAAM=$naam LAB_AGENT_ROL=$rol LAB_LEAD_NAAM=$lead LAB_OPDRACHT=$opdracht_q LAB_SPAWN_ID=$spawn_id$staat_q$codex_home_q codex -C $(printf '%q' "$map")"
+  cmd="env LAB_AGENT_NAAM=$naam LAB_AGENT_ROL=$rol LAB_LEAD_NAAM=$lead LAB_OPDRACHT=$opdracht_q LAB_SPAWN_ID=$spawn_id$staat_q codex -C $(printf '%q' "$map")"
   [ -z "$model" ] || cmd="$cmd -m $model"
-  # Hosted web search uit voor werkers (de uitkomst loopt langs geen hook); --search nooit meegeven. In T3 kan dit niet per
-  # thread: codex_controles weigert daar als de config het aanzet. Het -c zet de TUI in embedded mode (zoals de MCP-c's).
-  [ "$t3" = 1 ] || cmd="$cmd -c 'web_search=\"disabled\"'"
-  # De peers-MCP blijft per spawn (-c), nooit in ~/.codex-werker: de home is een gedeeld, vertrouwd profiel;
-  # de identiteit en de lead horen uitsluitend bij deze sessie, net als bij Claude.
+  # De peers-MCP is een optie per sessie; de bestaande Codex-config blijft van toepassing.
   if [ "$t3" = 1 ]; then
     :   # een T3-thread krijgt geen -c per thread: de peers-MCP leest de identiteit uit <staat>/identiteit (zie peers/server.ts)
   elif [ -f "$server" ] && [ -n "$bun_abs" ] && [[ $server$bun_abs != *"'"* && $server$bun_abs != *'"'* ]]; then
@@ -512,28 +418,19 @@ if [ "$vendor" = codex ]; then
 fi
 pad=$opdracht
 case $pad in *[[:space:]]*) pad="'$pad'" ;; esac
-zin="Je lead is $lead. Jij bent sessie $naam. Lees $pad en voer die uit. Rapporteer aan de lead via SendMessage (to: $lead)."
+zin="Je lead is $lead. Jij bent sessie $naam. Lees $pad en voer die uit. Je kunt je resultaat delen via SendMessage (to: $lead)."
 if [ "$sublead" = 1 ]; then
-  zin="Je lead is $lead. Jij bent sessie $naam, sub-lead. Lees $pad en voer die uit volgens scripts/lead/sublead.md: per taak een bouwer, dan een reviewer die niet plant, hooguit één herstelronde, met de Agent-tool."
-  if [ -z "$workflow" ]; then
-    zin="$zin Geen Workflow-tool."
-  else
-    zin="$zin Brian gaf op $workflow toestemming voor workflows (zie ~/vault-b-status/lead.md): draai de cyclus als workflow met scripts/lead/vaste-cyclus.js."
-  fi
-  zin="$zin Rapporteer aan de lead via SendMessage (to: $lead), kort: PR-nummer, sha, reviewoordeel en open punten per taak."
+  zin="Je lead is $lead. Jij bent sessie $naam, sub-lead. Lees $pad en voer die uit. De optionele coördinatiehulp staat in scripts/lead/sublead.md. Je kunt je resultaat delen via SendMessage (to: $lead)."
+  [ -z "$workflow" ] || zin="$zin Workflowmarkering: $workflow; de optionele hulp staat in scripts/lead/vaste-cyclus.js."
 elif [ -n "$vervolg" ]; then
-  zin="Je lead is $lead. Jij bent sessie $naam, een vervolgsessie op tak $vervolg. Lees $pad en voer die uit; lees verder alleen git log origin/main..$vervolg en git diff origin/main...$vervolg, geen eerdere sessielogs. Rapporteer aan de lead via SendMessage (to: $lead)."
+  zin="Je lead is $lead. Jij bent sessie $naam, een vervolgsessie op tak $vervolg. Lees $pad en voer die uit; git log origin/main..$vervolg en git diff origin/main...$vervolg geven takcontext. Je kunt je resultaat delen via SendMessage (to: $lead)."
 fi
 
 if [ "$vendor" = codex ]; then
   # Codex kent geen SendMessage: het rapport aan de lead is de tool send van de MCP-server peers.
   zin="${zin//via SendMessage (to: $lead)/met de tool send van MCP-server peers (naar: $lead)}"
-  # De werker pusht niet en draait geen gh: de lead pusht en opent de PR.
-  if [ "$t3" = 0 ] && [ "$netwerk" = 0 ]; then
-    zin="$zin Push niet en draai geen gh, want de lead pusht en opent de PR. Commit in je worktree en meld in je rapport \"klaar om te pushen op <sha>\"; de lead pusht met scripts/lead/push-werker.sh (nooit met een push vanuit jouw worktree). Draai nodige postinstall-scripts zelf (spawn installeert met --ignore-scripts)."
-  fi
+
 fi
-zin="$zin Sluit je laatste rapport aan de lead af met een vaste slotregel (laatste regel, kaal): \`vrij\` als je klaar en opgeruimd bent, of \`wacht op achtergrondrun tot ~HH:MM\` (hoogstens 2 uur vooruit) als je op een achtergrondrun wacht. \"vrij\" ergens anders in de tekst telt niet."
 
 if [ "$t3" = 1 ]; then
   zin="$zin Je draait als thread in T3 Code: gebruik geen AskUserQuestion (de lead ziet die vraag niet en een bericht van de lead laat hem vastlopen), maar zet een vraag in tekst in je rapport. Zet je laatste rapport ook als je laatste antwoord in deze thread."
@@ -546,7 +443,6 @@ if [ "$droog" = 1 ]; then
   if [ "$vendor" = codex ]; then
     echo "droog: schrijf de identiteit (naam=$naam rol=$rol) naar $(identiteit_pad) (0600 in een map 0700); codex-wrap.sh zet die in elke hook"
     [ "$t3" = 1 ] || [ "$netwerk" = 1 ] || [ ! -f "$map/package.json" ] || echo "droog: bun install --ignore-scripts --frozen-lockfile in $map (buiten de sandbox, zonder netwerk kan de werker het niet)"
-    echo "droog: gecontroleerd: $map is een eigen worktree en $CODEX_HOME_GEKOZEN/config.toml heeft de vertrouwde, actuele grenzen-hook"
   fi
   echo "droog: wacht (max ${WACHT}s) tot de pane '$KLAAR_TEKST' of de promptregel toont"
   echo "droog: toont de pane de vertrouwensvraag ('$VERTROUWEN_TEKST'), dan melding aan Brian (tmux display-message + stderr) en wachten (max ${WACHT_VERTROUWEN}s, WACHT_VERTROUWEN) tot de vraag weg is; nooit zelf antwoorden; bij time-out fout met pane en startzin"
@@ -554,20 +450,6 @@ if [ "$droog" = 1 ]; then
   echo "droog: controleer dat er een tool-aanroep ($BEWIJS_TEKST) verschijnt (max ${BEWIJS}s)"
   exit 0
 fi
-
-# Waarschuwing vooraf (alleen lezen, nooit schrijven): is de map of een bovenliggende map vertrouwd?
-vertrouwd=0 d=$map
-if [ "$vendor" = claude ] && [ -f "$CLAUDE_JSON" ] && command -v jq >/dev/null 2>&1; then
-  while :; do
-    t=$(jq -r --arg p "$d" '.projects[$p].hasTrustDialogAccepted // false' "$CLAUDE_JSON" 2>/dev/null || echo false)
-    if [ "$t" = true ]; then vertrouwd=1; break; fi
-    [ "$d" != / ] || break
-    d=$(dirname "$d")
-  done
-else
-  vertrouwd=1   # niet te weten: geen waarschuwing
-fi
-[ "$vertrouwd" = 1 ] || echo "spawn: let op: $map is nog niet vertrouwd in Claude Code; de sessie $naam wacht straks op Brians antwoord op de vertrouwensvraag" >&2
 
 if [ "$vendor" = codex ]; then
   identiteit_vrij
@@ -614,7 +496,6 @@ if [ "$vendor" = codex ]; then
     (cd "$map" && "$BUN" "${BUN_INSTALL_ARGS[@]}" >&2) || fout "bun install --ignore-scripts --frozen-lockfile in $map mislukte; de werker heeft zonder netwerk geen installatie. Los het op of start met --netwerk"
   fi
   schrijf_identiteit
-  codex_upstream
 fi
 
 pane=$(bash "$SPAWN" window "$map" "$cmd" | tail -n 1) || pane=""   # pipefail: een falend spawn-script moet de foutmelding en de opruiming krijgen

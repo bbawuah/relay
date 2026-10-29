@@ -1,5 +1,5 @@
 #!/usr/bin/env bun
-// Installeer merge.sh (en lead.conf) en de commando-runner op een plek die agents niet kunnen wijzigen
+// Installeer uitsluitend de WebAuthn-commandorunner op een beschermd pad
 // (root:wheel). Gebruik:
 //   bun scripts/lead/installeer-grens.ts                 print de sudo-commando's voor Brian (voert niets uit)
 //   bun scripts/lead/installeer-grens.ts --controleer    vergelijk de geïnstalleerde kopieën met origin/main
@@ -9,7 +9,7 @@
 // --plist <pad> en --passkeys <pad>.
 // Dit script draait zelf nooit sudo. De verwachte inhoud komt uit origin/main (vers opgehaald), niet uit
 // de werkkopie: een agent kan de werkkopie aanpassen, origin/main alleen via een gemergede PR.
-// Alleen merge.sh krijgt een allow-regel; push.sh en lab-lees.sh blijven voorlopig in de repo (vangnet).
+// Geen mergepolicy installeren; runner, sleutels en eigenaarcontroles blijven behouden.
 
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
@@ -21,8 +21,8 @@ import { gitArgs } from "./git-hard";
 import { valideerSleutels, type Sleutels } from "./commando/sleutels";
 
 export const DOEL = "/usr/local/lib/lab-lead";
-/** Bestand → modus. lead.conf hoort erbij: merge.sh leest hem naast zichzelf. */
-export const BESTANDEN: Record<string, number> = { "merge.sh": 0o755, "lead.conf": 0o644 };
+/** Geen mergepolicybestanden; de beschermde WebAuthn-runner blijft behouden. */
+export const BESTANDEN: Record<string, number> = {};
 /** Pad van de bron in de repo. */
 export const BRON_IN_REPO = "scripts/lead";
 /** De commando-runner: een bundel die uit origin/main gebouwd wordt (bun build is deterministisch bij dezelfde bun en bun.lock). */

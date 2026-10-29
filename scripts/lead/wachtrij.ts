@@ -1,6 +1,6 @@
 #!/usr/bin/env bun
 // Merge-wachtrij voor de lead. Gebruik: bun scripts/lead/wachtrij.ts [--droog] [opties]
-// Verzamelt open PR's met "Lead-review: akkoord <sha7>" (gelijk aan de head), bouwt
+// Verzamelt open PR's zonder verplichte reviewmarker, bouwt
 // wachtrij/<jjjjmmdd-hhmm> vanaf origin/main, draait één volledige poort en opent één
 // integratie-PR. Zie scripts/lead/README.md.
 import { existsSync, readFileSync } from "node:fs";
@@ -44,7 +44,7 @@ export type Pr = {
 
 export type Afgevallen = { nummer: number; reden: string };
 
-/** Open PR's met een akkoord op de huidige head; in volgorde van PR-nummer. */
+/** Open PR's voor een optionele integratierun; in volgorde van PR-nummer. */
 export function kiesPrs(prs: Pr[]): { gekozen: Pr[]; afgevallen: Afgevallen[] } {
   const gekozen: Pr[] = [];
   const afgevallen: Afgevallen[] = [];
@@ -55,8 +55,7 @@ export function kiesPrs(prs: Pr[]): { gekozen: Pr[]; afgevallen: Afgevallen[] } 
     else if (pr.isDraft) afgevallen.push({ nummer: pr.number, reden: "is een concept" });
     else if (["main", "master"].includes(pr.headRefName)) afgevallen.push({ nummer: pr.number, reden: `tak is ${pr.headRefName}` });
     else if (pr.headRefName.startsWith("wachtrij/")) afgevallen.push({ nummer: pr.number, reden: "is zelf een integratie-PR" });
-    else if (pr.comments.some((c) => new RegExp(`^Lead-review: akkoord ${sha}([^0-9a-fA-F]|$)`).test(c.body))) gekozen.push(pr);
-    else if (pr.comments.some((c) => c.body.startsWith("Lead-review: akkoord"))) afgevallen.push({ nummer: pr.number, reden: `verouderd akkoord: geen "Lead-review: akkoord ${sha}"` });
+    else gekozen.push(pr);
   }
   return { gekozen, afgevallen };
 }
@@ -150,7 +149,7 @@ export function bouwBody(opts: { gemerged: Pr[]; afgevallen: Afgevallen[]; head:
   return [
     "## Samenvatting",
     "",
-    `Integratie-PR van de merge-wachtrij: ${gemerged.length} onderliggende PR's, in volgorde samengevoegd vanaf ${opts.basis}${opts.vasteLijst ? " (vaste lijst via --prs)" : ""}. De lead controleert deze lijst voor het akkoord. Na het mergen van deze ene PR sluit GitHub de onderliggende PR's als gemerged; hun remote takken blijven staan tot \`wachtrij.ts --ruim-takken\`.`,
+    `Integratie-PR van de merge-wachtrij: ${gemerged.length} onderliggende PR's, in volgorde samengevoegd vanaf ${opts.basis}${opts.vasteLijst ? " (vaste lijst via --prs)" : ""}. Controleer deze lijst vóór integratie. Na het mergen van deze ene PR sluit GitHub de onderliggende PR's als gemerged; hun remote takken blijven staan tot \`wachtrij.ts --ruim-takken\`.`,
     "",
     lijst + eruit,
     "",
@@ -201,7 +200,7 @@ type Opties = {
   map: string | null;
   ruim: boolean;
   pr: string | null;
-  /** Vaste lijst PR-nummers (--prs), in deze volgorde; null = alles met een geldig akkoord. */
+  /** Vaste lijst PR-nummers (--prs), in deze volgorde; null = alle geschikte open PR's. */
   prs: number[] | null;
   /** --sla-afgevallen-over: met --prs toch doorgaan als een genoemde PR afvalt (het oude gedrag). */
   slaAfgevallenOver: boolean;
@@ -389,11 +388,11 @@ function hoofd(args: string[]): never {
   let { gekozen } = kies;
   let afgevallen = kies.afgevallen;
   if (o.prs) {
-    // vaste lijst: alleen deze PR's, in deze volgorde; een genoemde PR zonder geldig akkoord valt af met reden
+    // vaste lijst: alleen deze PR's, in deze volgorde; een ongeschikte genoemde PR valt af met reden
     const geldig = new Map(gekozen.map((p) => [p.number, p]));
     const reden = new Map(afgevallen.map((a) => [a.nummer, a.reden]));
     gekozen = o.prs.flatMap((n) => (geldig.has(n) ? [geldig.get(n)!] : []));
-    afgevallen = o.prs.filter((n) => !geldig.has(n)).map((n) => ({ nummer: n, reden: reden.get(n) ?? "niet open of zonder geldig akkoord" }));
+    afgevallen = o.prs.filter((n) => !geldig.has(n)).map((n) => ({ nummer: n, reden: reden.get(n) ?? "niet open of ongeschikt" }));
   }
   for (const a of afgevallen) console.log(`wachtrij: #${a.nummer} overgeslagen: ${a.reden}`);
   // Een vaste lijst is een bewuste keuze: een genoemde PR die afvalt stopt de run vóór het samenvoegen
@@ -402,10 +401,10 @@ function hoofd(args: string[]): never {
     return klaar(
       1,
       `wachtrij: ${afgevallen.length} van de ${o.prs.length} PR('s) uit --prs vallen af, er is niets samengevoegd:\n${afgevallen.map((a) => `  #${a.nummer}: ${a.reden}`).join("\n")}\n` +
-        "Herstel dat (akkoord op de huidige head, open PR), of draai met --sla-afgevallen-over om zonder deze PR's door te gaan.",
+        "Herstel dat (open PR en juiste base), of draai met --sla-afgevallen-over om zonder deze PR's door te gaan.",
     );
   }
-  if (!gekozen.length) return klaar(0, "wachtrij: leeg, geen open PR met een geldig \"Lead-review: akkoord <sha7>\"");
+  if (!gekozen.length) return klaar(0, "wachtrij: leeg, geen geschikte open PR");
 
   // --nu bepaalt alleen de naam van de tak; het stiltevenster gaat op de echte klok
   // (alleen de test overschrijft die, met env LAB_WACHTRIJ_KLOK).
@@ -436,7 +435,7 @@ function hoofd(args: string[]): never {
     const h = git(["fetch", "origin", p.headRefName], map);
     const sha = h.code === 0 ? git(["rev-parse", "FETCH_HEAD"], map).uit : "";
     if (sha !== p.headRefOid) {
-      eruit.push({ nummer: p.number, reden: h.code === 0 ? `tak is verschoven na het akkoord (${sha.slice(0, 7)})` : "tak niet op te halen" });
+      eruit.push({ nummer: p.number, reden: h.code === 0 ? `tak is verschoven sinds selectie (${sha.slice(0, 7)})` : "tak niet op te halen" });
       console.error(`wachtrij: #${p.number} eruit: ${eruit[eruit.length - 1].reden}`);
       continue;
     }
@@ -484,7 +483,7 @@ function hoofd(args: string[]): never {
   }
   return klaar(
     0,
-    `wachtrij: integratie-PR geopend: ${pr.uit}\n${ciMelding ? `wachtrij: WAARSCHUWING: ${ciMelding}\n` : ""}Lead: controleer eerst de lijst PR's in de integratie-PR (samengevoegd: ${gemerged.map((p) => `#${p.number}`).join(" ")}${eruit.length ? `; eruit: ${eruit.map((a) => `#${a.nummer}`).join(" ")}` : ""}).\nGeef daarna "Lead-review: akkoord ${head.slice(0, 7)}" en draai merge.sh. Opruimen na MERGED: worktree ${map}, daarna \`bun scripts/lead/wachtrij.ts --ruim-takken\`.`,
+    `wachtrij: integratie-PR geopend: ${pr.uit}\n${ciMelding ? `wachtrij: WAARSCHUWING: ${ciMelding}\n` : ""}Lead: controleer eerst de lijst PR's in de integratie-PR (samengevoegd: ${gemerged.map((p) => `#${p.number}`).join(" ")}${eruit.length ? `; eruit: ${eruit.map((a) => `#${a.nummer}`).join(" ")}` : ""}).\nGebruik desgewenst merge.sh na review. Opruimen na MERGED: worktree ${map}, daarna \`bun scripts/lead/wachtrij.ts --ruim-takken\`.`,
   );
 }
 

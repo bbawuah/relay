@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { type Rec, nieuwRecord, schrijfRecord } from "../hooks/register";
 import { maakBus } from "./bus";
 import { draai } from "./cli";
+import { oudePost } from "./testhulp";
 import { toon } from "./types";
 
 // Tijdelijke staatmap; de echte ~/.local/state/lab-lead blijft ongemoeid.
@@ -17,7 +18,7 @@ let klok: number;
 const bus = () => maakBus({ staat, nu: () => klok, machine: "testmachine", wacht: async (ms) => void (klok += ms) });
 const env = (naam: string) => ({ LAB_AGENT_NAAM: naam, LAB_LEAD_STAAT: staat });
 function sessie(naam: string, lead = "", extra: Partial<Rec> & Record<string, unknown> = {}): void {
-  schrijfRecord(staat, { ...nieuwRecord(`id-${naam}`, { LAB_AGENT_NAAM: naam, LAB_LEAD_NAAM: lead }, `/w/${naam}`, T0), inbound: { standaard: "accept" }, ...extra } as Rec);
+  schrijfRecord(staat, { ...nieuwRecord(`id-${naam}`, { LAB_AGENT_NAAM: naam, LAB_LEAD_NAAM: lead }, `/w/${naam}`, T0), ...extra } as Rec);
 }
 const cli = (naam: string, ...args: string[]) => draai(args, env(naam), bus());
 
@@ -133,14 +134,14 @@ describe("cli list, notify-when-idle, vasthouden, vrijgeven", () => {
 
   test("vasthouden toont en vrijgeven levert af", async () => {
     sessie("h", "", { inbound: { standaard: "hold" } });
-    await cli("a", "send", "h", "wacht");
+    oudePost(staat, "h", "wacht");
     expect((await cli("a", "inbox")).uit).toBe("Geen berichten.\n");
-    const v = await cli("lead", "vasthouden", "h");
+    const v = await cli("h", "vasthouden", "h");
     expect(v.uit).toContain("wacht");
-    expect((await cli("lead", "vrijgeven", "h")).uit).toBe("1 bericht vrijgegeven aan h.\n");
+    expect((await cli("h", "vrijgeven", "h", "--alle")).uit).toBe("1 bericht vrijgegeven aan h.\n");
     expect((await cli("h", "inbox")).uit).toContain("wacht");
-    expect((await cli("lead", "vasthouden", "h")).uit).toBe("Niets vastgehouden.\n");
-    expect((await cli("lead", "vrijgeven", "h")).uit).toBe("0 berichten vrijgegeven aan h.\n");
+    expect((await cli("h", "vasthouden", "h")).uit).toBe("Niets vastgehouden.\n");
+    expect((await cli("h", "vrijgeven", "h", "--alle")).uit).toBe("0 berichten vrijgegeven aan h.\n");
   });
 
   test("onbekend commando geeft het gebruik", async () => {
@@ -164,33 +165,33 @@ describe("cli: namen, rol en extern", () => {
     expect((await cli("b", "inbox")).uit).toContain("bewaar");
   });
 
-  test("vasthouden en vrijgeven: toegestaan zonder rol (Brian) en voor de lead, geweigerd voor een andere rol", async () => {
-    sessie("h", "", { inbound: { standaard: "hold" } });
-    await cli("a", "send", "h", "wacht");
-    for (const rol of ["agent", "worker", "reviewer"]) {
-      for (const args of [["vasthouden", "h"], ["vrijgeven", "h"]]) {
-        const r = await draai(args, { ...env("a"), LAB_AGENT_ROL: rol }, bus());
-        expect(r.code).toBe(1);
-        expect(r.fout).toContain("voor Brian of de lead");
+  test("elk roletiket kan eigen post inspecteren en expliciet herstellen, nooit andermans mailbox", async () => {
+    sessie("h");
+    for (const rol of ["", "lead", "lead-proef", "agent", "sublead", "vervolg", "worker", "reviewer"]) {
+      const oud = oudePost(staat, "h", `wacht-${rol}`);
+      const e = { ...env("h"), LAB_AGENT_ROL: rol };
+      expect((await draai(["vasthouden", "h"], e, bus())).uit).toContain(oud.id);
+      expect((await draai(["vrijgeven", "h"], e, bus())).code).toBe(1);
+      expect((await draai(["vrijgeven", "h", oud.id], e, bus())).uit).toBe("1 bericht vrijgegeven aan h.\n");
+      expect((await draai(["vrijgeven", "h", oud.id], e, bus())).uit).toContain("0 berichten");
+      for (const args of [["vasthouden", "h"], ["vrijgeven", "h", "--alle"]]) {
+        expect((await draai(args, { ...env("a"), LAB_AGENT_ROL: rol }, bus())).code).toBe(1);
       }
     }
-    expect(bus().vastgehouden("h")).toHaveLength(1);
-    expect((await draai(["vasthouden", "h"], { LAB_LEAD_STAAT: staat, LAB_AGENT_ROL: "" }, bus())).code).toBe(0);
-    expect((await draai(["vasthouden", "h"], { LAB_LEAD_STAAT: staat }, bus())).code).toBe(0);
-    expect((await draai(["vrijgeven", "h"], { ...env("a"), LAB_AGENT_ROL: "lead" }, bus())).uit).toContain("1 bericht vrijgegeven");
+    expect((await draai(["vasthouden", "h", "--aantal"], { LAB_LEAD_STAAT: staat }, bus())).uit).toBe("0 vastgehouden berichten voor h.\n");
   });
 
   test("inbox --niet-acken van een extern bericht en vasthouden van een extern bericht maken de kijker extern (markering)", async () => {
     sessie("x", "", { herkomst: "extern" });
     sessie("h", "", { inbound: { standaard: "hold" } });
     await cli("x", "send", "b", "van buiten");
-    await cli("x", "send", "h", "vast van buiten");
+    oudePost(staat, "h", "vast van buiten", { van: "x", herkomst: "extern" });
     expect(existsSync(join(staat, "peers/extern/b"))).toBe(false);
     await cli("b", "inbox", "--niet-acken");
     expect(existsSync(join(staat, "peers/extern/b"))).toBe(true);
-    expect(existsSync(join(staat, "peers/extern/a"))).toBe(false);
-    await draai(["vasthouden", "h"], { ...env("a"), LAB_AGENT_ROL: "lead" }, bus());
-    expect(existsSync(join(staat, "peers/extern/a"))).toBe(true);
+    expect(existsSync(join(staat, "peers/extern/h"))).toBe(false);
+    await draai(["vasthouden", "h"], { ...env("h"), LAB_AGENT_ROL: "agent" }, bus());
+    expect(existsSync(join(staat, "peers/extern/h"))).toBe(true);
   });
 });
 

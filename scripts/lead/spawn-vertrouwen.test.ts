@@ -116,15 +116,7 @@ describe("spawn.sh wacht op de vertrouwensvraag", () => {
     expect(existsSync(join(dir, "getypt.txt"))).toBe(false);
   });
 
-  test("een niet-vertrouwde map geeft vooraf een waarschuwing; een vertrouwde bovenliggende map niet", () => {
-    writeFileSync(join(dir, "claude.json"), JSON.stringify({ projects: { "/elders": { hasTrustDialogAccepted: true } } }));
-    const voor = readFileSync(join(dir, "claude.json"), "utf8");
-    expect(draai({ TRUST_SECONDEN: "0", WACHT_VERTROUWEN: "5" }).fout).toContain("nog niet vertrouwd");
-    expect(readFileSync(join(dir, "claude.json"), "utf8")).toBe(voor); // nooit schrijven
-    writeFileSync(join(dir, "claude.json"), JSON.stringify({ projects: { [join(dir, "..")]: { hasTrustDialogAccepted: true } } }));
-    rmSync(join(dir, "getypt.txt"), { force: true });
-    expect(draai({ TRUST_SECONDEN: "0", WACHT_VERTROUWEN: "5" }).fout).not.toContain("nog niet vertrouwd");
-  });
+
 
   test("--droog noemt de wachtstap", () => {
     const r = draai({ WACHT_VERTROUWEN: "42" }, ["--droog"]);

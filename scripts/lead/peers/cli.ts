@@ -5,7 +5,7 @@
 //   bun scripts/lead/peers/cli.ts list [--json]
 //   bun scripts/lead/peers/cli.ts notify-when-idle <naam>
 //   bun scripts/lead/peers/cli.ts vasthouden <naam>            toont vastgehouden berichten
-//   bun scripts/lead/peers/cli.ts vrijgeven <naam> [id…]       voor Brian of de lead, niet voor de MCP
+//   bun scripts/lead/peers/cli.ts vrijgeven <naam> <id…|--alle> expliciet herstel, voor elk roletiket
 // Afzender = env LAB_AGENT_NAAM. Staatmap = env LAB_LEAD_STAAT (zoals de hooks).
 
 import { type Omgeving, staatMap } from "../hooks/register";
@@ -15,7 +15,7 @@ import { type Bus, toon } from "./types";
 
 export type CliUitslag = { code: number; uit: string; fout: string };
 
-const GEBRUIK = `Gebruik: cli.ts send <naar> <tekst|-> [--draad d] [--antwoord-op id] | inbox [--niet-acken] | list [--json] | notify-when-idle <naam> | vasthouden <naam> | vrijgeven <naam> [id…]`;
+const GEBRUIK = `Gebruik: cli.ts send <naar> <tekst|-> [--draad d] [--antwoord-op id] | inbox [--niet-acken] | list [--json] | notify-when-idle <naam> | vasthouden <naam> [--aantal] | vrijgeven <naam> <id…|--alle>`;
 
 /** Haalt `--vlag waarde` uit args; geeft de waarde en de overige args. */
 function neemWaarde(args: string[], vlag: string): { waarde?: string; rest: string[]; fout?: string } {
@@ -40,8 +40,15 @@ async function draaiOpdracht(args: string[], env: Omgeving, bus: Bus, leesStdin:
   const ikzelf = env.LAB_AGENT_NAAM || "";
   const eisIk = () => (ikzelf ? null : mis("LAB_AGENT_NAAM ontbreekt: ik weet niet namens wie ik spreek."));
   const naamFout = (naam: string | undefined) => (geldigeNaam(naam) ? null : mis(`ongeldige naam ${JSON.stringify(naam ?? "")}: toegestaan zijn letters, cijfers, . _ - (hoogstens 100, niet beginnend met een punt).`));
-  /** vasthouden en vrijgeven zijn voor Brian (geen rol) en de lead; een werker mag het niet. */
-  const eisBeheer = () => (!env.LAB_AGENT_ROL || env.LAB_AGENT_ROL === "lead" ? null : mis(`${cmd} is voor Brian of de lead (LAB_AGENT_ROL is "${env.LAB_AGENT_ROL}").`));
+  // Een benoemde sessie bedient haar eigen mailbox. Een lokale operator zonder
+  // sessie-identiteit kiest expliciet een ontvanger; rollen geven geen extra rechten.
+  const eisMailbox = (naam: string) => {
+    if (!ikzelf) return null;
+    const nf = naamFout(ikzelf);
+    if (nf) return nf;
+    if (ikzelf !== naam) return mis("Alleen je eigen mailbox kan worden ingezien of hersteld.");
+    return bus.list().some((p) => p.naam === ikzelf) ? null : mis("De sessie staat niet in het register.");
+  };
 
   switch (cmd) {
     case "send": {
@@ -87,25 +94,28 @@ async function draaiOpdracht(args: string[], env: Omgeving, bus: Bus, leesStdin:
       return ok(u.al_idle ? `${rest[0]} is al idle, klaar, vrij of weg: de melding staat al in je inbox.` : `Je krijgt één melding zodra ${rest[0]} idle, klaar, vrij of weg is.`);
     }
     case "vasthouden": {
-      const rol = eisBeheer();
-      if (rol) return rol;
-      if (rest.length !== 1) return mis(GEBRUIK);
+      if (rest.length !== 1 && !(rest.length === 2 && rest[1] === "--aantal")) return mis(GEBRUIK);
       const nf = naamFout(rest[0]);
       if (nf) return nf;
+      const eigenaar = eisMailbox(rest[0]!);
+      if (eigenaar) return eigenaar;
       const vast = bus.vastgehouden(rest[0]!);
+      if (rest[1] === "--aantal") return ok(`${vast.length} vastgehouden bericht${vast.length === 1 ? "" : "en"} voor ${rest[0]}.`);
       if (vast.length === 0) return ok("Niets vastgehouden.");
       // Wie externe inhoud ziet, is zelf extern (markering; spoor D wist hem bij SessionStart).
       if (ikzelf && vast.some((e) => e.herkomst === "extern")) markeerExtern(staatMap(env), ikzelf);
       return ok(vast.map(toon).join("\n\n"));
     }
     case "vrijgeven": {
-      const rol = eisBeheer();
-      if (rol) return rol;
       const [naam, ...ids] = rest;
       if (!naam) return mis(GEBRUIK);
       const nf = naamFout(naam);
       if (nf) return nf;
-      const n = await bus.vrijgeven(naam, ids);
+      const eigenaar = eisMailbox(naam);
+      if (eigenaar) return eigenaar;
+      const alle = ids.length === 1 && ids[0] === "--alle";
+      if (!alle && (!ids.length || ids.some((id) => !id || id.startsWith("--")))) return mis(GEBRUIK);
+      const n = await bus.vrijgeven(naam, alle ? undefined : ids);
       return ok(`${n} bericht${n === 1 ? "" : "en"} vrijgegeven aan ${naam}.`);
     }
     default:

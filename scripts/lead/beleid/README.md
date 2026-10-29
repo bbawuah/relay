@@ -1,22 +1,5 @@
-# Beleidslaag (fase 1)
+# Optionele eventconfiguratie
 
-Eén bron voor wat Claude (en straks Codex) aan hooks krijgt. Plan en contract: `~/vault-b-status/peerbus/PLAN-beleidslaag.md` en `CONTRACT-beleidslaag.md`.
+De historische mapnaam `beleid` blijft voor imports beschikbaar. `beleid.ts`, `typen.ts`, `hosts.ts` en `claude.ts` beschrijven uitsluitend optionele status- en peer-events. De generator is puur en verandert alleen eigen hookentries; permissions en andere hostinstellingen blijven ongemoeid. De installer maakt backups en schrijft atomair.
 
-| Bestand | Rol |
-|---|---|
-| `typen.ts` | De typen (contract; wijzigen alleen via de lead) |
-| `beleid.ts` | De bron: lead-hooks per event en de grenzen-hook |
-| `hosts.ts` | Vertaaltabel per host (Claude ingevuld, Codex `null` tot fase 2) |
-| `claude.ts` | Pure `genereer(beleid, "claude", opties)` naar de nieuwe `settings.json` |
-| `codex-werker.ts` | Pure bron voor het Codex-werkerprofiel: de drie tmux-`-c`-waarden, het profielblok voor een eigen `CODEX_HOME` en de vaste `bun install --ignore-scripts --frozen-lockfile`-argumenten |
-| `../installeer-hooks.ts` | Dunne wrapper: zelfde CLI (`--droog`, `--verwijder`, `--met-wekker`) en uitvoer als voorheen |
-
-## Fase 1: geen gedragsverandering
-- `installeer-hooks.ts` geeft byte-gelijke uitvoer en bestanden als de versie van main (39031c68), bewezen in `beleid.test.ts` tegen de bevroren kopie `fixtures/installeer-hooks-oud.ts`.
-- De grenzen-hook staat in de bron, maar de installer zet hem nog niet (`metGrenzen` staat uit): Brian heeft die entry met de hand. Met `metGrenzen` neemt de generator een bestaande, ongemarkeerde `grenzen.sh`-entry over (één entry, gemarkeerd `LAB_BELEID_ID=grenzen`); dat is voor fase 2.
-- Markering: lead-hooks behouden `lab-lead-hooks/hook.sh` in het commando (bestaande installaties blijven "eigen"); nieuwe entries krijgen `LAB_BELEID_ID=<id>`.
-- Snapshots in `fixtures/claude-*.json`: opnieuw maken met `BELEID_FIXTURES=1 bun test scripts/lead/beleid` en de diff nalopen.
-
-## Merge-gevaar fase 1 en 2
-- De grenzen-hook wordt in fase 1 niet door de installer gezet (Brian heeft die entry met de hand, de oude installer zette hem nooit); aanzetten (`metGrenzen`) is fase 2.
-- Contractaanvulling: `hosts.ts` heeft naast `events` en `tools` een tabel `eventMatcher` voor matchers van events die geen toolklasse zijn (SessionStart `startup|clear|resume`, Notification `permission_prompt|idle_prompt`).
+Er zijn geen commandoweigerregels, rolprofielen of grenzen-hook meer. `codex-werker.ts` bewaart alleen de veilige Bun-installatieargumenten; `installeer-skills.ts` installeert expliciet gekozen draagbare skills en behoudt zijn bestandsveiligheid. Deze bron activeren vereist een afzonderlijk verzoek; de reset wijzigt geen bestaande installaties.

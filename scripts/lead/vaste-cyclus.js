@@ -1,9 +1,8 @@
 // Niet door biome gelint (biome.json sluit dit bestand uit): een workflow-script is een functie-body
 // met top-level return en global args en parset daarom niet als module.
-// Sjabloon voor de sub-lead (scripts/lead/sublead.md). Draait alleen als Brian workflows toestond
-// (spawn.sh --sublead --workflow <datum>). Zonder die toestemming volgt de sub-lead hetzelfde
-// stappenplan met de Agent-tool. Args: { taken: [{ id, tak, opdracht, zwaar? }] }; zwaar = true
-// (diff raakt packages/*, passkey, schrijfcheck of serverroutes) geeft een opus-reviewer.
+// Optioneel workflowsjabloon, uitsluitend voor expliciet gedelegeerde taken.
+// Args: { taken: [{ id, tak, opdracht, model?, reviewModel? }], model?, reviewModel? }.
+// Zonder modelkeuze geldt de bestaande hostselectie; geen rol- of toestemmingsbeleid.
 export const meta = {
   name: 'vaste-cyclus',
   description: 'Werkwijze B: per taak een bouwagent (worktree, PR) → reviewer die niet plant → zo nodig één herstelronde; de lead doet poort en merge',
@@ -14,7 +13,7 @@ export const meta = {
   ],
 }
 
-const GRENZEN = `Vaste grenzen: werk alleen in je eigen worktree en tak vanaf origin/main; raak alleen de genoemde bestanden; tests die git aanroepen halen alle GIT_*-variabelen uit de omgeving; nooit de echte tmux-server, live poorten of ~/.claude/settings.json; geen sleutels lezen; niet mergen en niet uitrollen; GEEN volledige poort met e2e (alleen \`bun run check\` en unit-tests). Controleer vóór push dat \`git log origin/main..HEAD\` alleen jouw commits toont. Open een PR met de body volgens .github/pull_request_template.md (Samenvatting, Bewijs, Merge-gevaar). Nederlands. Lees schermfoto's niet zelf in: laat een sonnet-subagent ze bekijken en alleen een oordeel teruggeven.`
+const WERKAFSPRAKEN = `Volg de gebruikersopdracht en de projectinstructies. Gebruik een eigen werkruimte voor onafhankelijke wijzigingen. Isoleer testdata en GIT_*-variabelen in tests. Geef resultaat, passende validatie en resterende punten terug.`
 
 const BOUW = {
   type: 'object',
@@ -34,20 +33,20 @@ const REVIEW = {
   required: ['blokkerend', 'nietBlokkerend', 'oordeel'],
 }
 
-const reviewPrompt = (taak, b) => `Je bent de reviewer die niet plant. Repo ~/Desktop/LAB-BAWUAH/lab-bawuah. Toets PR #${b.pr} (\`gh pr diff ${b.pr}\`) aan AGENTS.md en aan deze taak:\n${taak.opdracht}\nAlleen lezen; niets draaien tegen echte diensten. Werk alleen in je eigen worktree, nooit in de hoofdcheckout ~/Desktop/LAB-BAWUAH/lab-bawuah (geen checkout, switch, reset of pull daar); lees de PR via \`gh pr diff\` of \`git show origin/<tak>:<pad>\`. Let op correctheid, scope (alleen de genoemde bestanden), testkwaliteit (zou de test de fout echt vangen?), GIT_*-scrub in tests, en of de PR-body het sjabloon volgt. Geef blokkerende punten met bestand/regel; laat stijlvoorkeuren weg.`
+const reviewPrompt = (taak, b) => `Review PR #${b.pr} (\`gh pr diff ${b.pr}\`) op correctheid, scope en testkwaliteit aan de hand van de oorspronkelijke taak:\n${taak.opdracht}\nLees de projectinstructies. Geef concrete bevindingen met bestand/regel. Dit is een leesopdracht.`
 
 const resultaten = await pipeline(
   args.taken,
-  (taak) => agent(`${taak.opdracht}\n\nTak: \`${taak.tak}\`. ${GRENZEN}\nGeef terug: tak, PR-nummer, kop-SHA, korte samenvatting, testuitslag, open punten.`,
-    { label: `bouw:${taak.id}`, phase: 'Bouwen', model: 'sonnet', isolation: 'worktree', schema: BOUW }),
-  (b, taak) => b && agent(reviewPrompt(taak, b), { label: `review:${taak.id}`, phase: 'Review', model: taak.zwaar ? 'opus' : 'sonnet', isolation: 'worktree', schema: REVIEW })
+  (taak) => agent(`${taak.opdracht}\n\nTak: \`${taak.tak}\`. ${WERKAFSPRAKEN}\nGeef terug: tak, PR-nummer, kop-SHA, korte samenvatting, testuitslag, open punten.`,
+    { label: `bouw:${taak.id}`, phase: 'Bouwen', model: taak.model || args.model, isolation: 'worktree', schema: BOUW }),
+  (b, taak) => b && agent(reviewPrompt(taak, b), { label: `review:${taak.id}`, phase: 'Review', model: taak.reviewModel || args.reviewModel || taak.model || args.model, isolation: 'worktree', schema: REVIEW })
     .then((r) => ({ taak, b, r })),
   async (x) => {
     if (!x || !x.r || x.r.blokkerend.length === 0) return x
     log(`${x.taak.id}: ${x.r.blokkerend.length} blokkerend punt(en), herstelronde`)
-    const b2 = await agent(`Herstel PR #${x.b.pr} (tak \`${x.b.tak}\`): check de tak uit in een eigen worktree, verwerk deze blokkerende reviewpunten en push op dezelfde tak:\n- ${x.r.blokkerend.join('\n- ')}\n\nOorspronkelijke taak:\n${x.taak.opdracht}\n${GRENZEN}`,
-      { label: `herstel:${x.taak.id}`, phase: 'Herstel', model: 'sonnet', isolation: 'worktree', schema: BOUW })
-    const r2 = b2 && await agent(reviewPrompt(x.taak, b2), { label: `herreview:${x.taak.id}`, phase: 'Herstel', model: x.taak.zwaar ? 'opus' : 'sonnet', isolation: 'worktree', schema: REVIEW })
+    const b2 = await agent(`Herstel PR #${x.b.pr} (tak \`${x.b.tak}\`): check de tak uit in een eigen worktree, verwerk deze blokkerende reviewpunten en push op dezelfde tak:\n- ${x.r.blokkerend.join('\n- ')}\n\nOorspronkelijke taak:\n${x.taak.opdracht}\n${WERKAFSPRAKEN}`,
+      { label: `herstel:${x.taak.id}`, phase: 'Herstel', model: x.taak.model || args.model, isolation: 'worktree', schema: BOUW })
+    const r2 = b2 && await agent(reviewPrompt(x.taak, b2), { label: `herreview:${x.taak.id}`, phase: 'Herstel', model: x.taak.reviewModel || args.reviewModel || x.taak.model || args.model, isolation: 'worktree', schema: REVIEW })
     return { taak: x.taak, b: b2 || x.b, r: r2 || x.r, hersteld: true }
   },
 )

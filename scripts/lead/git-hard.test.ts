@@ -374,14 +374,11 @@ describe("bronscan: git in de lead-tooling loopt via de helper", () => {
 
   /** Bewuste uitzonderingen, met reden: `bestand` (relatief aan scripts/lead) plus een deel van de regel (leeg = het hele bestand). */
   const UITZONDERING: { bestand: string; bevat: string; reden: string }[] = [
-    { bestand: "push.sh", bevat: "", reden: "draait in de worktree van wie pusht en zet daar bewust de hooks (pre-push-poort) aan; lead en Brian draaien push.sh nooit in een worktree van een werker (AGENTS.md)" },
-    { bestand: "merge.sh", bevat: "git patch-id", reden: "leest een diff van stdin, geen repo of werkmap" },
+    { bestand: "push.sh", bevat: "", reden: "opt-in push in de eigen worktree; respecteert de bestaande native Git-hooks en configuratie" },
     { bestand: "git-hard.testhulp.ts", bevat: "", reden: "testhulp van deze test, bouwt zelf de argv met GIT_HARD_OPTIES" },
-    { bestand: "vaste-cyclus.js", bevat: "git log origin/main..HEAD", reden: "tekst in een prompt voor een sessie, geen aanroep" },
-    { bestand: "vaste-cyclus.js", bevat: "git show origin/", reden: "tekst in een prompt voor een sessie, geen aanroep" },
     { bestand: "hooks/status.ts", bevat: 'kop.push("git")', reden: "kolomkop van de tabel, geen aanroep" },
     { bestand: "installeer-grens.ts", bevat: "throw new Error(`git ${args", reden: "foutmelding met de argumenten van een aanroep die al via gitArgs liep" },
-    { bestand: "spawn.sh", bevat: "lees verder alleen git log", reden: "tekst in de opdrachtzin voor de sessie, geen aanroep" },
+    { bestand: "spawn.sh", bevat: "git log origin/main..", reden: "tekst in de opdrachtzin voor de sessie, geen aanroep" },
   ];
   /** Bestanden waar "git" als gegeven voorkomt (commandolijsten, meldingen): daar tellen alleen Python-aanroepen en een regel die met `git ` begint. */
   const ALLEEN_AANROEPEN = ["hooks/grenzen.sh"];

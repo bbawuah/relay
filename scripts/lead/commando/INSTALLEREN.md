@@ -13,7 +13,7 @@ Alle stappen draai je zelf in een gewone terminal (niet via een agent). Er zijn 
 - `/usr/local/lib` bestaat op een verse Mac soms nog niet. Dat is geen probleem: de eerste sudo-regel (`install -d`) maakt `/usr/local/lib/lab-lead` en de mappen erboven aan, als root en met modus 755. De runner eist dat het bestand met sleutels en elke map erboven root-eigen is en niet schrijfbaar voor groep of anderen. Controleer dat na de installatie met `ls -ld /usr/local /usr/local/lib /usr/local/lib/lab-lead`. Staat er een map van jou tussen (bijvoorbeeld door Homebrew), zet die dan op root met `sudo chown root:wheel <map>`. Anders weigert de runner te starten, en meldt `--controleer` welke map het is.
 - Maak de logmap: `mkdir -p "$HOME/Library/Logs/lab-b"`.
 
-## 1. Runner en merge.sh (sudo)
+## 1. Runner (sudo)
 
 ```sh
 bun scripts/lead/installeer-grens.ts
@@ -23,8 +23,6 @@ Dit print onder meer:
 
 ```sh
 sudo install -d -o root -g wheel -m 755 '/usr/local/lib/lab-lead'
-sudo install -o root -g wheel -m 755 '…/merge.sh' '/usr/local/lib/lab-lead/merge.sh'
-sudo install -o root -g wheel -m 644 '…/lead.conf' '/usr/local/lib/lab-lead/lead.conf'
 sudo install -o root -g wheel -m 755 '/var/folders/…/commando-runner-bouw-…/commando-runner.js' '/usr/local/lib/lab-lead/commando-runner.js'
 ```
 
@@ -94,7 +92,7 @@ bun scripts/lead/installeer-grens.ts --controleer
 ```
 
 Dit eist:
-- `merge.sh`, `lead.conf` en `commando-runner.js`: root-eigen, de juiste modus, geen ACL, geen symlink, en dezelfde sha256 als origin/main (de bundel opnieuw gebouwd). Bij een afwijkende bundel noemt de melding de bun-versie: een andere bun geeft een andere bundel. Installeer dan opnieuw met de huidige bun.
+- `commando-runner.js`: root-eigen, de juiste modus, geen ACL, geen symlink, en dezelfde sha256 als origin/main (de bundel opnieuw gebouwd). Bij een afwijkende bundel noemt de melding de bun-versie: een andere bun geeft een andere bundel. Installeer dan opnieuw met de huidige bun.
 - `passkeys.pub`: root-eigen, 644, een geldig formaat. Erbij staan de sha256 (gelijk aan die van de export) en per sleutel het korte id en het apparaat. Vergelijk die met de passkeys in Terminal B.
 - `~/Library/LaunchAgents/nl.lab-b.commando.plist`: gelijk aan het sjabloon uit origin/main.
 
@@ -125,3 +123,5 @@ Zonder runner blijft een goedgekeurd verzoek liggen tot het akkoord na 5 minuten
 - **`tak-weg` draait live niet (fase 1).** Het zou `scripts/lead/push.sh` uit een clone draaien. Die clone is van jouw gebruiker, dus een agent kan het script, de hooks of de git-config daar wijzigen voordat de runner het met jouw akkoord draait. Daarom weigert de runner live alles wat niet het vaste tailscale-pad is. Fase 1b: `tak-weg` via de GitHub-API, zonder code uit de repo. In de tests draait `tak-weg` met een nep-bash.
 - **Dezelfde gebruiker blijft het fundament** (PLAN §8.1). De LaunchAgent draait `/opt/homebrew/bin/bun` en staat in `~/Library/LaunchAgents`. Beide kan jouw gebruiker wijzigen, en een agent dus ook. Een andere runner of een andere bun kan zonder geldige handtekening nog steeds niets wat de agent niet zelf al kon (PLAN §3.11). `--controleer` meldt een gewijzigde plist.
 - **Replay binnen 5 minuten** (PLAN §3.3). Wie `gebruikt/` en `uitslag/` wist en een geclaimd akkoord terugzet, kan hetzelfde verzoek nog eens laten draaien zolang het akkoord geldt. Dat vereist bewust omzeilen, en de soorten in fase 1 zijn idempotent. Om dezelfde reden is `maxPerDag` (geteld uit `gebruikt/`) een rem op vergissingen, geen grens.
+
+De installer beheert geen mergepolicy meer. Oude vaste kopieën van `merge.sh` en `lead.conf` worden niet automatisch verwijderd. Inventariseer die afzonderlijk; de beschermde runner, publieke sleutels en LaunchAgent blijven behouden.

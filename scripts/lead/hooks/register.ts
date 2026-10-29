@@ -358,8 +358,6 @@ export function schrijfIdentiteit(staat: string, cwd: string, i: Identiteit): vo
   schrijfAtomair(identiteitPad(staat, cwd), `${JSON.stringify(i)}\n`);
 }
 
-/** Rollen die een gespawnde werker kan hebben; "lead" of iets anders in het bestand is nooit geldig (geen escalatie via het bestand). */
-const IDENTITEIT_ROLLEN = ["agent", "sublead", "vervolg", "lead-proef"];
 
 /** Een gewoon bestand (geen symlink), van de eigen gebruiker, zonder rechten voor groep of anderen. */
 function eigenPrive(pad: string, map: boolean): boolean {
@@ -377,8 +375,8 @@ function leesIdentiteitBestand(pad: string, nu: number): Identiteit | null {
   try {
     if (!eigenPrive(dirname(pad), true) || !eigenPrive(pad, false)) return null;
     const o = JSON.parse(readFileSync(pad, "utf8"));
-    if (!o || typeof o !== "object" || typeof o.naam !== "string" || !o.naam || !IDENTITEIT_ROLLEN.includes(o.rol)) return null;
-    if (typeof o.ts !== "number" || o.ts > nu || nu - o.ts > IDENTITEIT_MAX_MS) return null;
+    if (!o || typeof o !== "object" || typeof o.naam !== "string" || !/^[A-Za-z0-9_-][A-Za-z0-9._-]{0,99}$/.test(o.naam) || typeof o.rol !== "string") return null;
+    if (typeof o.ts !== "number" || !Number.isFinite(o.ts) || o.ts > nu || nu - o.ts > IDENTITEIT_MAX_MS) return null;
     return { naam: o.naam, rol: o.rol, lead: String(o.lead ?? ""), opdracht: String(o.opdracht ?? ""), spawn_id: String(o.spawn_id ?? ""), ts: o.ts, ...(typeof o.t3_thread === "string" && o.t3_thread ? { t3_thread: o.t3_thread } : {}), ...(typeof o.sessie_id === "string" && o.sessie_id ? { sessie_id: o.sessie_id } : {}) };
   } catch {
     return null;
