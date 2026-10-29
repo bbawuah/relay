@@ -4,7 +4,7 @@ import { chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSy
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { schoneEnv } from "../test-integriteit";
-import { valideerSleutels } from "./commando/runner";
+import { valideerSleutels } from "./commando/sleutels";
 import {
   apparaatVan,
   BESTANDEN,

@@ -18,7 +18,7 @@ import { homedir, tmpdir } from "node:os";
 import path from "node:path";
 import { schoneEnv } from "../test-integriteit";
 import { gitArgs } from "./git-hard";
-import { valideerSleutels, type Sleutels } from "./commando/runner";
+import { valideerSleutels, type Sleutels } from "./commando/sleutels";
 
 export const DOEL = "/usr/local/lib/lab-lead";
 /** Bestand → modus. lead.conf hoort erbij: merge.sh leest hem naast zichzelf. */
