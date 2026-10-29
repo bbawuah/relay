@@ -1,0 +1,44 @@
+{
+ "title": "Parents and subagents across Claude and Codex",
+ "footer": "isolated demo state \u00b7 namespace showcase-live \u00b7 IDs are aliases",
+ "intro": [
+  "Live agents: parents and subagents",
+  "Each runtime started its own subagent. Relay carried every message."
+ ],
+ "outro": "Four peers, four mailboxes, one namespace. Hosts started the agents; Relay only stored mail and counted acknowledgements for the bound peer.",
+ "captions": [
+  {
+   "match": "\"duplicate\":true",
+   "caption": "Same request key retried: same message, duplicate true."
+  },
+  {
+   "match": "plan-1",
+   "caption": "Codex parent sends across providers to the Claude peer."
+  },
+  {
+   "match": "send codex-sub",
+   "caption": "Task for its own subagent is stored before that subagent exists: send now, read later."
+  },
+  {
+   "match": "codex-sub ack msg-1",
+   "caption": "Scoping: codex-sub acknowledging another peer's message counts 0. Peer scoping is not OS authentication."
+  },
+  {
+   "match": "claude-sub ack msg-1",
+   "caption": "Same on the Claude side: acknowledged 0 for a message that is not in its mailbox."
+  },
+  {
+   "match": "send claude-sub",
+   "caption": "The Claude parent delegates to its own subagent through its own mailbox."
+  },
+  {
+   "match": "plan-reply-1",
+   "caption": "Answer to the Codex parent, in the original conversation."
+  },
+  {
+   "match": "codex-parent ack msg-6",
+   "caption": "Final acknowledgement by a later session of the same peer."
+  }
+ ],
+ "style": "summary"
+}

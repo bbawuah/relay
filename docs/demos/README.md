@@ -1,27 +1,42 @@
 # Demo recordings: provenance
 
-Both GIFs in [docs/media](../media) are **replays of real Relay CLI runs with scripted roles. No AI model, Claude or Codex process took part.** Each frame says so in its top bar. They show what the installed `relay` CLI actually printed; they are not live provider recordings.
+The README shows two **live-agent replays** (`relay-live-*.gif`). Two older **scripted replays** (`relay-scripted-*.gif`) are kept only as clearly labelled illustrations. Every frame says which kind it is in its top bar. None of them is a realtime recording and none makes a performance claim: waiting time is cut and each step is held for readability.
 
-| File | What it shows | Length | Size |
+| File | Kind | Length | Size |
 | --- | --- | --- | --- |
-| `relay-handoff.gif` | A claude-host peer hands a task to a codex-host peer: stored receipt, request-key retry (`duplicate: true`), non-destructive `inbox`, explicit `ack`, reply in the same conversation, an unrelated peer that sees nothing | 37 s | 0.6 MB |
-| `relay-subagents.gif` | Parent and subagent peers on two runtimes: cross-runtime task, parent-to-subagent delegation, result back, fan-out, and a subagent that cannot acknowledge its parent's mail | 45 s | 1.5 MB |
+| `relay-live-handoff.gif` | Replay of what live Codex and Claude agents ran: cross-provider handoff between two peers | 36 s | 0.42 MB |
+| `relay-live-subagents.gif` | Replay of live agents: two parents and their own subagents, with scoping checks | 62 s | 0.98 MB |
+| `relay-scripted-handoff.gif` | Scripted roles, real CLI output, no model | 33 s | 0.63 MB |
+| `relay-scripted-subagents.gif` | Scripted roles, real CLI output, no model | 40 s | 1.48 MB |
 
-Each GIF has a static `*-poster.png` (its final frame) and a plain-text transcript in [casts](casts).
+Each GIF has a `*-poster.png` (final frame). Live casts are in [casts](casts), full command transcripts in [transcripts](transcripts).
 
-## What is real and what is scripted
+## What the live replays are
 
-- **Real:** every command line and every output line comes from running the installed `relay` 0.2.0 (copy installed from commit `7f3a63d`) in a disposable HOME, prefix, cwd and state directory under a private temporary path, namespace `showcase`. The directory is deleted afterwards.
-- **Scripted:** which peer acts next, the message texts, and the captions. The `# HOST step (marker, not Relay)` lines are markers only. In real use the host runtime (Claude, Codex, T3) starts subagents; Relay never does, and nothing in these recordings started one.
-- **Sanitised:** peer, message and conversation IDs are replaced by readable aliases (`claude-lead`, `msg-1`, `conv-1`); timestamps, schema version and namespace fields are dropped from the JSON; the global `--state` and `--namespace` options are omitted from the displayed command to fit the width. No home path, hostname, token or user conversation appears. Peer names, session IDs and message texts are made up for the demo.
-- **Polling:** all hosts poll. Nothing in these runs wakes or notifies an agent.
+- **Who ran the commands.** Agents did, not a script. The H thread started a Codex agent (`codex-parent`) and a Claude agent (`claude-parent`) with the T3 `delegate_task` tool. Each parent then started its own subagent (`codex-sub`, `claude-sub`) with `delegate_task`; T3 lists those as child threads of the parent. Providers and models come from the task metadata T3 returned, not from names the agents chose: Codex `gpt-6.1-sol` (reasoning effort low for the two parents) and Claude `claude-sonnet-5-5` (effort low for the parent). Subagent effort was requested but is not recorded in the metadata, so it is not claimed.
+- **Order, to stay at two live agents.** Codex parent plus its subagent, then Claude parent plus its subagent, then a short second Codex-parent session to read the final answer. Nothing woke an agent: the mailboxes are durable, so agents did not have to be live at the same time.
+- **Host versus Relay.** Lines marked `HOST · T3 delegate_task` come from the T3 task API. They are not Relay messages and Relay did none of that. Relay never starts agents or wakes them; every agent polled `inbox` itself.
+- **Bindings.** The peers are registered as manual CLI connections (no invented host session IDs). Each agent received a wrapper that fixes its own `--peer`, the private state and the namespace, accepts only `send`, `inbox`, `ack`, `list`, and logs each call with its output. No MCP server, token or global setting was involved. Peer scoping is mailbox scoping, not OS authentication: an acknowledgement of a message outside the bound mailbox counts 0, which the subagents demonstrate.
+- **Runtime.** A copy installed from commit `096c78f` (documentation-only on top of the frozen `7f3a63d`; runtime files identical) into a private prefix, HOME and state.
+
+## What was changed for publication
+
+- Peer, message and conversation IDs become aliases (`codex-parent`, `msg-1`, `conv-1`); `createdAt`, `expiresAt`, `version` and `namespace` are dropped from the JSON; the wrapper's `--state/--namespace/--peer` options are not shown. No home path, hostname, token or user transcript is included; only Relay commands and outputs plus T3 delegation metadata (provider, model, effort).
+- The animation shows short summaries (long message bodies are cut with `…`); the transcripts under the README GIFs contain the full command lines and outputs. Events keep their recorded order, including retries; no failures occurred in these runs.
+- Consecutive identical empty polls by the same peer would be collapsed into one step with a marker (none needed here), and one extra `list` call by an agent was left out because its output only lists peers.
+- The demo state and the raw wrapper log (with real IDs) are isolated, kept private for review, and are not published. They were not deleted, so nothing here claims the state was removed.
+
+## Mermaid check
+
+The three diagrams in the README are parsed and rendered from the files in [docs/diagrams](../diagrams) with `mermaid@11.17.2` (pinned CDN URL). T3's `html_preview` loaded the library, but its screenshot is taken before Mermaid's asynchronous render finishes, so it cannot show the result. As a fallback the check ran in a headless Google Chrome with a temporary profile (no existing tab or user profile) and a virtual-time budget; all three parse and render.
 
 ## Reproduce
 
 ```sh
-bun docs/demos/capture.ts handoff     # real run, writes casts/handoff.jsonl
-bun docs/demos/capture.ts subagents   # real run, writes casts/subagents.jsonl
+bun docs/demos/capture.ts handoff     # scripted replay: real run, writes casts/handoff.jsonl
+bun docs/demos/capture.ts subagents   # scripted replay: casts/subagents.jsonl
+bun docs/demos/live-cast.ts PRIVATE_DIR OUT.jsonl handoff|subagents   # live replay from the wrapper log
 docs/demos/build.sh                   # renders casts + captions into docs/media
 ```
 
-`capture.ts` installs Relay from this checkout into a temporary prefix with a temporary HOME and removes everything when it finishes. `build.sh` needs macOS (`swiftc`, CoreText) and `ffmpeg`; the renderer `render.swift` is compiled into a temporary directory and nothing is installed globally.
+`capture.ts` installs Relay from this checkout into a temporary prefix with a temporary HOME and removes it afterwards. `live-cast.ts` needs the private wrapper log that is not published, so the live casts can be re-rendered but not regenerated from this repository. `build.sh` needs macOS (`swiftc`, CoreText) and `ffmpeg`; the renderer is compiled into a temporary directory and nothing is installed globally.

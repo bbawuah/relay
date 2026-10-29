@@ -9,13 +9,19 @@ media="$here/../media"
 tmp=$(mktemp -d /private/tmp/relay-demo-render.XXXXXX)
 trap 'rm -rf "$tmp"' EXIT
 swiftc -O "$here/render.swift" -o "$tmp/render"
-label="REPLAY of a real Relay CLI run | scripted roles | no AI model"
+# Live captures (agents ran the relay commands) and the scripted CLI replays.
+live="REPLAY of captured live agent output | Codex gpt-6.1-sol + Claude sonnet-5-5 via T3"
+scripted="REPLAY of a real Relay CLI run | scripted roles | no AI model"
 mkdir -p "$media"
-for s in handoff subagents; do
-  "$tmp/render" "$here/casts/$s.jsonl" "$here/captions/$s.json" "$tmp/$s" "$label" >/dev/null
-  (cd "$tmp/$s" && ffmpeg -v error -y -f concat -i list.ffconcat \
-    -vf "fps=8,split[a][b];[a]palettegen=max_colors=32[p];[b][p]paletteuse=dither=none" -loop 0 "$s.gif")
-  cp "$tmp/$s/$s.gif" "$media/relay-$s.gif"
-  cp "$tmp/$s/poster.png" "$media/relay-$s-poster.png"
-done
+build() { # cast captions label gif-name
+  "$tmp/render" "$here/casts/$1.jsonl" "$here/captions/$2.json" "$tmp/$3" "$4" >/dev/null
+  (cd "$tmp/$3" && ffmpeg -v error -y -f concat -i list.ffconcat \
+    -vf "fps=8,split[a][b];[a]palettegen=max_colors=32[p];[b][p]paletteuse=dither=none" -loop 0 "$3.gif")
+  cp "$tmp/$3/$3.gif" "$media/$3.gif"
+  cp "$tmp/$3/poster.png" "$media/$3-poster.png"
+}
+build live-handoff live-handoff relay-live-handoff "$live"
+build live-subagents live-subagents relay-live-subagents "$live"
+build handoff handoff relay-scripted-handoff "$scripted"
+build subagents subagents relay-scripted-subagents "$scripted"
 ls -l "$media"

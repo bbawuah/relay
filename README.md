@@ -10,15 +10,226 @@ Bun **>= 1.4.2** is the only runtime prerequisite on macOS or Linux. Relay uses 
 
 ## See it work
 
-Replays of real Relay CLI runs with scripted roles (no AI model; labelled in every frame). Provenance and how to reproduce them: [docs/demos](docs/demos/README.md).
+Both recordings replay what real agents did: a Codex agent and a Claude agent, started as T3 delegated tasks, ran the `relay` commands themselves, each through its own fixed peer binding in a private, disposable namespace. The animation shows short summaries; the full sanitised command transcript sits under each one. Provenance, models and limits: [docs/demos](docs/demos/README.md).
 
-**Cross-agent handoff.** A Claude-host peer sends a task, retries it safely, a Codex-host peer reads it twice, acknowledges it and answers in the same conversation; a third peer sees nothing.
+**Cross-provider handoff.** A Codex agent sends a task to a Claude peer and retries it safely. The Claude agent starts later, finds the mail waiting, reads it twice, acknowledges it and answers in the same conversation; a later Codex session of the first peer reads the answer.
 
-![Replay of a real Relay CLI run: a claude-host peer sends a task to a codex-host peer, a retry with the same request key returns duplicate true, the recipient reads twice, acknowledges once and replies in the same conversation, while an unrelated peer sees an empty inbox and acknowledges zero messages.](docs/media/relay-handoff.gif)
+![Replay of captured live agent output: a Codex gpt-6.1-sol agent sends a message to a Claude peer and a retry with the same request key returns duplicate true; later a Claude sonnet-5-5 agent reads the message twice, acknowledges it and replies in the same conversation; a later Codex session reads and acknowledges the reply.](docs/media/relay-live-handoff.gif)
 
-**Parent and subagents across runtimes.** Peers for a Claude parent and subagent and a Codex parent and subagent exchange tasks and results through Relay. The runtimes start the subagents; Relay carries the messages.
+<details><summary>Full command transcript (sanitised: IDs shown as aliases, timestamps removed)</summary>
 
-![Replay of a real Relay CLI run: a Claude parent sends a plan request to a Codex parent, which delegates to its own subagent and gets the result back, replies to the Claude parent, which then hands work to its own subagent; a subagent trying to acknowledge its parent's message gets zero.](docs/media/relay-subagents.gif)
+> HOST (T3 delegate_task, not Relay): H thread starts codex-parent [Codex gpt-6.1-sol, effort low]
+
+```
+$ relay --peer codex-parent send claude-parent 'Plan check: name one risk of retrying a send without a request key.' --request-key plan-1
+{"id":"msg-1","state":"stored","duplicate":false,"requestKey":"plan-1"}
+```
+
+```
+$ relay --peer codex-parent send claude-parent 'Plan check: name one risk of retrying a send without a request key.' --request-key plan-1
+{"id":"msg-1","state":"stored","duplicate":true,"requestKey":"plan-1"}
+```
+
+> HOST (T3 delegate_task, not Relay): H thread starts claude-parent [Claude claude-sonnet-5-5, effort low]
+
+```
+$ relay --peer claude-parent inbox
+[{"id":"msg-1","from":"codex-parent","to":"claude-parent","body":"Plan check: name one risk of retrying a send without a request key.","conversationId":"conv-2"}]
+```
+
+```
+$ relay --peer claude-parent inbox
+[{"id":"msg-1","from":"codex-parent","to":"claude-parent","body":"Plan check: name one risk of retrying a send without a request key.","conversationId":"conv-2"}]
+```
+
+```
+$ relay --peer claude-parent ack msg-1
+{"acknowledged":1}
+```
+
+```
+$ relay --peer claude-parent send codex-parent 'A retry without a request key can store the request twice; my subagent added: a stored receipt proves Relay durably accepted the message into the mailbox, but not that the recipient read, understood, or acted on it.' --request-key plan-reply-1 --conversation conv-2 --reply-to msg-1
+{"id":"msg-6","state":"stored","duplicate":false,"requestKey":"plan-reply-1"}
+```
+
+> HOST (T3 delegate_task, not Relay): H thread starts a new session of codex-parent [Codex gpt-6.1-sol, effort low]
+
+```
+$ relay --peer codex-parent inbox
+[{"id":"msg-6","from":"claude-parent","to":"codex-parent","body":"A retry without a request key can store the request twice; my subagent added: a stored receipt proves Relay durably accepted the message into the mailbox, but not that the recipient read, understood, or acted on it.","conversationId":"conv-2","replyTo":"msg-1"}]
+```
+
+```
+$ relay --peer codex-parent inbox
+[{"id":"msg-6","from":"claude-parent","to":"codex-parent","body":"A retry without a request key can store the request twice; my subagent added: a stored receipt proves Relay durably accepted the message into the mailbox, but not that the recipient read, understood, or acted on it.","conversationId":"conv-2","replyTo":"msg-1"}]
+```
+
+```
+$ relay --peer codex-parent ack msg-6
+{"acknowledged":1}
+```
+
+```
+$ relay --peer codex-parent inbox
+[]
+```
+
+</details>
+
+**Parents and subagents across providers.** Each runtime starts its own subagent through the T3 task API (host side, not Relay). Parents and subagents have separate peers and mailboxes; a subagent that tries to acknowledge another peer's message gets 0.
+
+![Replay of captured live agent output: a Codex parent messages a Claude parent, delegates through its own mailbox to a Codex subagent and receives the result; the Claude parent delegates to its own Claude subagent and answers the Codex parent in the original conversation; each subagent's attempt to acknowledge a foreign message returns zero.](docs/media/relay-live-subagents.gif)
+
+<details><summary>Full command transcript (sanitised: IDs shown as aliases, timestamps removed)</summary>
+
+> HOST (T3 delegate_task, not Relay): H thread starts codex-parent [Codex gpt-6.1-sol, effort low]
+
+```
+$ relay --peer codex-parent send claude-parent 'Plan check: name one risk of retrying a send without a request key.' --request-key plan-1
+{"id":"msg-1","state":"stored","duplicate":false,"requestKey":"plan-1"}
+```
+
+```
+$ relay --peer codex-parent send claude-parent 'Plan check: name one risk of retrying a send without a request key.' --request-key plan-1
+{"id":"msg-1","state":"stored","duplicate":true,"requestKey":"plan-1"}
+```
+
+```
+$ relay --peer codex-parent send codex-sub 'Answer in one sentence: why must a retry reuse the same request key? Also run ack PLAN_ID once with your own binding and tell me the acknowledged count. PLAN_ID=msg-1' --request-key sub-task-1
+{"id":"msg-2","state":"stored","duplicate":false,"requestKey":"sub-task-1"}
+```
+
+```
+$ relay --peer codex-parent inbox
+[]
+```
+
+> HOST (T3 delegate_task, not Relay): codex-parent starts codex-sub [Codex gpt-6.1-sol]
+
+```
+$ relay --peer codex-sub inbox
+[{"id":"msg-2","from":"codex-parent","to":"codex-sub","body":"Answer in one sentence: why must a retry reuse the same request key? Also run ack PLAN_ID once with your own binding and tell me the acknowledged count. PLAN_ID=msg-1","conversationId":"conv-1"}]
+```
+
+```
+$ relay --peer codex-sub ack msg-2
+{"acknowledged":1}
+```
+
+```
+$ relay --peer codex-sub ack msg-1
+{"acknowledged":0}
+```
+
+```
+$ relay --peer codex-sub send codex-parent 'A retry must reuse the same request key so Relay recognizes the original request and avoids duplicate delivery; foreign-ack count=0' --request-key sub-1 --conversation conv-1 --reply-to msg-2
+{"id":"msg-3","state":"stored","duplicate":false,"requestKey":"sub-1"}
+```
+
+```
+$ relay --peer codex-parent inbox
+[{"id":"msg-3","from":"codex-sub","to":"codex-parent","body":"A retry must reuse the same request key so Relay recognizes the original request and avoids duplicate delivery; foreign-ack count=0","conversationId":"conv-1","replyTo":"msg-2"}]
+```
+
+```
+$ relay --peer codex-parent inbox
+[{"id":"msg-3","from":"codex-sub","to":"codex-parent","body":"A retry must reuse the same request key so Relay recognizes the original request and avoids duplicate delivery; foreign-ack count=0","conversationId":"conv-1","replyTo":"msg-2"}]
+```
+
+```
+$ relay --peer codex-parent ack msg-3
+{"acknowledged":1}
+```
+
+> HOST (T3 delegate_task, not Relay): H thread starts claude-parent [Claude claude-sonnet-5-5, effort low]
+
+```
+$ relay --peer claude-parent inbox
+[{"id":"msg-1","from":"codex-parent","to":"claude-parent","body":"Plan check: name one risk of retrying a send without a request key.","conversationId":"conv-2"}]
+```
+
+```
+$ relay --peer claude-parent inbox
+[{"id":"msg-1","from":"codex-parent","to":"claude-parent","body":"Plan check: name one risk of retrying a send without a request key.","conversationId":"conv-2"}]
+```
+
+```
+$ relay --peer claude-parent ack msg-1
+{"acknowledged":1}
+```
+
+```
+$ relay --peer claude-parent send claude-sub 'Answer in one sentence: what does a stored receipt from Relay prove, and what does it not prove? Also run ack PLAN_ID once with your own binding and tell me the acknowledged count. PLAN_ID=msg-1' --request-key sub-task-1
+{"id":"msg-4","state":"stored","duplicate":false,"requestKey":"sub-task-1"}
+```
+
+> HOST (T3 delegate_task, not Relay): claude-parent starts claude-sub [Claude claude-sonnet-5-5]
+
+```
+$ relay --peer claude-sub inbox
+[{"id":"msg-4","from":"claude-parent","to":"claude-sub","body":"Answer in one sentence: what does a stored receipt from Relay prove, and what does it not prove? Also run ack PLAN_ID once with your own binding and tell me the acknowledged count. PLAN_ID=msg-1","conversationId":"conv-3"}]
+```
+
+```
+$ relay --peer claude-sub ack msg-4
+{"acknowledged":1}
+```
+
+```
+$ relay --peer claude-sub ack msg-1
+{"acknowledged":0}
+```
+
+```
+$ relay --peer claude-sub send claude-parent 'A stored receipt proves Relay durably accepted the message into the recipient'\''s mailbox, but not that the recipient read, understood, or acted on it (only an explicit ack shows it was handled); foreign-ack count=0' --request-key sub-1 --conversation conv-3 --reply-to msg-4
+{"id":"msg-5","state":"stored","duplicate":false,"requestKey":"sub-1"}
+```
+
+```
+$ relay --peer claude-parent inbox
+[{"id":"msg-5","from":"claude-sub","to":"claude-parent","body":"A stored receipt proves Relay durably accepted the message into the recipient's mailbox, but not that the recipient read, understood, or acted on it (only an explicit ack shows it was handled); foreign-ack count=0","conversationId":"conv-3","replyTo":"msg-4"}]
+```
+
+```
+$ relay --peer claude-parent inbox
+[{"id":"msg-5","from":"claude-sub","to":"claude-parent","body":"A stored receipt proves Relay durably accepted the message into the recipient's mailbox, but not that the recipient read, understood, or acted on it (only an explicit ack shows it was handled); foreign-ack count=0","conversationId":"conv-3","replyTo":"msg-4"}]
+```
+
+```
+$ relay --peer claude-parent ack msg-5
+{"acknowledged":1}
+```
+
+```
+$ relay --peer claude-parent send codex-parent 'A retry without a request key can store the request twice; my subagent added: a stored receipt proves Relay durably accepted the message into the mailbox, but not that the recipient read, understood, or acted on it.' --request-key plan-reply-1 --conversation conv-2 --reply-to msg-1
+{"id":"msg-6","state":"stored","duplicate":false,"requestKey":"plan-reply-1"}
+```
+
+> HOST (T3 delegate_task, not Relay): H thread starts a new session of codex-parent [Codex gpt-6.1-sol, effort low]
+
+```
+$ relay --peer codex-parent inbox
+[{"id":"msg-6","from":"claude-parent","to":"codex-parent","body":"A retry without a request key can store the request twice; my subagent added: a stored receipt proves Relay durably accepted the message into the mailbox, but not that the recipient read, understood, or acted on it.","conversationId":"conv-2","replyTo":"msg-1"}]
+```
+
+```
+$ relay --peer codex-parent inbox
+[{"id":"msg-6","from":"claude-parent","to":"codex-parent","body":"A retry without a request key can store the request twice; my subagent added: a stored receipt proves Relay durably accepted the message into the mailbox, but not that the recipient read, understood, or acted on it.","conversationId":"conv-2","replyTo":"msg-1"}]
+```
+
+```
+$ relay --peer codex-parent ack msg-6
+{"acknowledged":1}
+```
+
+```
+$ relay --peer codex-parent inbox
+[]
+```
+
+</details>
+
+Lines starting with `> HOST` are T3 task-API events recorded from returned task metadata; they are not Relay messages. All agents polled: nothing woke them.
 
 ## What you can do with it
 
@@ -31,29 +242,21 @@ Replays of real Relay CLI runs with scripted roles (no AI model; labelled in eve
 
 ## How it fits together
 
-The runtimes own the agent tree. Relay owns only the mailboxes. Solid arrows below are your host runtime spawning subagents; dotted arrows are Relay messages.
+The runtimes own the agent tree. Relay owns only the mailboxes. Solid arrows below are your host runtime spawning subagents; dotted arrows are the agents using their own Relay mailbox. Messages between agents travel only through Relay.
 
 ```mermaid
-flowchart LR
+flowchart TB
   subgraph claude["Claude runtime (host)"]
-    cp["claude-parent"] -->|"host spawns subagent"| cs["claude-sub"]
+    cp["claude-parent"] -->|"host spawns"| cs["claude-sub"]
   end
   subgraph codex["Codex runtime (host)"]
-    xp["codex-parent"] -->|"host spawns subagent"| xs["codex-sub"]
+    xp["codex-parent"] -->|"host spawns"| xs["codex-sub"]
   end
-  subgraph relay["Relay (local SQLite mailboxes, namespace showcase)"]
-    mcp["claude-parent mailbox"]
-    mcs["claude-sub mailbox"]
-    mxp["codex-parent mailbox"]
-    mxs["codex-sub mailbox"]
-  end
-  cp -. "send / inbox / ack" .-> mcp
-  cs -. "send / inbox / ack" .-> mcs
-  xp -. "send / inbox / ack" .-> mxp
-  xs -. "send / inbox / ack" .-> mxs
-  mcp <-. "message" .-> mxp
-  mcs <-. "message" .-> mcp
-  mxp <-. "message" .-> mxs
+  relay[("Relay store: one mailbox per registered peer")]
+  cp <-.->|"send, inbox, ack"| relay
+  cs <-.->|"send, inbox, ack"| relay
+  xp <-.->|"send, inbox, ack"| relay
+  xs <-.->|"send, inbox, ack"| relay
 ```
 
 A message is stored first, read any number of times and acknowledged only when the recipient says so. A retry with the same request key returns the original message.

@@ -1,0 +1,40 @@
+{
+ "title": "Cross-provider handoff between live agents",
+ "footer": "isolated demo state \u00b7 namespace showcase-live \u00b7 IDs are aliases",
+ "intro": [
+  "Live agents, cross-provider handoff",
+  "A Codex agent and a Claude agent exchange mail through Relay."
+ ],
+ "outro": "Both agents polled: Relay stored the mail, handed it out on read and marked it acknowledged on request. It started and woke nobody.",
+ "captions": [
+  {
+   "match": "\"duplicate\":true",
+   "caption": "Retry with the same request key: same message, duplicate true. Nothing is stored twice."
+  },
+  {
+   "match": "plan-1",
+   "caption": "The Codex agent sends to the Claude peer. The Claude agent is not even running yet."
+  },
+  {
+   "match": "claude-parent inbox",
+   "caption": "The Claude agent starts later and polls: the mail was waiting. Reading twice acknowledges nothing."
+  },
+  {
+   "match": "claude-parent ack",
+   "caption": "Receipt is acknowledged explicitly, by the recipient only."
+  },
+  {
+   "match": "plan-reply-1",
+   "caption": "The answer goes back in the same conversation (reply-to the original message)."
+  },
+  {
+   "match": "codex-parent inbox",
+   "caption": "A later Codex session of the same peer polls and finds the answer."
+  },
+  {
+   "match": "codex-parent ack",
+   "caption": "Acknowledged once; the final inbox is empty."
+  }
+ ],
+ "style": "summary"
+}
