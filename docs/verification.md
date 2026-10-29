@@ -1,5 +1,56 @@
 # Verification handoff
 
+## Message package 0.2.0 — E focused verification
+
+29 October 2026, `feat/message-package`, T3-bound worktree
+`/Users/labbawuah/.t3/worktrees/relay/feat-message-package`. Start baseline
+`567767912dd6d9845d20f279e25f0f51e6cece40`; explicit B2
+`797bf059c26c1a4944b0bb369cf86b07ec6f5581` and D
+`721e5211b34ce637087203dc71a64fd54bbd755e` cherry-picks provide the neighboring
+store/dispatcher and CLI/MCP. E does not modify their files.
+
+The first focused package/startup run produced **30 pass / 23 fail** because E's
+new `Bun.Transpiler.scanImports` call rejected the executable polyglot shebang.
+The repair removes the first shebang line before scanning; imports in the entry
+and all runtime source remain checked. Initial evidence is retained at
+`/tmp/relay-e-package.EA3cbU/tests.log`.
+
+The first repaired run passed **53 tests, zero failed, 1,496 assertions** across
+`message-package.test.ts`, `relay.test.ts` and `runtime-safety.test.ts`.
+Evidence: `/tmp/relay-e-package.WfevjE/tests.log`. It covers the actual installed
+CLI/MCP, keyed send retry, non-destructive reads and explicit ack, repeatable
+install, state-preserving uninstall, source/foreign/symlink refusal, package-bin
+and installed/startup config/preload/dotenv/tsconfig isolation, stable Bun fallback,
+provenance and self-uninstall regression cases. Boundary mutation fixtures are
+separate inert module graphs and never substitute for the actual CLI smoke.
+
+The final strengthened run passed **54 tests, zero failed, 2,167 assertions**
+(`/tmp/relay-e-final.hnq6C9/tests.log`). It additionally proves that the polyglot
+entry still rejects an injected retired import and compares every retired
+manifest source/hash/category/former destination to the committed baseline.
+CI fetches that history explicitly so these provenance checks cannot silently
+skip in a shallow checkout.
+
+Local dependencies were prepared with frozen lockfile and ignored scripts under
+temporary HOME/cache. The initial typecheck lacked local Bun type definitions;
+it is not counted as a pass. The package now invokes the local TypeScript compiler
+through Bun rather than a global Node shim. Repaired `bun run typecheck` passed
+(`/tmp/relay-e-types.9kQ1Ct/typecheck.log`); `bun run check:package` passed with
+20 runtime files and no retired imports (`/tmp/relay-e-boundary.SY6fpu/boundary.log`).
+The package privacy flag, dependencies and lockfile are unchanged.
+
+No full gate, live-state installation, provider settings, live host tests, push,
+merge or publishing was performed. T3 remains polling; F's importer and migration
+guide are a separate pending integration. macOS is the worker platform; Linux and
+the complete reduced gate remain for the lead/CI. The known Bun 1.4.2 `/dev/null`
+directory-mismatch diagnostic remains visible in test logs.
+
+## Historical extraction verification
+
+Everything below concerns the former orchestration/peerbus extraction, its source
+commits and its old gate. It is preserved as historical evidence, not a claim that
+the removed product behaviors ship in 0.2.0 or that the current full gate ran.
+
 29 October 2026, branch `feat/standalone-peerbus`.
 
 Initial verification on the original extraction (`32f6b79`):

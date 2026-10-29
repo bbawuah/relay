@@ -1,110 +1,64 @@
 # Relay
 
-Local peer messaging between Claude Code, Codex and T3 Code sessions. Relay combines a durable inbox, a stdio MCP server, session hooks and wake-up adapters. Messages stay on the machine; Relay needs no hosted service or API key.
+Relay 0.2.0 provides durable local mailboxes between explicitly registered peers. CLI and the `peers` MCP server share one SQLite message store. Reading never acknowledges a message; acknowledgement is an explicit operation.
 
-## Install
+Bun **>= 1.4.2** is the only runtime prerequisite on macOS or Linux. Relay uses Bun's built-in SQLite and has no third-party runtime dependencies. The package remains private; no registry publication is part of this release.
 
-Requires macOS or Linux and [Bun](https://bun.sh) 1.4.2 or newer. Install and authenticate Claude Code or Codex separately if you want to launch them. Codex hook setup also requires Python 3 and a Codex version supporting the `hooks/list` app-server API (the extracted integration was developed against 0.164.0).
+## Install from a public HTTPS clone
 
 ```sh
-git clone git@github.com:bbawuah/relay.git
+git clone https://github.com/bbawuah/relay.git
 cd relay
-./install.sh --dry-run
-./install.sh
-~/.local/bin/relay doctor
+./install.sh --prefix "$HOME/.local"
+export PATH="$HOME/.local/bin:$PATH"
+relay --version
+relay doctor
 ```
 
-The installer copies a complete runtime into `~/.local/lib/relay` and writes `~/.local/bin/relay`. Add `~/.local/bin` to PATH if needed. It does not change your shell profile, vendor settings, running sessions or existing monorepo installation. The checkout can be removed afterwards. Use `./install.sh --prefix /somewhere` for another location. No `bun install` is needed for normal use; runtime code has no third-party dependencies.
+Select a checkout containing the 0.2.0 implementation. Installation needs no development dependency installation. It copies an explicit manifest of message-runtime paths and writes a CLI launcher; the checkout may then be moved or deleted. For another prefix, replace both paths above. `./install.sh --prefix /absolute/prefix --dry-run` validates the package and reports the destination without writing it.
 
-## Start sessions
+Installation never edits shell profiles, provider settings, permissions, hooks or existing message state. Unmanaged targets and paths into the source checkout are refused. Updating a managed installation replaces its runtime copy. `relay uninstall` removes the verified installation from which it runs and preserves state and vendor/project safeguards. Use `--prefix /absolute/prefix` to select a managed installation explicitly when provenance cannot be verified.
 
-In one terminal:
+## Two manual mailboxes
 
 ```sh
-relay claude --name lead
+one=$(relay register --name one)
+two=$(relay register --name two)
+relay --peer "$one" send "$two" 'hello from one' --request-key hello-1 --json
+relay --peer "$one" send "$two" 'hello from one' --request-key hello-1 --json
+relay --peer "$two" inbox --json
+relay --peer "$two" inbox --json
 ```
 
-In another:
+The retry returns the same message ID with `duplicate: true`. Keys are scoped to the sending peer and namespace, retained for 30 days by default; a changed payload with the same live key is a conflict. A different key permits identical text. `inbox` remains non-destructive. Copy the returned message ID and acknowledge it:
 
 ```sh
-relay claude --name worker --lead lead
+relay --peer "$two" ack MESSAGE_ID
+relay --peer "$two" inbox --json
 ```
 
-Relay passes session hooks and the `peers` MCP server directly to Claude. Global Claude setup is unnecessary. Normal vendor trust and permission prompts still apply.
+A stored receipt means durable storage, not host notification or task completion. An offline registered mailbox can receive mail. `unregister` marks a peer offline without deleting its inbox. Aliases are case-insensitively unique in a namespace. Reconnecting to another host session uses explicit `rebind` with the expected endpoint generation.
 
-For Codex, configure and trust its hooks once in the Codex home you intend to use:
+Global options precede the command: `relay --state /absolute/private/state --namespace demo --peer PEER_ID inbox --json`. Default state is `~/.local/state/relay/v2`, default namespace `local`. A legacy state root is refused; see [configuration](docs/configuration.md) and the [migration guide](docs/message-migration.md).
+
+## Explicit MCP binding
+
+Register a mailbox, then configure the host to invoke exactly one fixed peer per connection:
 
 ```sh
-relay setup codex --dry-run
-relay setup codex
-relay codex --name coder --lead lead --cwd /path/to/its/worktree
+relay --state /absolute/private/state --namespace demo --peer STABLE_PEER_ID mcp
 ```
 
-Codex uses an identity per checkout because its daemon does not preserve each TUI's environment. Give simultaneous Codex sessions separate checkouts/worktrees. Both launchers use the `agent` role, including a session named `lead`; that name sets up communication, not merge or deployment permissions. Relay does not select a sandbox or bypass hook trust. `--model MODEL` selects a model. Arguments after `--` pass to the vendor, except flags that replace Relay's hooks, identity, directory, profile or approval policy. Existing monorepo lead-proef/spawn policy is retained under `scripts/lead/`, separately from this launcher.
+Use the absolute installed `relay` executable as the MCP command, server name **`peers`**, and the arguments shown above. The tools are `send`, `inbox`, `list`, `ack`. MCP requires an explicit stable peer ID on its command line. Tool arguments cannot override the sender, inbox, namespace or peer. Two threads sharing a checkout need separate registered peers and separate MCP bindings. cwd and shared provider environment do not identify a mailbox. Legacy send aliases `naar`, `tekst`, `draad`, `antwoord_op` remain wrapper compatibility fields.
 
-Each agent gets these MCP tools under server name `peers`: `send`, `inbox`, `list`, and `notify_when_idle`. A wake-up contains only an unread count. Message contents arrive when the agent calls `inbox`, surrounded by origin labels and message delimiters.
+## Notifications and T3
 
-## CLI and other hosts
+T3 currently uses **polling**. No safe external T3 notification route has been proven; the injected agent MCP tools are not a background transport. Relay does not reuse their credentials. Register a T3 mailbox with an explicit `--host t3 --session-id THREAD_ID`, bind its MCP connection explicitly, and poll `inbox`. See the [adapter feasibility report](docs/t3-message-poc.md).
 
-```sh
-relay list --json
-relay --name worker send lead "Finished the change"
-relay --name lead inbox
-relay --name lead notify-when-idle worker
-relay hold lead
-relay release lead
-```
+`relay serve` starts the bounded notification dispatcher (`--once` for one pass). Mailbox send/read/ack work without it; unattended notification retries pause while it is stopped. `doctor` and `status --json` expose requirements and stored notification diagnoses. No vendor hook installer or agent launcher is supplied.
 
-For a shell-only smoke test, register two manual peers. These use polling, without waking a model:
+## Breaking changes and verification
 
-```sh
-reader_id=$(relay register --name reader)
-writer_id=$(relay register --name writer --lead reader)
-relay --name writer send reader "Hello from Relay"
-relay --name reader inbox
-relay unregister "$writer_id"
-relay unregister "$reader_id"
-```
+0.2.0 retires agent launch (`claude`, `codex`), `setup`, policy/role options, `hold`, `release`, `notify-when-idle`, orchestration, Git/merge helpers, tmux management and personal skills. Existing project/harness policy stays outside Relay and is never uninstalled. The [migration guide](docs/message-migration.md) is maintained by the migration stream; do not point old and new writers at one state directory or assume an importer is available before that guide is delivered.
 
-`relay --name NAME mcp` exposes the same bus over MCP stdio. See [configuration and host integration](docs/configuration.md) for T3, direct MCP configuration, state isolation and legacy environment variables.
-
-## Delivery and trust
-
-Lead/worker relationships accept messages in both directions by default. Unrelated sessions hold messages for operator review. `hold`, `refuse` and per-sender policies remain supported. Text limits, rate limits, duplicate suppression, queue bounds and hop limits are preserved. Messages are not user authorization; a message from a lead cannot grant permissions.
-
-State defaults to `~/.local/state/relay`, with private directory/file permissions. Set `RELAY_STATE_DIR` to select another bus. Relay stores message bodies in inbox files but does not collect transcripts or prompts. Name reservations use Bun's built-in SQLite storage locally; no database server is required. Manual registration and launchers share the same name lock. A trusted bootstrap binds Codex's checkout identity and the reservation to the vendor's PID and OS start time before starting it. The vendor keeps its claim if the Relay launcher dies. A later launch recovers only state belonging to an owner proven dead; unknown or legacy claims remain intact. This is a same-user coordination tool, not an isolation boundary against processes with access to those files. Wake-up failures leave messages available for polling.
-
-Identity refresh and cleanup are optional hook maintenance. An unavailable reservation database leaves core hook state, unread-message notices and idle notifications working. Maintenance failures retain a private diagnostic when its destination is safe. Unknown or corrupt reservation databases are preserved and refuse new launches. Recovery after a crash during SQLite's commit page writes has not been established; do not remove reservation state while sessions may still be alive.
-
-## Update and remove
-
-Pull a newer checkout, then run `./install.sh` again. The installer replaces only a marked Relay installation and refuses unrelated files. Re-run `relay setup codex` after changes to copied hooks so Codex can verify trust again.
-
-Before uninstalling, remove any persistent hooks you configured:
-
-```sh
-relay setup codex --remove
-# Only if you explicitly configured global Claude hooks:
-relay setup claude --remove
-relay uninstall --dry-run
-relay uninstall
-```
-
-Uninstall uses the installed command's recorded prefix and preserves other installations, message state, vendor settings backups and copied hook files. An explicit `--prefix DIR` overrides that choice. A checkout or an older marker without reliable installation provenance requires `--prefix`; Relay refuses to guess. In a shared legacy hook installation, removal uses the existing `lab-lead-hooks` marker; review `--dry-run` first.
-
-## Bun 1.4.2 diagnostic
-
-Startup isolation prevents a project's Bun config, preloads, environment files, macros and TypeScript path mappings from running code before Relay. With its required tsconfig guard, Bun 1.4.2 can print `Internal error: directory mismatch ... indicates a bug` on stderr. Tests confirm correct output, exit status and working directory while the hijack remains blocked. Relay keeps the guard enabled and does not hide stderr. `relay doctor` also identifies this known runtime limitation.
-
-## Development
-
-```sh
-bun install --frozen-lockfile
-bun test ./tests
-bun run typecheck
-bun run poort
-```
-
-The complete gate includes the extracted policy, CLI, MCP, hook, installer and wake-up tests. Install `tmux`, `git`, `jq` and Python 3 for this suite. End-to-end tests use disposable state, fake model CLIs and their own tmux sockets. A real-Codex integration is opt-in with `RELAY_E2E_CODEX=1`; it is never required for installing Relay.
-
-See [the extraction inventory](docs/extraction.md), [peerbus protocol and limits](scripts/lead/peers/README.md), and [product tests kept outside the suite](TESTS-UITGESLOTEN.md). The old LAB command runner, release/merge tooling and personal skills are preserved as source context, not installed as global policy. `relay.toml` is a legacy design example; the peerbus currently uses CLI options and environment variables.
+For development, `bun install --frozen-lockfile --ignore-scripts` then `bun run poort` runs current message tests, surviving startup/install tests, typecheck and package-boundary checks. Every test uses disposable state; no live provider session is required. Test retirement is documented [per file](docs/test-retirement.md), and historical extraction provenance remains in [source-manifest.json](docs/source-manifest.json). Worker verification and remaining integration gaps are reported in [verification](docs/verification.md).

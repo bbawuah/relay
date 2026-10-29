@@ -1,4 +1,4 @@
-import { chmodSync, cpSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, cpSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 import { shellQuote, type Environment } from "./environment";
@@ -7,6 +7,63 @@ import { bunArgs } from "./runtime";
 const ROOT = resolve(import.meta.dir, "..");
 const MARKER = ".relay-install.json";
 const SIGNATURE = "# Relay managed launcher";
+
+/** The complete allowed runtime surface. Never copy scripts, skills or hooks. */
+export const MESSAGE_RUNTIME_FILES = [
+  "bin/relay.ts", "src/cli.ts", "src/environment.ts", "src/install.ts", "src/runtime.ts", "package.json",
+] as const;
+export const MESSAGE_RUNTIME_DIRECTORIES = [
+  "src/messages", "src/directory", "src/storage", "src/dispatch", "src/adapters",
+] as const;
+const OPTIONAL_RUNTIME_DIRECTORIES = ["src/app", "src/mcp"] as const;
+const DOCUMENTATION = [
+  "README.md", "docs/configuration.md", "docs/source-manifest.json", "docs/test-retirement.md",
+  "docs/t3-message-poc.md", "docs/message-migration.md",
+] as const;
+
+/** Scan code without executing it, and prove every import ships in the copy. */
+export function messageRuntimeFiles(source = ROOT): string[] {
+  const files: string[] = [];
+  const add = (entry: string) => {
+    const path = join(source, entry);
+    if (!isPresent(path)) throw new Error(`message runtime is incomplete: missing ${entry}; integrate the owning stream before installing`);
+    const parts = entry.split("/");
+    for (let length = 1; length <= parts.length; length++) {
+      if (lstatSync(join(source, ...parts.slice(0, length))).isSymbolicLink()) throw new Error(`refusing a symlink in the message runtime: ${entry}`);
+    }
+    const stat = lstatSync(path);
+    if (/(?:^|\/)(?:lead|hooks?|skills?|policy|beleid|launch|identity|session-child|spawn|git(?:-hard)?|merge|push|wachtrij|queue)(?:[/.\-]|$)/i.test(entry)) {
+      throw new Error(`retired product baggage in the message runtime: ${entry}`);
+    }
+    if (stat.isDirectory()) {
+      for (const name of readdirSync(path).sort()) add(`${entry}/${name}`);
+    } else if (stat.isFile() && !entry.endsWith(".test.ts")) {
+      if (!entry.endsWith(".ts") && entry !== "package.json") throw new Error(`unexpected message runtime file: ${entry}`);
+      files.push(entry);
+    } else if (!stat.isFile()) throw new Error(`unexpected message runtime entry: ${entry}`);
+  };
+  for (const entry of MESSAGE_RUNTIME_FILES) add(entry);
+  for (const entry of MESSAGE_RUNTIME_DIRECTORIES) add(entry);
+  for (const entry of OPTIONAL_RUNTIME_DIRECTORIES) if (isPresent(join(source, entry))) add(entry);
+  const shipped = new Set(files.map((entry) => resolve(source, entry)));
+  const scanner = new Bun.Transpiler({ loader: "ts" });
+  for (const entry of files.filter((file) => file.endsWith(".ts"))) {
+    // scanImports does not accept the executable polyglot entry's shebang.
+    const code = readFileSync(join(source, entry), "utf8").replace(/^#![^\n]*\n/, "");
+    for (const dependency of scanner.scanImports(code)) {
+      const name = dependency.path;
+      if (name.startsWith("node:") || name.startsWith("bun:")) continue;
+      if (!name.startsWith(".")) throw new Error(`message runtime has an external dependency: ${entry} -> ${name}`);
+      const path = resolve(source, dirname(entry), name);
+      if (![path, `${path}.ts`, join(path, "index.ts")].some((candidate) => shipped.has(candidate))) {
+        throw new Error(`message runtime imports a retired or missing path: ${entry} -> ${name}; integrate the owning stream before installing`);
+      }
+    }
+  }
+  const pkg = JSON.parse(readFileSync(join(source, "package.json"), "utf8"));
+  if (Object.keys(pkg.dependencies ?? {}).length) throw new Error("message runtime must not have third-party runtime dependencies");
+  return files.sort();
+}
 
 function options(args: string[], env: Environment, defaultPrefix = join(env.HOME || homedir(), ".local")) {
   let prefix = defaultPrefix;
@@ -83,6 +140,7 @@ export function install(args: string[], env: Environment = process.env): string 
   const { prefix, dryRun, target, launcher } = options(args, env);
   const source = outsideSource(prefix, target, launcher);
   owned(target, launcher);
+  const runtimeFiles = messageRuntimeFiles(source);
   if (dryRun) return `Would install Relay into ${target}\nWould write ${launcher}\nNo hooks, shell profiles or state would be changed.`;
   const origin = { prefix, target: canonicalDestination(target), launcher: canonicalDestination(launcher), installationId: crypto.randomUUID() };
   mkdirSync(dirname(target), { recursive: true });
@@ -90,11 +148,14 @@ export function install(args: string[], env: Environment = process.env): string 
   const stage = mkdtempSync(join(dirname(target), ".relay-stage-"));
   let backup: string | undefined;
   try {
-    // A complete runtime, without development dependencies, history, or transcripts.
-    for (const entry of ["bin", "src", "scripts", "agents", "README.md", "docs", "package.json", "relay.toml"]) {
-      cpSync(join(source, entry), join(stage, entry), { recursive: true, filter: (path) => !path.endsWith(".test.ts") && !path.includes("/node_modules/") });
+    // Copy only validated message code and explicitly named documentation.
+    for (const entry of [...runtimeFiles, ...DOCUMENTATION.filter((entry) => isPresent(join(source, entry)))]) {
+      const path = join(source, entry);
+      if (lstatSync(path).isSymbolicLink() || !lstatSync(path).isFile()) throw new Error(`refusing non-file package input: ${entry}`);
+      mkdirSync(dirname(join(stage, entry)), { recursive: true });
+      cpSync(path, join(stage, entry));
     }
-    writeFileSync(join(stage, MARKER), `${JSON.stringify({ application: "relay", version: JSON.parse(readFileSync(join(source, "package.json"), "utf8")).version, ...origin })}\n`, { mode: 0o600 });
+    writeFileSync(join(stage, MARKER), `${JSON.stringify({ application: "relay", version: JSON.parse(readFileSync(join(source, "package.json"), "utf8")).version, runtimeFiles, ...origin })}\n`, { mode: 0o600 });
     if (existsSync(target)) {
       backup = `${stage}.previous`;
       renameSync(target, backup);

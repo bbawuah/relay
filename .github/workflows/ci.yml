@@ -2,12 +2,22 @@ name: poort
 on: [push, pull_request]
 jobs:
   poort:
-    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # Provenance tests compare the committed extraction baseline.
       - uses: oven-sh/setup-bun@v2
         with:
           bun-version: 1.4.2
-      - run: sudo apt-get update && sudo apt-get install -y tmux jq python3
-      - run: bun install --frozen-lockfile
-      - run: bun run poort
+      - run: bun install --frozen-lockfile --ignore-scripts
+      - name: Isolated message gate
+        shell: bash
+        run: |
+          relay_ci_scratch=$(mktemp -d)
+          mkdir -p "$relay_ci_scratch/home" "$relay_ci_scratch/tmp"
+          trap 'rm -rf "$relay_ci_scratch"' EXIT
+          env HOME="$relay_ci_scratch/home" XDG_CONFIG_HOME="$relay_ci_scratch/home/.config" TMPDIR="$relay_ci_scratch/tmp" bun run poort

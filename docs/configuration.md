@@ -1,64 +1,36 @@
-# Configuration and host integration
+# Message configuration (0.2.0)
 
-All peers on a bus must use the same state directory. Use a separate directory for independent projects or tests.
+Global CLI options come before the command. Message bodies are literal data; options after `send` never become global identity overrides.
 
-| Relay setting | Compatible legacy setting | Meaning |
+| Setting | Explicit option | Environment/default |
 | --- | --- | --- |
-| `RELAY_NAME` / global `--name` | `LAB_AGENT_NAAM` | Sender/session name |
-| `RELAY_LEAD` / global `--lead` | `LAB_LEAD_NAAM` | Session to report to; default trust relationship |
-| `RELAY_ROLE` / global `--role` | `LAB_AGENT_ROL` | Legacy CLI operator/worker checks |
-| `RELAY_STATE_DIR` / global `--state` | `LAB_LEAD_STAAT` | Shared state; default `~/.local/state/relay` |
+| State directory | `--state /absolute/private/path` | `RELAY_STATE_DIR`, otherwise `~/.local/state/relay/v2` |
+| Namespace | `--namespace NAME` | `RELAY_NAMESPACE`, otherwise `local` |
+| CLI peer binding | `--peer PEER_ID` | `RELAY_PEER_ID` may provide a CLI default |
+| MCP peer binding | `--peer STABLE_PEER_ID` | Must be explicit on the MCP command line; environment is insufficient |
 
-Relay variables take precedence. Global options go **before** the command; launch and register have their own `--name` options. For MCP, only an explicit global `--name` fixes the sender: a `RELAY_NAME` environment default keeps workspace identity routing. This prevents a shared daemon's inherited shell identity from overriding a thread. The launcher pins Claude's dedicated MCP identity; Codex keeps live workspace-owner routing. Message arguments are never interpreted by the global parser. Names contain letters, digits, `.`, `_` and `-`, at most 100 characters, and cannot start with `.`. Case-only duplicate live names are refused.
+The state directory contains `messages.sqlite` (schema 2) with WAL and FULL synchronous writes. Use private, owned local-disk paths. Do not copy, open or repurpose the old launch-reservation database. A legacy root containing `peers/` or `register/` requires explicit migration to a new directory. Installation and help/version do not create or change message state.
 
-The extracted files under `scripts/lead/` keep their original `LAB_*` interface and default `~/.local/state/lab-lead`. The `relay` command normalizes settings before calling them. To join the existing monorepo bus explicitly:
+## Addresses, reconnect and acknowledgements
 
-```sh
-RELAY_STATE_DIR="$HOME/.local/state/lab-lead" relay list
-```
+`relay register --name NAME` creates a manual connection and prints its stable peer ID; `--json` prints the peer. `--host t3 --session-id THREAD_ID` records an explicit T3 thread target. Claude/Codex bindings similarly require an explicit host session; registration does not launch or configure a vendor. Peer names are aliases, unique ignoring case within the selected namespace. Namespace plus peer ID addresses a mailbox; directory bindings are routing data, not authorization policy.
 
-Do not point a demo at live state. Changing a global Codex home's state affects all hooks using that home; use a separate Codex home for independent buses.
+`relay --peer ID send TO TEXT --request-key KEY --json` returns a stored receipt. Omit the key to generate and return one. A retry of the same sender/key/payload returns the original message; a conflicting payload is rejected while the receipt is retained (default 30 days). Replies use `--conversation ID --reply-to ID` and require a retained participant/conversation reference (default 30 days). Unread messages are not removed by metadata retention.
 
-## Direct MCP configuration
+`relay --peer ID inbox --json` reads unread envelopes without acknowledging them. `relay --peer ID ack MESSAGE_ID...` explicitly acknowledges them. Foreign, unknown and already acknowledged IDs count zero. Acknowledgement means receipt, not task completion. `unregister ID` marks the endpoint offline and preserves the mailbox.
 
-An MCP server must be called `peers` to preserve the extracted hook matchers and wake-up instructions. This example binds a dedicated single-session server to one explicit peer. Use absolute executable paths:
+To bind a new session to the same mailbox, use `relay rebind --peer ID --expected-generation N --host HOST --session-id SESSION_ID`. Registration does not silently replace another session; rebind checks the generation and preserves mailbox identity. An in-flight old host notification cannot be unsent. Message read/ack remains bound to the stable mailbox.
 
-```json
-{
-  "mcpServers": {
-    "peers": {
-      "command": "/absolute/path/to/.local/bin/relay",
-      "args": ["--name", "worker", "--state", "/absolute/path/to/state", "mcp"]
-    }
-  }
-}
-```
+## Host integration
 
-The server does not register a session itself. Use Relay's launcher/session hooks or `relay register` first. Manual peers have `host: "geen"`, so messages are delivered without wake-ups. They remain registered until `unregister` is called.
+Configure an MCP server named `peers` whose command is the absolute installed Relay executable and whose arguments are `--state /absolute/private/path --namespace NAME --peer STABLE_PEER_ID mcp`. Each connection has one fixed binding. Do not share one bound MCP server among distinct thread inboxes. Tools use English v2 fields; the send wrapper also accepts legacy aliases `naar`, `tekst`, `draad`, `antwoord_op`, rejects conflicting aliases, and rejects identity overrides.
 
-Manual registration and vendor launch reserve names under the same lock, including the period before a vendor's SessionStart hook. A live or unknown owner blocks a duplicate name. Vendor ownership is claimed before vendor code starts and survives the Relay parent exiting. Optional identity upkeep uses non-waiting locks; a maintenance failure preserves core hook behavior and can leave the first private diagnostic for that spawn under `identiteit/maintenance-<hash>.error` in the selected state directory. An unsafe diagnostic destination is left untouched.
+T3 notifications remain unsupported/polling until an authenticated external transport proves stable request IDs across retries and safe behavior with pending user questions. Agent-injected tools are not an external dispatcher API; no borrowed session token, T3 database access or vendor hooks are used. See [T3 proof of concept](t3-message-poc.md).
 
-In Codex TOML, use the equivalent `mcp_servers.peers.command`, `args` and `env` fields. Prefer Relay's launcher for a TUI: it supplies a fresh identity and MCP environment per session rather than storing a worker's name globally.
+`relay serve` explicitly starts dispatch; `relay serve --once` performs one bounded pass. Without dispatch, mailbox operations still work and retry jobs remain stored. Presence is host-observed state, not proof that an assignment finished. `relay status --json` and `relay doctor` report unread mail, persisted diagnoses and dispatcher/adapter limitations.
 
-## T3 Code
+## Installation boundaries and migration
 
-The extracted adapter recognizes `host: "t3"` records with `t3_thread` and wakes them through the `t3` CLI. It checks `pendingRequestCount` before sending a count-only notification, so a pending user question is not intentionally answered by a wake-up. Configure `LAB_T3` if the CLI is not on PATH. Without it, peers can still poll their inboxes.
+`install.sh` and the installed CLI neutralize Bun config, cwd tsconfig mappings, dotenv, preloads and macros before JavaScript startup. They preserve the caller's cwd without using it as identity. The runtime manifest admits only message modules, the CLI/MCP wrappers, installer/runtime helpers and explicitly named documentation. It rejects symlinked inputs, third-party runtime dependencies and imports into removed/missing code. No broad scripts/agents trees, governance hooks, personal skills, launcher or Git/merge machinery are copied.
 
-T3 threads do not inherit a per-thread shell environment. In a shared Codex/T3 provider, configure `peers` with `args: ["mcp"]` and the correct state directory, without a fixed `--name` or `RELAY_MCP_NAME`. Use the existing workspace identity integration from `scripts/lead/hooks/`, ensure the server receives the intended workspace cwd, and set the same state directory for hooks and MCP. A fixed name in a shared server would route multiple threads into one inbox. The existing `spawn.sh --t3` implementation is preserved for reference, but app-owned orchestration should use T3's current thread/delegation APIs. Relay does not automatically alter T3 provider settings or create threads. Wake-up adapters and isolated fake-host tests do not establish compatibility with every live T3/provider configuration.
-
-## Wake-up requirements
-
-| Host | Requirement | Fallback |
-| --- | --- | --- |
-| Claude TUI | Messaging socket advertised by the CLI under `/tmp/cc-socks` or `$TMPDIR/cc-socks` | Hook count notification / inbox polling |
-| Codex TUI | `codex queue`, target thread ID and correct Codex home | Hook count notification / inbox polling |
-| T3 | `t3 thread show/send`, target thread ID, no pending request | Inbox polling |
-| ACP / manual peer | No active wake-up adapter in this extraction | Inbox polling |
-
-Wake-ups are coalesced in five-second windows. A send inside that window can wait up to five seconds. Successful persistence is independent of successful waking. See the protocol README for queue and lock limits and remaining known races.
-
-## Existing hook policy
-
-`relay setup` wraps the extracted installers. Both support dry-run, removal, explicit destinations and backups. Codex setup persists the selected state in every hook command, so a stale daemon environment cannot redirect hooks to a different bus. The installers still use `lab-lead-hooks` markers to recognize existing installations; take care when migrating a shared home.
-
-The preserved `grenzen.sh` has LAB-specific restrictions (including an Amsterdam quiet window), and `lead.conf` targets the original monorepo. These are legacy policy, not a generic permission system or configurable Relay merge workflow. The launcher does not run merge, push, release, sudo, passkey-export or MOD-access workflows. Personal skills are not enabled by installing Relay.
+Installation never edits `lab-lead-hooks`, provider config, permissions or existing project safeguards. Uninstall preserves them and message state. Existing shared hooks are not automatically migrated or removed. Retired roles, admission policies, `setup`, vendor launch, idle subscriptions and orchestration commands require the [0.2.0 migration guide](message-migration.md), maintained by F. That guide/importer may be pending during stream integration. Keep the old source untouched and do not run legacy and v2 writers against the same state.

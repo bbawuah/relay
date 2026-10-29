@@ -1,7 +1,7 @@
 {
   "name": "relay",
-  "version": "0.1.0",
-  "description": "Local peer messaging, session hooks and wake-up adapters for Claude, Codex and T3 Code",
+  "version": "0.2.0",
+  "description": "Local durable peer mailboxes with explicit bindings, retries and acknowledgements",
   "engines": { "bun": ">=1.4.2" },
   "bin": { "relay": "bin/relay.ts" },
   "private": true,
@@ -9,10 +9,12 @@
     "relay": "./bin/relay.ts",
     "install:local": "./bin/relay.ts install",
     "doctor": "./bin/relay.ts doctor",
-    "test": "bun test",
-    "typecheck": "tsc -p tsconfig.json",
+    "test": "bun test ./tests",
+    "test:package": "bun test ./tests/message-package.test.ts ./tests/relay.test.ts ./tests/runtime-safety.test.ts",
+    "check:package": "bun run scripts/check-package.ts",
+    "typecheck": "bun ./node_modules/typescript/bin/tsc -p tsconfig.json",
     "check": "bun run test && bun run typecheck",
-    "poort": "bun run test && bun run typecheck && bash tests/hook-canaries.sh"
+    "poort": "bun run test && bun run typecheck && bun run check:package"
   },
   "devDependencies": {
     "@types/bun": "^1.3.3",

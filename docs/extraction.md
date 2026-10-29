@@ -1,4 +1,16 @@
-# Extraction inventory
+# Historical extraction inventory
+
+This document records the pre-0.2.0 extraction, not the current delivered runtime.
+In 0.2.0 the policy, hook, orchestration, personal-skill and old bus destinations
+below were deliberately retired. Their source remains in Git. The manifest keeps
+each original source/hash/category with `formerDestination`, `disposition`, reason
+and retirement version; `extractionUnchanged` preserves the earlier observation.
+Current installation and verification are described in [README](../README.md),
+[configuration](configuration.md), [test retirement](test-retirement.md) and
+[verification](verification.md). Removing source never uninstalls project or
+harness safeguards.
+
+The remainder is historical evidence of the extraction and its then-current tests.
 
 Source: `bbawuah/LAB-BAWUAH`, commit `10173799bedfbd712551025301e80925385217cb` (29 October 2026).
 

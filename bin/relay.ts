@@ -13,7 +13,7 @@
 import { main } from "../src/cli";
 
 try {
-  // Bus.klaar() drains wake-ups; its safety timers must not keep a CLI alive.
+  // The CLI owns the lifetime of its message store and stdio server.
   process.exit(await main(process.argv.slice(2)));
 } catch (error) {
   console.error(`relay: ${error instanceof Error ? error.message : String(error)}`);

@@ -13,17 +13,7 @@
     "bin/**/*.ts",
     "src/**/*.ts",
     "tests/**/*.ts",
-    "scripts/lead/beleid/**/*.ts",
-    "scripts/lead/hooks/**/*.ts",
-    "scripts/lead/peers/**/*.ts",
-    "scripts/lead/git-hard.ts",
-    "scripts/lead/leadnaam.ts",
-    "scripts/lead/push-werker.ts",
-    "scripts/lead/relay.ts",
-    "scripts/lead/spawn-crash.ts",
-    "scripts/lead/installeer-hooks.ts",
-    "scripts/stiltevenster.ts",
-    "scripts/test-integriteit.ts"
+    "scripts/check-package.ts"
   ],
   "exclude": [
     "**/*.test.ts",
