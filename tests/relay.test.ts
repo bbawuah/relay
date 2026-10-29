@@ -98,7 +98,7 @@ test("launch adds per-session hooks and MCP without changing global settings or 
   const plan = launchPlan("claude", ["--name", "lead", "--cwd", dir, "--", "a prompt with 'quotes'"], { ...env, RELAY_NAME: "old-parent" });
   expect(plan.env.LAB_AGENT_NAAM).toBe("lead");
   expect(plan.env.RELAY_NAME).toBeUndefined();
-  expect(plan.env.LAB_AGENT_ROL).toBe("lead");
+  expect(plan.env.LAB_AGENT_ROL).toBe("agent");
   const config = JSON.parse(plan.argv[plan.argv.indexOf("--mcp-config") + 1]!);
   expect(config.mcpServers.peers.env.LAB_LEAD_STAAT).toBe(state);
   const settings = JSON.parse(plan.argv[plan.argv.indexOf("--settings") + 1]!);
