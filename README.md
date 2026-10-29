@@ -12,7 +12,7 @@ Bun **>= 1.4.2** is the only runtime prerequisite on macOS or Linux. Relay uses 
 
 ## See it work
 
-Both recordings replay what real agents did: a Codex agent and a Claude agent, started as T3 delegated tasks, ran the `relay` commands themselves, each through its own fixed peer binding in a private, disposable namespace. The animation shows short summaries; the full sanitised command transcript sits under each one. Acknowledgements in the demos mark receipt only; they say nothing about whether the task was done. Provenance, models and limits: [docs/demos](docs/demos/README.md).
+Both recordings are two views of the same single live run, not two separate runs: a Codex agent and a Claude agent, started as T3 delegated tasks, ran the `relay` commands themselves, each through its own fixed peer binding in a private, disposable namespace. The handoff view is that run filtered to the traffic between the two parents, without the subagent messages, which is why its message numbers skip (msg-1 to msg-6) and the reply mentions a subagent. The subagents view shows the whole run. The agents used fixed CLI wrappers; this is not an MCP demonstration, and MCP scoping is separate product behavior. The animation shows short summaries; the full sanitised command transcript sits under each one. Acknowledgements in the demos mark receipt only; they say nothing about whether the task was done. Provenance, models and limits: [docs/demos](docs/demos/README.md).
 
 **Cross-provider handoff.** A Codex agent sends a task to a Claude peer and retries it safely. The Claude agent starts later, finds the mail waiting, reads it twice, acknowledges it and answers in the same conversation; a later Codex session of the first peer reads the answer.
 
@@ -232,6 +232,8 @@ $ relay --peer codex-parent inbox
 </details>
 
 Lines starting with `> HOST` are T3 task-API events recorded from returned task metadata; they are not Relay messages. All agents polled: nothing woke them.
+
+The agents wrote the message texts themselves. Where one uses a word such as "handled", that is the model's wording, not a Relay guarantee: an acknowledgement confirms receipt, not that the work was carried out or completed.
 
 ## What you can do with it
 

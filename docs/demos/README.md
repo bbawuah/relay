@@ -1,6 +1,6 @@
 # Demo recordings: provenance
 
-The README shows two **live-agent replays** (`relay-live-*.gif`). Two older **scripted replays** (`relay-scripted-*.gif`) are kept only as clearly labelled illustrations. Every frame says which kind it is in its top bar. None of them is a realtime recording and none makes a performance claim: waiting time is cut and each step is held for readability.
+The README shows two **live-agent replays** (`relay-live-*.gif`). Both are two views of the **same single live run**: the handoff GIF is that run filtered to the traffic between the two parents (no subagent messages, hence the jump from `msg-1` to `msg-6` and a reply that mentions a subagent), and the subagents GIF shows the whole run. They are not separate runs. Two older **scripted replays** (`relay-scripted-*.gif`) are kept only as clearly labelled illustrations. Every frame says which kind it is in its top bar. None of them is a realtime recording and none makes a performance claim: waiting time is cut and each step is held for readability.
 
 | File | Kind | Length | Size |
 | --- | --- | --- | --- |
@@ -16,13 +16,15 @@ Each GIF has a `*-poster.png` (final frame). Live casts are in [casts](casts), f
 - **Who ran the commands.** Agents did, not a script. The H thread started a Codex agent (`codex-parent`) and a Claude agent (`claude-parent`) with the T3 `delegate_task` tool. Each parent then started its own subagent (`codex-sub`, `claude-sub`) with `delegate_task`; T3 lists those as child threads of the parent. Providers and models come from the task metadata T3 returned, not from names the agents chose: Codex `gpt-6.1-sol` (reasoning effort low for the two parents) and Claude `claude-sonnet-5-5` (effort low for the parent). Subagent effort was requested but is not recorded in the metadata, so it is not claimed.
 - **Order, to stay at two live agents.** Codex parent plus its subagent, then Claude parent plus its subagent, then a short second Codex-parent session to read the final answer. Nothing woke an agent: the mailboxes are durable, so agents did not have to be live at the same time.
 - **Host versus Relay.** Lines marked `HOST · T3 delegate_task` come from the T3 task API. They are not Relay messages and Relay did none of that. Relay never starts agents or wakes them; every agent polled `inbox` itself.
+- **Wrappers, not MCP.** The agents used fixed CLI wrappers. Nothing here demonstrates the MCP server; MCP scoping is separate product behavior.
+- **Message wording.** The message texts were written by the agents. Words such as "handled" are model wording, not a Relay guarantee; an acknowledgement confirms receipt, not that the work was done.
 - **Bindings.** The peers are registered as manual CLI connections (no invented host session IDs). Each agent received a wrapper that fixes its own `--peer`, the private state and the namespace, accepts only `send`, `inbox`, `ack`, `list`, and logs each call with its output. No MCP server, token or global setting was involved. Peer scoping is mailbox scoping, not OS or user authentication: an acknowledgement with a binding for a message outside its mailbox counts 0, which the subagents demonstrate. Acknowledgements in the recordings mark receipt, not task completion.
 - **Runtime.** A copy installed from commit `096c78f` (documentation-only on top of the frozen `7f3a63d`; runtime files identical) into a private prefix, HOME and state.
 
 ## What was changed for publication
 
 - Peer, message and conversation IDs become aliases (`codex-parent`, `msg-1`, `conv-1`); `createdAt`, `expiresAt`, `version` and `namespace` are dropped from the JSON; the wrapper's `--state/--namespace/--peer` options are not shown. No home path, hostname, token or user transcript is included; only Relay commands and outputs plus T3 delegation metadata (provider, model, effort).
-- The animation shows short summaries (long message bodies are cut with `…`); the transcripts under the README GIFs contain the full command lines and outputs. Events keep their recorded order, including retries; no failures occurred in these runs.
+- The animation shows short summaries (long message bodies are cut with `…`); the transcripts under the README GIFs contain the full command lines and outputs. Events keep their recorded order, including retries; no failures occurred in this run.
 - Consecutive identical empty polls by the same peer would be collapsed into one step with a marker (none needed here), and one extra `list` call by an agent was left out because its output only lists peers.
 - The demo state and the raw wrapper log (with real IDs) are isolated, kept private for review, and are not published. They were not deleted, so nothing here claims the state was removed.
 
