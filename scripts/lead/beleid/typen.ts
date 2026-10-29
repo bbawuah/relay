@@ -1,4 +1,4 @@
-// De typen van de beleidslaag (CONTRACT-beleidslaag.md, bindend; wijzigen alleen via de lead).
+// Typen voor optionele eventconfiguratie. Rollen en commandoregels zijn gepensioneerd.
 
 export type Event =
   | "sessie-start"
@@ -22,14 +22,13 @@ export type Hook = {
   event: Event;
   /** Alleen voor voor-tool/na-tool; ontbreekt = alle. */
   tools?: ToolKlasse[];
-  script: "lead-hook" | "grenzen" | "werknotities-pre" | "werknotities-post" | "tmux-status" | "pane-info-clear";
+  script: "lead-hook" | "werknotities-pre" | "werknotities-post" | "tmux-status" | "pane-info-clear";
   timeoutS: number;
   /** Ontbreekt = alle hosts waar het vertaalt. */
   hosts?: Host[];
   /** Pad; ontbreekt het, dan slaat de generator de hook over met een melding. */
   alsBestaat?: string;
 };
-export type CommandoRegel = { id: string; prefix: string[][]; besluit: "vraag" | "weiger"; reden: string };
 export type McpServer = { id: string; command: "bun"; script: string; env?: Record<string, string> };
-export type RolStandaard = { rol: "werker"; webSearch: "uit"; sandbox: "lab-werker"; netwerk: "uit" | "aan" };
-export type Beleid = { hooks: Hook[]; regels: CommandoRegel[]; env: Record<string, string>; mcp: McpServer[]; rollen: RolStandaard[] };
+/** De lege legacy velden blijven beschikbaar voor bestaande eventconfiguratiecallers. */
+export type Beleid = { hooks: Hook[]; regels: never[]; env: Record<string, string>; mcp: McpServer[]; rollen: never[] };

@@ -30,7 +30,7 @@ while [ $# -gt 0 ]; do
     -f|--force|--force=*|--force-with-lease|--force-with-lease=*|--force-if-includes|--mirror|-[!-]*f*)
       fout "force-push mag niet (optie $1); herschrijf geen gedeelde geschiedenis" ;;
     --delete|-d) fout "verwijderen gaat met --verwijder <tak> (alleen een gemergede tak)" ;;
-    --no-verify) fout "--no-verify slaat de poort over; dat mag alleen Brian" ;;
+    --no-verify) fout "--no-verify slaat de poort over; deze helper ondersteunt dat niet" ;;
     -*) fout "onbekende optie: $1" ;;
     +*) fout "force-push mag niet ($1: een refspec met +)" ;;
     *)
@@ -52,12 +52,8 @@ if git config --get-regexp '^url\..*\.pushinsteadof$' >/dev/null 2>&1; then
   fout "er staat een url.*.pushInsteadOf in de git-config; die stuurt een push naar een andere plek"
 fi
 
-# De pre-push-hook van de repo zelf draait altijd: core.hooksPath vast op <toplevel>/.githooks.
-top=$(git rev-parse --show-toplevel) || fout "geen werkkopie (bare repo?)"
-[ -x "$top/.githooks/pre-push" ] || fout "$top/.githooks/pre-push ontbreekt of is niet uitvoerbaar; zonder poort-hook pusht push.sh niet"
-
-# Nooit POORT_OVERSLAAN doorgeven: de pre-push-hook draait gewoon.
-GIT=(env -u POORT_OVERSLAAN git -c "core.hooksPath=$top/.githooks")
+# Gebruik de bestaande Git-configuratie en hooks; geen verplichte lokale hookinstallatie.
+GIT=(git)
 
 if [ -n "$verwijder" ]; then
   tak=$verwijder
@@ -81,7 +77,7 @@ if [ -n "$verwijder" ]; then
   fi
   # --force-with-lease als slot, geen force: verwijder alleen als de tak nog op de getoetste sha staat.
   if [ "$droog" = 1 ]; then
-    echo "droog: zou draaien (met core.hooksPath=$top/.githooks): git push --force-with-lease=refs/heads/$tak:$sha origin --delete refs/heads/$tak"
+    echo "droog: zou draaien git push --force-with-lease=refs/heads/$tak:$sha origin --delete refs/heads/$tak"
     exit 0
   fi
   "${GIT[@]}" push --force-with-lease="refs/heads/$tak:$sha" origin --delete "refs/heads/$tak"
@@ -105,7 +101,7 @@ done < <(git worktree list --porcelain | awk -v ref="refs/heads/$tak" '
 
 # Expliciete refspec: push.default, remote.origin.push of een upstream naar main spelen geen rol.
 if [ "$droog" = 1 ]; then
-  echo "droog: zou draaien (met core.hooksPath=$top/.githooks): git push -u origin refs/heads/$tak:refs/heads/$tak"
+  echo "droog: zou draaien git push -u origin refs/heads/$tak:refs/heads/$tak"
   exit 0
 fi
 "${GIT[@]}" push -u origin "refs/heads/$tak:refs/heads/$tak"

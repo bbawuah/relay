@@ -1,13 +1,13 @@
 #!/bin/sh
 # Wrapper voor de lead-hooks. Gebruik: hook.sh [wekker]  (het event staat anders in de stdin-JSON).
 #
-# - Lege LAB_AGENT_ROL (gw-sessies, losse sessies): meteen exit 0, bun wordt niet gestart.
+# - Geen sessienaam en geen rol (gw-sessies, losse sessies): meteen exit 0, bun wordt niet gestart.
 # - Bun: env LAB_LEAD_BUN (de installer vult het in), en als dat pad niet uitvoerbaar is
 #   `command -v bun`; ontbreekt ook die: exit 0.
-# - Alleen exit 2 (gate H6/H7, wekker H11) wordt doorgegeven, met de stderr van de hook.
+# - Alleen exit 2 (optionele wekker H11) wordt doorgegeven, met de stderr van de hook.
 #   Elke andere fout geeft exit 0 zonder uitvoer. De bewuste JSON-uitvoer (stdout) gaat door.
 
-[ -z "$LAB_AGENT_ROL" ] && exit 0
+[ -z "$LAB_AGENT_ROL$LAB_AGENT_NAAM" ] && exit 0
 
 # LAB_LEAD_BUN kan na een `brew upgrade bun` naar een verdwenen versiepad wijzen: dan valt hij terug op PATH.
 BUN=${LAB_LEAD_BUN:-}

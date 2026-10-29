@@ -23,7 +23,6 @@ import {
   DUBBEL_VENSTER_MS,
   type Envelop,
   type Herkomst,
-  type Inbound,
   MAX_HOP,
   MAX_PER_MINUUT,
   MAX_TEKST,
@@ -61,7 +60,6 @@ const SLOT_MAX_MS = 5_000;
 const SLOT_VEROUDERD_MS = 10_000;
 export const KLAAR_MAX_MS = 15_000;
 const NAAM = /^[A-Za-z0-9_-][A-Za-z0-9._-]{0,99}$/;
-const INBOUND = new Set<string>(["accept", "hold", "refuse"]);
 
 export const geenWekker: Wekker = { wek: async () => ({ gewekt: false, route: "geen" }) };
 
@@ -263,6 +261,19 @@ export function maakBus(opties: BusOpties): BusMetKlaar {
     return leesJsonl<Envelop>(pad("vastgehouden", naam, ".jsonl")).filter(nepOfEcht);
   }
 
+  /** Historische post wordt alleen hersteld als de envelop nog aan het opslagcontract voldoet. */
+  function herstelbaar(e: Envelop, naam: string): boolean {
+    return e.naar === naam && geldigeNaam(e.van) && !!e.id &&
+      typeof e.tekst === "string" && e.tekst.length <= MAX_TEKST &&
+      typeof e.draad === "string" && !!e.draad &&
+      typeof e.ts === "string" && Number.isFinite(Date.parse(e.ts)) &&
+      Number.isInteger(e.hop) && e.hop > 0 && e.hop <= MAX_HOP &&
+      ["bericht", "melding", "idle"].includes(e.soort) &&
+      (e.herkomst === "schoon" || e.herkomst === "extern");
+  }
+
+  const envelopInhoud = (e: Envelop): string => JSON.stringify(Object.keys(e).sort().map((k) => [k, (e as unknown as Record<string, unknown>)[k]]));
+
   function nepOfEcht(r: unknown): r is Envelop {
     return !!r && typeof r === "object" && typeof (r as Envelop).id === "string";
   }
@@ -272,7 +283,10 @@ export function maakBus(opties: BusOpties): BusMetKlaar {
     const gelezen = leesGelezen(naam);
     if (gelezen.size === 0) return;
     const alle = alleEnvelops(naam);
-    const blijf = alle.filter((e) => !(gelezen.has(e.id) && nu() - Date.parse(e.ts) > RETENTIE_MS));
+    // Een onderbroken herstel kan dezelfde envelop nog in de oude holdmap hebben.
+    // Bewaar het inboxbewijs tot die kopie expliciet is afgehandeld: nooit opnieuw afleveren.
+    const nogVast = new Set(houdVast(naam).map((e) => e.id));
+    const blijf = alle.filter((e) => nogVast.has(e.id) || !(gelezen.has(e.id) && nu() - Date.parse(e.ts) > RETENTIE_MS));
     if (blijf.length === alle.length) return;
     schrijfJsonl(pad("inbox", naam, ".jsonl"), blijf);
     const ids = blijf.filter((e) => gelezen.has(e.id)).map((e) => e.id);
@@ -303,26 +317,6 @@ export function maakBus(opties: BusOpties): BusMetKlaar {
   /** Extern als het register het zegt of als de bus de markering heeft gezet (een sessie die externe inhoud zag). */
   function isExtern(r: Sessie): boolean {
     return r.herkomst === "extern" || existsSync(pad("extern", r.naam, ""));
-  }
-
-  /** Een onbekende of verkeerd getypte waarde telt als hold (faalt dicht). */
-  function inboundWaarde(v: unknown): Inbound {
-    return typeof v === "string" && INBOUND.has(v) ? (v as Inbound) : "hold";
-  }
-
-  function beleid(ontv: Sessie, afz: Sessie): Inbound {
-    const b: unknown = ontv.inbound;
-    if (b !== undefined && b !== null) {
-      if (typeof b !== "object") return "hold";
-      const per = (b as { per_afzender?: unknown }).per_afzender;
-      if (per !== undefined && per !== null) {
-        if (typeof per !== "object") return "hold";
-        if (Object.hasOwn(per, afz.naam)) return inboundWaarde((per as Record<string, unknown>)[afz.naam]);
-      }
-      const standaard = (b as { standaard?: unknown }).standaard;
-      if (standaard !== undefined && standaard !== null) return inboundWaarde(standaard);
-    }
-    return ontv.lead === afz.naam || afz.lead === ontv.naam ? "accept" : "hold";
   }
 
   function wekDoel(r: Sessie): WekDoel {
@@ -458,6 +452,7 @@ export function maakBus(opties: BusOpties): BusMetKlaar {
     const sessies = levende();
     const afz = sessies.get(van);
     if (!afz) return fout("geen_afzender", `Afzender ${JSON.stringify(van)} staat niet (meer) in het register, of de naam is ongeldig (letters, cijfers, . _ -).`);
+    if (heeftTweeling(van, sessies)) return fout("geen_afzender", `Afzender ${JSON.stringify(van)} is dubbelzinnig.`);
     const ontv = sessies.get(naar);
     if (!ontv) return fout("onbekend", `Ontvanger ${JSON.stringify(naar)} is niet bekend of niet meer levend; kijk met list.`);
     if (heeftTweeling(naar, sessies)) return fout("onbekend", `Ontvanger ${JSON.stringify(naar)} is dubbelzinnig: er is een levende sessie met dezelfde naam in andere hoofdletters.`);
@@ -481,9 +476,6 @@ export function maakBus(opties: BusOpties): BusMetKlaar {
       const eerder = dubbelOf(naar, van, tekst, id);
       if (eerder) return { uitslag: { ok: true, id: eerder.id, status: "dubbel", gewekt: null }, wek: null };
 
-      const regel = beleid(ontv, afz);
-      if (regel === "refuse") return { uitslag: fout("geweigerd", `${naar} weigert berichten van ${van}.`), wek: null };
-      const vasthouden = regel === "hold";
       if (ongelezen(naar).length + houdVast(naar).length >= MAX_WACHTRIJ) return { uitslag: fout("vol", `${naar} heeft al ${MAX_WACHTRIJ} ongelezen of vastgehouden berichten.`), wek: null };
 
       const e: Envelop = {
@@ -498,11 +490,6 @@ export function maakBus(opties: BusOpties): BusMetKlaar {
         soort: "bericht",
         tekst,
       };
-      if (vasthouden) {
-        zorgMap("vastgehouden");
-        appendFileSync(pad("vastgehouden", naar, ".jsonl"), `${JSON.stringify(e)}\n`, { mode: 0o600 });
-        return { uitslag: { ok: true, id: e.id, status: "vastgehouden", gewekt: null }, wek: null };
-      }
       leg(naar, e);
       return { uitslag: { ok: true, id: e.id, status: "afgeleverd", gewekt: null }, wek: wekAanvraag(naar) };
     });
@@ -645,12 +632,43 @@ export function maakBus(opties: BusOpties): BusMetKlaar {
       // Verplaatsen verandert ongelezen + vastgehouden niet, dus MAX_WACHTRIJ blijft gehaald.
       const uit = metSlot("post", naam, (): { n: number; wek: WekAanvraag | null } => {
         const vast = houdVast(naam);
-        const kies = vast.filter((e) => !ids || ids.length === 0 || ids.includes(e.id));
+        const kies = vast.filter((e) => herstelbaar(e, naam) && (!ids || ids.includes(e.id)));
         if (kies.length === 0) return { n: 0, wek: null };
-        for (const e of kies) leg(naam, e);
+        const geselecteerd = new Set(kies.map((e) => e.id));
+        const bestaand = alleEnvelops(naam);
+        const inhoud = new Map<string, string>();
+        for (const e of [...bestaand.filter((e) => geselecteerd.has(e.id)), ...kies]) {
+          const canoniek = envelopInhoud(e);
+          if (inhoud.has(e.id) && inhoud.get(e.id) !== canoniek) throw new Error("Herstel gestopt: hetzelfde bericht-id heeft conflicterende inhoud; bestanden blijven behouden.");
+          inhoud.set(e.id, canoniek);
+        }
+        const bekend = new Set(bestaand.map((e) => e.id));
+        const nieuw = kies.filter((e) => {
+          if (bekend.has(e.id)) return false;
+          bekend.add(e.id);
+          return true;
+        });
+        // Eén atomaire inboxpublicatie; een crash vóór het opruimen is veilig opnieuw te proberen.
+        if (nieuw.length) {
+          zorgMap("inbox");
+          const inboxPad = pad("inbox", naam, ".jsonl");
+          const oud = existsSync(inboxPad) ? readFileSync(inboxPad, "utf8") : "";
+          schrijfAtomair(inboxPad, `${oud}${oud && !oud.endsWith("\n") ? "\n" : ""}${nieuw.map((e) => `${JSON.stringify(e)}\n`).join("")}`);
+        }
         const weg = new Set(kies.map((e) => e.id));
-        schrijfJsonl(pad("vastgehouden", naam, ".jsonl"), vast.filter((e) => !weg.has(e.id)));
-        return { n: kies.length, wek: wekAanvraag(naam) };
+        // Onleesbare of vreemde historische regels blijven byte-voor-byte staan.
+        // Herstel is geen impliciete opschoon- of migratieactie.
+        const bestand = pad("vastgehouden", naam, ".jsonl");
+        const rest = readFileSync(bestand, "utf8").split(/(?<=\n)/).filter((regel) => {
+          try {
+            const e = JSON.parse(regel);
+            return !nepOfEcht(e) || !herstelbaar(e, naam) || !weg.has(e.id);
+          } catch {
+            return true;
+          }
+        }).join("");
+        schrijfAtomair(bestand, rest);
+        return { n: nieuw.length, wek: nieuw.length ? wekAanvraag(naam) : null };
       });
       const ontv = levende().get(naam);
       if (ontv) await voerWek(ontv, uit.wek);

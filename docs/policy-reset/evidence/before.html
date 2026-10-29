@@ -1,0 +1,16 @@
+<!doctype html><html><head><meta charset="utf-8"><style>body{font:15px system-ui;color:var(--foreground);margin:0}p{margin:0 0 14px}.terminal{background:#111827;color:#e5e7eb;border-radius:10px;padding:24px;font:14px/1.55 monospace;white-space:pre-wrap;overflow-wrap:anywhere}small{color:var(--muted-foreground)}</style></head><body><p><b>Before · legacy source 003773b</b><br><small>Rendered terminal — actual captured stdout, disposable fixtures. No live queues.</small></p><div class="terminal">source SHA: 003773bfda5b913e2698562cb9805c1a31720374
+capture: actual stdout from disposable fixture; synthetic names/text only
+routing: alice and bob have different leads; role=agent; no inbound override
+send alice -&gt; bob: {"ok":true,"id":"018bcfe5-6800-77f5-8887-26a8122795d8","status":"vastgehouden","gewekt":null}
+read bob: unread=0, held=1
+ack bob: unread=0
+reply: no delivered question; nothing to acknowledge or answer
+recovery: one historical fixture; caller owns mailbox; LAB_AGENT_ROL=agent
+$ cli.ts vrijgeven recovery-target 018bcfe5-6800-7000-8000-000000000001 [attempt 1]
+exit=1: vrijgeven is voor Brian of de lead (LAB_AGENT_ROL is "agent").
+$ cli.ts vrijgeven recovery-target 018bcfe5-6800-7000-8000-000000000001 [attempt 2]
+exit=1: vrijgeven is voor Brian of de lead (LAB_AGENT_ROL is "agent").
+recovery counts: held=1, unread=0
+hook probe: evaluate synthetic JSON only; the tmux command is never executed
+retired hook exit=2, stdout bytes=0, stderr=Geweigerd door grenzen.sh: lead-proef mag geen tmux send-keys of paste-buffer naar een andere pane of sessie sturen; gebruik de peerbus.
+</div></body></html>

@@ -5,7 +5,6 @@ import { join } from "node:path";
 import { schoneEnv } from "../../test-integriteit";
 import { installeer as installeerClaude } from "../installeer-hooks";
 import type { AppServer, HookInfo } from "./codex-appserver";
-import { controleerGrenzen } from "./codex-controle";
 import { EVENTS, MERK, installeer } from "./codex-installeer";
 
 // Rooktoets op de INSTALLATIE: de geïnstalleerde bestanden moeten laden en draaien vanuit hun eigen (platte) map, niet alleen in de
@@ -50,8 +49,8 @@ function draai(argv: string[], stdin: object, env: Record<string, string> = {}) 
 describe("geïnstalleerde Codex-hooks", () => {
   const doel = () => join(home, "hooks", "lab-lead-hooks");
 
-  test("codex-installeer: de geïnstalleerde wrapper, hook.sh en grenzen-groep laden en draaien vanuit de installatiemap", async () => {
-    const u = await installeer({ droog: false, verwijder: false, codexHome: home, doel: doel(), bun: process.execPath, codex: "codex", bron: BRON }, { start: nep });
+  test("codex-installeer: de geïnstalleerde wrapper, hook.sh laden en draaien vanuit de installatiemap", async () => {
+    const u = await installeer({ droog: false, verwijder: false, codexHome: home, doel: doel(), bun: process.execPath, codex: "codex", bron: BRON });
     expect(u.code).toBe(0);
     const wrap = join(doel(), "codex-wrap.sh");
     // wrapper: de afgeleide naam komt uit de geladen peers/afgeleide-naam
@@ -63,22 +62,7 @@ describe("geïnstalleerde Codex-hooks", () => {
     const h = draai(["/bin/sh", wrap, "/bin/sh", join(doel(), "hook.sh"), "--bron", "codex"], invoer("codex-SessionStart.json"), { LAB_AGENT_NAAM: "w1", LAB_AGENT_ROL: "agent", LAB_LEAD_NAAM: "lead" });
     expect(h.err).not.toContain("Cannot find module");
     expect(h.code).toBe(0);
-    // grenzen-groep
-    const g = draai(["/bin/sh", wrap, "/bin/sh", join(doel(), "grenzen.sh")], invoer("codex-PreToolUse-Bash.json"));
-    expect(g.err).not.toContain("Cannot find module");
-    expect(g.code).toBe(0);
-  });
-});
 
-describe("codex-controle: rooktoets", () => {
-  test("een geïnstalleerde wrapper die niet laadt (ontbrekend peers-bestand) geeft een reden met de fout; een volledige installatie niet", async () => {
-    const doel = join(home, "hooks", "lab-lead-hooks");
-    await installeer({ droog: false, verwijder: false, codexHome: home, doel, bun: process.execPath, codex: "codex", bron: BRON }, { start: nep });
-    expect(controleerGrenzen(join(home, "config.toml"))).not.toContain("start niet"); // hier alleen: niet vertrouwd (de nep legt niets vast)
-    // het geïnstalleerde grenzen-commando draait met een onschuldige PreToolUse (rc 0): dat zit in de rooktoets
-    // codex-adapter.ts staat niet in GELIJK_AAN_REPO maar hook.ts importeert het statisch: alleen de rooktoets ziet dit
-    rmSync(join(doel, "codex-adapter.ts"));
-    expect(controleerGrenzen(join(home, "config.toml"))).toMatch(/geïnstalleerde hook\.ts start niet \(exit 1\): .*codex-adapter/);
   });
 });
 

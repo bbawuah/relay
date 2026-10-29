@@ -1,0 +1,15 @@
+source SHA: 003773bfda5b913e2698562cb9805c1a31720374
+capture: actual stdout from disposable fixture; synthetic names/text only
+routing: alice and bob have different leads; role=agent; no inbound override
+send alice -> bob: {"ok":true,"id":"018bcfe5-6800-77f5-8887-26a8122795d8","status":"vastgehouden","gewekt":null}
+read bob: unread=0, held=1
+ack bob: unread=0
+reply: no delivered question; nothing to acknowledge or answer
+recovery: one historical fixture; caller owns mailbox; LAB_AGENT_ROL=agent
+$ cli.ts vrijgeven recovery-target 018bcfe5-6800-7000-8000-000000000001 [attempt 1]
+exit=1: vrijgeven is voor Brian of de lead (LAB_AGENT_ROL is "agent").
+$ cli.ts vrijgeven recovery-target 018bcfe5-6800-7000-8000-000000000001 [attempt 2]
+exit=1: vrijgeven is voor Brian of de lead (LAB_AGENT_ROL is "agent").
+recovery counts: held=1, unread=0
+hook probe: evaluate synthetic JSON only; the tmux command is never executed
+retired hook exit=2, stdout bytes=0, stderr=Geweigerd door grenzen.sh: lead-proef mag geen tmux send-keys of paste-buffer naar een andere pane of sessie sturen; gebruik de peerbus.

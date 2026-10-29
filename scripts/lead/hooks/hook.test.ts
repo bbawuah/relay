@@ -2,12 +2,33 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { MAX_BLOKKADES, type Opties, isVrijRegel, verwerk, wachtTot, wekker } from "./hook";
+import { type Opties, isVrijRegel, verwerk, wachtTot, wekker } from "./hook";
 import { type Rec, gelezenOffset, inboxMelding, inboxPad, leesRecord, schrijfRecord } from "./register";
 
 // Alles draait in een wegwerpmap (LAB_LEAD_STAAT); de echte ~/.claude en ~/.local/state blijven ongemoeid.
 
 const HOOK_SH = join(import.meta.dir, "hook.sh");
+
+test("lead-proef behoudt statusmeldingen zonder rolverhoging of Stop-blokkade", async () => {
+  const env = omgeving({ LAB_AGENT_NAAM: "codex-lead", LAB_AGENT_ROL: "lead-proef", LAB_LEAD_NAAM: "codex-lead" });
+  const invoer = inv({ session_id: "proef-status" });
+  await verwerk("SessionStart", invoer, env, opt);
+  inboxMelding(staat, "codex-lead", "werker", "fixture-status klaar", T0);
+  const r = await verwerk("UserPromptSubmit", invoer, env, opt);
+  expect(r.stdout).toContain("fixture-status klaar");
+  expect(gelezenOffset(staat, "codex-lead")).toBeGreaterThan(0);
+  expect(leesRecord(staat, "proef-status")?.rol).toBe("lead-proef");
+  expect((await verwerk("Stop", invoer, env, opt)).stdout).toBe("");
+});
+
+test("sessieregistratie gebruikt rollen alleen als statusetiket", async () => {
+  for (const rol of ["", "gast", "agent", "lead"]) {
+    const id = `rol-${rol || "leeg"}`;
+    await verwerk("SessionStart", inv({ session_id: id }), omgeving({ LAB_AGENT_ROL: rol }), opt);
+    expect(leesRecord(staat, id)?.rol).toBe(rol);
+    expect((await verwerk("Stop", inv({ session_id: id }), omgeving({ LAB_AGENT_ROL: rol }), opt)).stdout).toBe("");
+  }
+});
 const T0 = 1_700_000_000_000;
 const inCodexSandbox = process.env.CODEX_SANDBOX === "seatbelt";
 
@@ -52,16 +73,6 @@ describe("hook.sh", () => {
     return { code: p.exitCode, out: p.stdout.toString(), err: p.stderr.toString() };
   }
 
-  test("a) lege LAB_AGENT_ROL: stopt in sh, bun wordt niet gestart", () => {
-    const bin = nepBun();
-    const r = draai({ PATH: `${bin}:/usr/bin:/bin`, LAB_LEAD_STAAT: staat, LAB_AGENT_ROL: "" });
-    expect(r.code).toBe(0);
-    expect(existsSync(join(dir, "markeer"))).toBe(false);
-    // ook als de variabele helemaal ontbreekt
-    expect(draai({ PATH: `${bin}:/usr/bin:/bin` }).code).toBe(0);
-    expect(existsSync(join(dir, "markeer"))).toBe(false);
-  });
-
   test("a) controle: met een rol wordt bun wel gestart (anders bewijst de test niets)", () => {
     const bin = nepBun();
     expect(draai({ PATH: `${bin}:/usr/bin:/bin`, LAB_AGENT_ROL: "agent" }).code).toBe(0);
@@ -93,24 +104,6 @@ describe("hook.sh", () => {
     expect(draai({ PATH: "/nergens", LAB_AGENT_ROL: "agent" }).code).toBe(0);
   });
 
-  test("exit 2 van de wekker gaat door met stderr; JSON van de gate op stdout; kapotte stdin = exit 0", () => {
-    const env = { PATH: "/usr/bin:/bin", LAB_LEAD_BUN: process.execPath, LAB_LEAD_STAAT: staat, HOME: dir };
-    inboxMelding(staat, "lead", "w2", "w2 klaar (rapport binnen)", T0);
-    const w = draai({ ...env, LAB_AGENT_ROL: "lead", LAB_AGENT_NAAM: "lead", ARG: "wekker", LAB_WEKKER_INTERVAL_MS: "1", LAB_WEKKER_MAX_MS: "5" });
-    expect(w.code).toBe(2);
-    expect(w.err).toContain("w2 klaar");
-
-    const sessie = { session_id: "s9", cwd: "/w" };
-    const agent = { ...env, LAB_AGENT_ROL: "agent", LAB_AGENT_NAAM: "w9", LAB_LEAD_NAAM: "lead" };
-    draai(agent, JSON.stringify({ ...sessie, hook_event_name: "PreToolUse", tool_name: "Bash" }));
-    const stop = draai(agent, JSON.stringify({ ...sessie, hook_event_name: "Stop", stop_hook_active: false }));
-    expect(stop.code).toBe(0);
-    expect(JSON.parse(stop.out).decision).toBe("block");
-
-    const kapot = draai(agent, "{niet json");
-    expect(kapot).toEqual({ code: 0, out: "", err: "" });
-  });
-
   test("wekker zonder inbox-regels geeft na het maximum op met exit 0", () => {
     const env = { PATH: "/usr/bin:/bin", LAB_LEAD_BUN: process.execPath, LAB_LEAD_STAAT: staat, HOME: dir, LAB_AGENT_ROL: "lead", LAB_AGENT_NAAM: "lead", ARG: "wekker", LAB_WEKKER_INTERVAL_MS: "1", LAB_WEKKER_MAX_MS: "3" };
     expect(draai(env).code).toBe(0);
@@ -118,11 +111,6 @@ describe("hook.sh", () => {
 });
 
 describe("register (H1-H5, H8-H10)", () => {
-  test("rol leeg of onbekend: er wordt niets geschreven", async () => {
-    await verwerk("SessionStart", inv(), omgeving({ LAB_AGENT_ROL: "" }), opt);
-    await verwerk("SessionStart", inv(), omgeving({ LAB_AGENT_ROL: "gast" }), opt);
-    expect(existsSync(staat)).toBe(false);
-  });
 
   test("H1 SessionStart maakt een record met de vaste velden", async () => {
     await verwerk("SessionStart", inv(), omgeving({ TMUX_PANE: "%7" }), opt);
@@ -260,7 +248,7 @@ describe("register (H1-H5, H8-H10)", () => {
     // na ~12:30 is de wachttijd om en geldt de gate weer
     klok += 30 * 60_000;
     await stuurTool(env);
-    expect(JSON.parse((await verwerk("Stop", inv(), env, opt)).stdout).decision).toBe("block");
+    expect((await verwerk("Stop", inv(), env, opt)).stdout).toBe("");
   });
 
   test("fix: wacht_tot hoogstens 2 uur vooruit; een verstreken of te ver weg liggende tijd telt niet", () => {
@@ -294,33 +282,18 @@ describe("register (H1-H5, H8-H10)", () => {
     expect(inboxRegels().filter((x) => x.tekst === "w2 is idle")).toHaveLength(na);
   });
 
-  test("fix: 3×-melding komt eenmaal per reeks, zonder extra idle-regel", async () => {
-    const env = omgeving();
-    for (let i = 0; i < MAX_BLOKKADES; i++) {
-      await stuurTool(env);
-      await verwerk("Stop", inv(), env, opt);
-    }
-    await stuurTool(env);
-    await verwerk("Stop", inv(), env, opt);
-    const teksten = inboxRegels().map((x) => x.tekst);
-    expect(teksten.filter((x) => x.includes("stopte 3×"))).toHaveLength(1);
-    expect(teksten).not.toContain("w2 is idle");
-    await stuurTool(env);
-    expect(JSON.parse((await verwerk("Stop", inv(), env, opt)).stdout).decision).toBe("block"); // nieuwe reeks
-  });
-
   test("fix: een melding wordt eenmaal afgeleverd, ook als twee lezers tegelijk komen", async () => {
     inboxMelding(staat, "lead", "w2", "w2 klaar (rapport binnen)", T0);
     inboxMelding(staat, "lead", "w2", "w2 klaar (rapport binnen)", T0);
     const lead = LEAD();
     // een andere lezer (wekker) houdt het slot vast terwijl de Stop-hook komt
     mkdirSync(join(staat, "inbox", "lead.gelezen.slot"), { recursive: true });
-    const geblokkeerd = await verwerk("Stop", { session_id: "l1", cwd: "/w" }, { ...lead, LAB_AGENT_NAAM: "lead" }, opt);
+    const geblokkeerd = await verwerk("UserPromptSubmit", { session_id: "l1", cwd: "/w" }, { ...lead, LAB_AGENT_NAAM: "lead" }, opt);
     expect(geblokkeerd.stdout).toBe("");
     rmSync(join(staat, "inbox", "lead.gelezen.slot"), { recursive: true });
-    const eerste = await verwerk("Stop", { session_id: "l1", cwd: "/w" }, { ...lead, LAB_AGENT_NAAM: "lead" }, opt);
+    const eerste = await verwerk("UserPromptSubmit", { session_id: "l1", cwd: "/w" }, { ...lead, LAB_AGENT_NAAM: "lead" }, opt);
     expect(eerste.stdout.match(/w2 klaar \(rapport binnen\)/g)).toHaveLength(1); // identieke regels vallen samen
-    const tweede = await verwerk("Stop", { session_id: "l1", cwd: "/w" }, { ...lead, LAB_AGENT_NAAM: "lead" }, opt);
+    const tweede = await verwerk("UserPromptSubmit", { session_id: "l1", cwd: "/w" }, { ...lead, LAB_AGENT_NAAM: "lead" }, opt);
     expect(tweede.stdout).toBe("");
   });
 
@@ -386,19 +359,7 @@ describe("register (H1-H5, H8-H10)", () => {
 
 describe("H6 gate (agent, sublead, vervolg)", () => {
   for (const rol of ["agent", "sublead", "vervolg"]) {
-    test(`blokkeert bij ≥1 tool zonder rapport (${rol}); reden noemt de lead en de ene-zin-uitweg`, async () => {
-      const env = omgeving({ LAB_AGENT_ROL: rol });
-      await stuurTool(env);
-      const u = await verwerk("Stop", inv({ stop_hook_active: false }), env, opt);
-      const j = JSON.parse(u.stdout);
-      expect(u.code).toBe(0);
-      expect(j.decision).toBe("block");
-      expect(j.reason).toContain("SendMessage(to: lead)");
-      expect(j.reason).toContain("in één zin");
-      expect(j.reason).toContain("waarop je wacht");
-      expect(j.reason).toContain("Brian");
-      expect(leesRecord(staat, "s1")?.blokkades).toBe(1);
-    });
+
   }
 
   test("een sessie zonder lead (Regie: geen lead gekozen) wordt niet geblokkeerd en meldt niemand", async () => {
@@ -437,39 +398,6 @@ describe("H6 gate (agent, sublead, vervolg)", () => {
     expect(leesRecord(staat, "s1")?.toestand).toBe("vrij");
   });
 
-  test("rem: hoogstens 3 blokkades per sessie, daarna doorlaten met een inbox-regel", async () => {
-    const env = omgeving();
-    for (let i = 0; i < MAX_BLOKKADES; i++) {
-      await stuurTool(env);
-      expect(JSON.parse((await verwerk("Stop", inv({ stop_hook_active: false }), env, opt)).stdout).decision).toBe("block");
-    }
-    await stuurTool(env);
-    const u = await verwerk("Stop", inv({ stop_hook_active: false }), env, opt);
-    expect(u).toEqual({ code: 0, stdout: "", stderr: "" });
-    expect(inboxRegels().map((x) => x.tekst)).toContain("w2 stopte 3× zonder rapport");
-    expect(leesRecord(staat, "s1")?.blokkades).toBe(0); // reeks gemeld en teruggezet
-  });
-
-  test("b) laat de stop door zolang subagents van deze sessie lopen; daarna weer blokkeren", async () => {
-    const env = omgeving({ LAB_AGENT_ROL: "sublead" });
-    await stuurTool(env);
-    await verwerk("SubagentStart", inv({ agent_id: "a1", agent_type: "general-purpose" }), env, opt);
-    expect((await verwerk("Stop", inv(), env, opt)).stdout).toBe("");
-    expect(leesRecord(staat, "s1")?.blokkades).toBe(0);
-
-    // een subagent van een andere sessie telt niet
-    await verwerk("SubagentStop", inv({ agent_id: "a1" }), env, opt);
-    await verwerk("SubagentStart", { session_id: "ander", agent_id: "a2", agent_type: "x", cwd: "/w" }, env, opt);
-    await stuurTool(env);
-    expect(JSON.parse((await verwerk("Stop", inv(), env, opt)).stdout).decision).toBe("block");
-
-    // een subagent die al uren stil is, houdt de stop niet tegen
-    await verwerk("SubagentStart", inv({ agent_id: "a3", agent_type: "x" }), env, opt);
-    klok += 3 * 3600_000;
-    await stuurTool(env);
-    expect(JSON.parse((await verwerk("Stop", inv(), env, opt)).stdout).decision).toBe("block");
-  });
-
   test("b2) geen idle-melding zolang eigen subagents lopen; klaar-meldingen blijven", async () => {
     const env = omgeving({ LAB_AGENT_ROL: "sublead" });
     await stuurTool(env);
@@ -488,19 +416,6 @@ describe("H6 gate (agent, sublead, vervolg)", () => {
     await verwerk("SubagentStop", inv({ agent_id: "a1" }), env, opt);
     await verwerk("Stop", inv(), env, opt);
     expect(inboxRegels().map((x) => x.tekst)).toContain("w2 is idle");
-  });
-
-  test("c) de beurtteller reset na een doorgelaten Stop, ook zonder UserPromptSubmit", async () => {
-    const env = omgeving();
-    await stuurTool(env);
-    await verwerk("PostToolUse", inv({ tool_name: "SendMessage", tool_input: { to: "lead", message: "klaar" } }), env, opt);
-    await verwerk("Stop", inv(), env, opt);
-    // cross-session bericht wekt de sessie zonder UserPromptSubmit: nieuwe beurt zonder tools mag door
-    expect(leesRecord(staat, "s1")?.tools_in_beurt).toBe(0);
-    expect((await verwerk("Stop", inv(), env, opt)).stdout).toBe("");
-    // en een nieuwe beurt met een tool zonder rapport wordt weer geblokkeerd
-    await stuurTool(env);
-    expect(JSON.parse((await verwerk("Stop", inv(), env, opt)).stdout).decision).toBe("block");
   });
 
   test("UserPromptSubmit zet de beurt op nul", async () => {
@@ -539,20 +454,6 @@ describe("H2/H7 lead", () => {
     const j = JSON.parse((await verwerk("UserPromptSubmit", inv(), lead(), opt)).stdout);
     expect(j.hookSpecificOutput.additionalContext).toContain("+3 meer");
     expect(j.hookSpecificOutput.additionalContext).not.toContain("m52");
-  });
-
-  test("d) H7 blokkeert alleen bij nieuwe regels en nooit twee keer voor dezelfde", async () => {
-    inboxMelding(staat, "lead", "w2", "klaar", T0);
-    const eerste = JSON.parse((await verwerk("Stop", inv({ stop_hook_active: false }), lead(), opt)).stdout);
-    expect(eerste.decision).toBe("block");
-    expect(eerste.reason).toContain("w2: klaar");
-    // dezelfde regels: niet nog eens
-    expect((await verwerk("Stop", inv({ stop_hook_active: false }), lead(), opt)).stdout).toBe("");
-    // een nieuwe regel: wel weer
-    inboxMelding(staat, "lead", "w3", "idle", T0);
-    const tweede = JSON.parse((await verwerk("Stop", inv({ stop_hook_active: false }), lead(), opt)).stdout);
-    expect(tweede.reason).toContain("w3: idle");
-    expect(tweede.reason).not.toContain("w2: klaar");
   });
 
   test("d) regels die H2 al gaf, blokkeren H7 niet; stop_hook_active blokkeert nooit", async () => {
@@ -605,12 +506,14 @@ describe("H11 wekker", () => {
     expect(k.slaap.every((m) => m === 2000)).toBe(true);
   });
 
-  test("via verwerk: alleen voor rol lead", async () => {
-    inboxMelding(staat, "lead", "w2", "klaar", T0);
-    const k = nepKlok();
-    const o = { nu, wacht: k.wacht, wekkerInterval: 1, wekkerMax: 1 };
-    expect((await verwerk("wekker", {}, omgeving(), o)).code).toBe(0);
-    expect((await verwerk("wekker", {}, LEAD(), o)).code).toBe(2);
+  test("via verwerk: ieder roletiket kan alleen zijn eigen meldingen wekken", async () => {
+    for (const [i, rol] of ["", "lead", "lead-proef", "agent", "sublead", "vervolg", "reviewer"].entries()) {
+      const naam = `eigen-${i}`;
+      inboxMelding(staat, naam, "w2", "klaar", T0);
+      const k = nepKlok();
+      const o = { nu, wacht: k.wacht, wekkerInterval: 1, wekkerMax: 1 };
+      expect((await verwerk("wekker", {}, omgeving({ LAB_AGENT_NAAM: naam, LAB_AGENT_ROL: rol }), o)).code).toBe(2);
+    }
   });
 });
 
@@ -706,8 +609,9 @@ describe("leadnamen: het register is de bron, env alleen de beginwaarde", () => 
     expect(gelezenOffset(staat, "lead-a")).toBeGreaterThan(0);
     expect(gelezenOffset(staat, "lead-b")).toBe(0);
     const b = await verwerk("Stop", sid("LB"), envLead(), opt);
-    expect(b.stdout).toContain("block");
-    expect(gelezenOffset(staat, "lead-b")).toBeGreaterThan(0);
+    expect(b.stdout).toBe("");
+    expect(gelezenOffset(staat, "lead-b")).toBe(0);
+    expect((await verwerk("UserPromptSubmit", sid("LB"), envLead(), opt)).stdout).toContain("Meldingen van je sessies");
   });
 
   test("de wekker wacht op de inbox van de recordnaam, niet op de env-naam", async () => {
@@ -798,10 +702,4 @@ describe("Codex-subagent (fixture codex-UserPromptSubmit-subagent.json)", () => 
     expect(leesRecord(staat, sid)).toMatchObject({ toestand: "bezig", rapport_in_beurt: false, tools_in_beurt: 0 });
   });
 
-  test("een Stop met agent_id valt nog gewoon onder de rapport-gate (alleen UserPromptSubmit wordt gefilterd)", async () => {
-    const env = omgeving({ LAB_AGENT_ROL: "agent" });
-    await stuurTool(env);
-    const u = await verwerk("Stop", inv({ stop_hook_active: false, agent_id: "sub-1", agent_type: "default" }), env, opt);
-    expect(JSON.parse(u.stdout).decision).toBe("block");
-  });
 });

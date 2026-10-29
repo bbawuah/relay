@@ -23,6 +23,18 @@ const inv = (sessie: string, extra: Record<string, unknown> = {}) => ({ session_
 const reden = (stdout: string): string => JSON.parse(stdout).reason;
 const context = (stdout: string): string => JSON.parse(stdout).hookSpecificOutput.additionalContext;
 
+test("Stop blokkeert nooit op ongelezen berichten of ontbrekend rapport", async () => {
+  await verwerk("PreToolUse", inv("w1", { tool_name: "Bash" }), W(), opt);
+  await bus.send("lead-x", "w1", "private berichtinhoud");
+  await bus.send("w1", "lead-x", "een nieuw bericht");
+  for (const [id, e] of [["w1", W()], ["lead-x", L()]] as const) {
+    const u = await verwerk("Stop", inv(id), e, opt);
+    expect(u).toEqual({ code: 0, stdout: "", stderr: "" });
+    expect(leesRecord(staat, id)?.toestand).toBe("idle");
+    expect(bus.ongelezen(id)).toBe(1);
+  }
+});
+
 beforeEach(async () => {
   dir = mkdtempSync(join(tmpdir(), "lead-hook-bus-"));
   staat = join(dir, "staat");
@@ -56,35 +68,12 @@ describe("hooks → bus", () => {
     expect(context(u.stdout)).toContain(seintje(1));
   });
 
-  test("Stop blokkeert één keer met het seintje; de tweede stop (stop_hook_active) gaat door", async () => {
-    await verwerk("UserPromptSubmit", inv("w1"), W(), opt);
-    await bus.send("lead-x", "w1", "kijk hier even naar");
-    const eerste = await verwerk("Stop", inv("w1"), W(), opt);
-    expect(JSON.parse(eerste.stdout).decision).toBe("block");
-    expect(reden(eerste.stdout)).toBe(seintje(1));
-    expect(reden(eerste.stdout)).not.toContain("kijk hier");
-    expect(leesRecord(staat, "w1")?.toestand).toBe("bezig"); // nog niet gestopt
-    const tweede = await verwerk("Stop", inv("w1", { stop_hook_active: true }), W(), opt);
-    expect(tweede.stdout).toBe("");
-    expect(leesRecord(staat, "w1")?.toestand).toBe("idle");
-  });
-
   test("na inbox + ack geen seintje meer bij Stop", async () => {
     await verwerk("UserPromptSubmit", inv("w1"), W(), opt);
     await bus.send("lead-x", "w1", "hoi");
     const ids = bus.inbox("w1").map((e) => e.id);
     bus.ack("w1", ids);
     expect((await verwerk("Stop", inv("w1"), W(), opt)).stdout).toBe("");
-  });
-
-  test("de rapport-gate blijft aan en krijgt het seintje erbij; de gate telt zijn blokkades", async () => {
-    await verwerk("UserPromptSubmit", inv("w1"), W(), opt);
-    await verwerk("PreToolUse", inv("w1", { tool_name: "Bash" }), W(), opt);
-    await bus.send("lead-x", "w1", "hoi");
-    const u = await verwerk("Stop", inv("w1"), W(), opt);
-    expect(reden(u.stdout)).toContain("Je stopt zonder rapport aan lead-x");
-    expect(reden(u.stdout)).toContain(seintje(1));
-    expect(leesRecord(staat, "w1")?.blokkades).toBe(1);
   });
 
   test("een rapport via peers.send naar de eigen lead telt voor de gate (Codex en Claude)", async () => {
@@ -96,13 +85,6 @@ describe("hooks → bus", () => {
       expect(u.stdout).toBe("");
       expect(leesRecord(staat, sessie)?.toestand).toBe("klaar");
     }
-  });
-
-  test("een lead met post: Stop blokkeert één keer met het seintje", async () => {
-    await bus.send("w1", "lead-x", "vraag");
-    const eerste = await verwerk("Stop", inv("lead-x"), L(), opt);
-    expect(reden(eerste.stdout)).toContain(seintje(1));
-    expect((await verwerk("Stop", inv("lead-x", { stop_hook_active: true }), L(), opt)).stdout).toBe("");
   });
 
   test("Stop roept idleGemeld aan: een abonnee krijgt één idle-envelop; SessionEnd meldt weg", async () => {
@@ -142,28 +124,6 @@ describe("hooks → bus", () => {
     await bus.send("lead-x", "w1", "twee");
     const u = await verwerk("UserPromptSubmit", inv("w1"), W(), opt);
     expect(context(u.stdout)).toBe(seintje(2));
-  });
-
-  test("Stop blokkeert alleen bij een stijging sinds het laatste seintje: een sessie die niet leest krijgt geen extra ronde per Stop", async () => {
-    await bus.send("lead-x", "w1", "een");
-    const eerste = await verwerk("Stop", inv("w1"), W(), opt);
-    expect(reden(eerste.stdout)).toBe(seintje(1));
-    expect(leesRecord(staat, "w1")?.seintje_n).toBe(1);
-    // dezelfde stand, nieuwe beurt, niet gelezen: geen block meer
-    const nogmaals = await verwerk("Stop", inv("w1"), W(), opt);
-    expect(nogmaals.stdout).toBe("");
-    // een nieuw bericht (stijging): weer één block
-    klok += 61_000;
-    await bus.send("lead-x", "w1", "twee");
-    const derde = await verwerk("Stop", inv("w1"), W(), opt);
-    expect(reden(derde.stdout)).toBe(seintje(2));
-    // gelezen en leeg: de teller gaat terug, en een volgend bericht blokkeert weer
-    bus.ack("w1", bus.inbox("w1").map((e) => e.id));
-    expect((await verwerk("Stop", inv("w1"), W(), opt)).stdout).toBe("");
-    expect(leesRecord(staat, "w1")?.seintje_n).toBe(0);
-    klok += 61_000;
-    await bus.send("lead-x", "w1", "drie");
-    expect(reden((await verwerk("Stop", inv("w1"), W(), opt)).stdout)).toBe(seintje(1));
   });
 
   test("het seintje van UserPromptSubmit telt als gezien: Stop met dezelfde stand blokkeert niet", async () => {

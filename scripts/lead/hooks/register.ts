@@ -317,6 +317,14 @@ export function levendeLeads(staat: string, panes: Set<string> | null, nu = Date
   return kand.filter((r) => !r.pane || jongste.get(r.pane) === r.start);
 }
 
+/** Levende sessies voor naamroutering, onafhankelijk van rol. Per pane telt alleen de jongste start. */
+export function levendeSessies(staat: string, panes: Set<string> | null, nu = Date.now()): Rec[] {
+  const kand = alleRecords(staat).filter((r) => r.soort === "sessie" && r.toestand !== "weg" && (r.pane ? !panes || panes.has(r.pane) : nu - r.sinds < 24 * 3600_000));
+  const jongste = new Map<string, number>();
+  for (const r of kand) if (r.pane) jongste.set(r.pane, Math.max(jongste.get(r.pane) ?? 0, r.start));
+  return kand.filter((r) => !r.pane || jongste.get(r.pane) === r.start);
+}
+
 /** Andere levende leads met dezelfde naam als `naam` (het eigen record, `eigenId`, telt niet mee). */
 export function dubbeleLeads(staat: string, naam: string, eigenId: string, panes: Set<string> | null, nu = Date.now()): Rec[] {
   return levendeLeads(staat, panes, nu).filter((r) => r.naam === naam && r.id !== eigenId);
@@ -358,8 +366,6 @@ export function schrijfIdentiteit(staat: string, cwd: string, i: Identiteit): vo
   schrijfAtomair(identiteitPad(staat, cwd), `${JSON.stringify(i)}\n`);
 }
 
-/** Rollen die een gespawnde werker kan hebben; "lead" of iets anders in het bestand is nooit geldig (geen escalatie via het bestand). */
-const IDENTITEIT_ROLLEN = ["agent", "sublead", "vervolg", "lead-proef"];
 
 /** Een gewoon bestand (geen symlink), van de eigen gebruiker, zonder rechten voor groep of anderen. */
 function eigenPrive(pad: string, map: boolean): boolean {
@@ -377,8 +383,8 @@ function leesIdentiteitBestand(pad: string, nu: number): Identiteit | null {
   try {
     if (!eigenPrive(dirname(pad), true) || !eigenPrive(pad, false)) return null;
     const o = JSON.parse(readFileSync(pad, "utf8"));
-    if (!o || typeof o !== "object" || typeof o.naam !== "string" || !o.naam || !IDENTITEIT_ROLLEN.includes(o.rol)) return null;
-    if (typeof o.ts !== "number" || o.ts > nu || nu - o.ts > IDENTITEIT_MAX_MS) return null;
+    if (!o || typeof o !== "object" || typeof o.naam !== "string" || !/^[A-Za-z0-9_-][A-Za-z0-9._-]{0,99}$/.test(o.naam) || typeof o.rol !== "string") return null;
+    if (typeof o.ts !== "number" || !Number.isFinite(o.ts) || o.ts > nu || nu - o.ts > IDENTITEIT_MAX_MS) return null;
     return { naam: o.naam, rol: o.rol, lead: String(o.lead ?? ""), opdracht: String(o.opdracht ?? ""), spawn_id: String(o.spawn_id ?? ""), ts: o.ts, ...(typeof o.t3_thread === "string" && o.t3_thread ? { t3_thread: o.t3_thread } : {}), ...(typeof o.sessie_id === "string" && o.sessie_id ? { sessie_id: o.sessie_id } : {}) };
   } catch {
     return null;

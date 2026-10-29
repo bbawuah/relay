@@ -1,15 +1,5 @@
-// Contract van de peerbus (fase 1). Types, constanten en de twee teksten die een ontvanger ziet; de lead bezit dit bestand.
-// Een wijziging loopt via de lead en wordt opnieuw bevestigd door elk spoor dat hem gebruikt.
-// Plan: ~/vault-b-status/peerbus/PLAN.md, contract per spoor: ~/vault-b-status/peerbus/CONTRACT.md.
-//
-// Drie lagen:
-//   Bus     de brievenbus: envelop, beleid, opslag (fase 1: bestanden onder de staatmap; later NATS).
-//   peers   de MCP-server en de CLI: dunne schil om de Bus, dezelfde werkwoorden.
-//   Wekker  per host één seintje zonder inhoud ("je hebt N peer-berichten"). De inhoud gaat nooit via de wekker.
-//
-// Bekende grens: de bus vertrouwt `van` (env LAB_AGENT_NAAM van de MCP-server of CLI). Wie die naam zelf zet, krijgt het
-// inbound-beleid van die naam. Dat is een vangnet tegen vergissingen en lussen, geen authenticatie. Een bericht geeft nooit
-// rechten: elke ontvanger houdt zijn eigen permissies en grenzen.sh.
+// Contract van de lokale peerbus: identiteit, enveloppen, opslag en inhoudsloze weksignalen.
+// Namen zijn lokale routering, geen authenticatie. Berichten verlenen nooit toestemming of rechten.
 
 import type { Toestand } from "../hooks/register";
 
@@ -109,7 +99,7 @@ export type PeerVelden = {
    * SessionStart (ook /clear) → `schoon`: spoor D zet `herkomst` terug en wist die markering.
    */
   herkomst?: Herkomst;
-  /** Standaard: accept van de eigen lead en van eigen werkers (rec.lead === afzender of afzender.lead === naam), anders hold. `per_afzender` gaat voor `standaard`. */
+  /** Alleen legacy opslagcompatibiliteit. Deze waarden blokkeren of vertragen geen nieuwe berichten. */
   inbound?: { standaard?: Inbound; per_afzender?: Record<string, Inbound> };
 };
 
@@ -160,7 +150,7 @@ export interface Bus {
   idleGemeld(doel: string, toestand: Toestand): Promise<void>;
   /** Vastgehouden berichten van `naam`, oudste eerst. Verandert niets. */
   vastgehouden(naam: string): Envelop[];
-  /** Zet vastgehouden berichten (alle, of deze ids) in de inbox en wekt. Alleen voor Brian of de lead (CLI), nooit via de MCP. Geeft het aantal. */
+  /** Herstelt oude post (alle bij undefined, anders deze ids) naar de inbox en wekt. Rollen geven geen privilege. Geeft het aantal nieuw afgeleverde berichten. */
   vrijgeven(naam: string, ids?: string[]): Promise<number>;
 }
 

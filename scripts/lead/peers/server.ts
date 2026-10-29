@@ -1,7 +1,8 @@
 #!/usr/bin/env bun
 // MCP-server van de peerbus (stdio, JSON-regels, eigen JSON-RPC): dunne schil om de Bus, dezelfde werkwoorden als de CLI.
 // Tools: send, inbox, list, notify_when_idle. Afzender = env LAB_AGENT_NAAM; staatmap = env LAB_LEAD_STAAT.
-// vrijgeven en vasthouden bestaan hier bewust niet: dat is voor Brian of de lead (CLI).
+// Historische post wordt expliciet via de rolvrije CLI hersteld.
+// Geen nieuwe muterende tools via de bestaande startcache van metIdentiteit (open issue 718).
 // Zonder LAB_AGENT_NAAM (een Codex-thread in T3 krijgt geen omgeving per thread) komt de identiteit uit
 // <staat>/identiteit/<hash>.json van de checkout waarin de server draait (zie metIdentiteit). Zonder dat bestand, zonder naam en
 // zonder rol (Brians eigen Codex) volgt de naam uit _meta.threadId van de aanroep (afgeleide-naam.ts).

@@ -3,6 +3,12 @@ import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, wr
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { schoneEnv } from "../test-integriteit.ts";
+
+test("wachtrijselectie vereist geen reviewmarker", () => {
+  const a = pr(1, { comments: [] });
+  const b = pr(2, { comments: [{ body: "Lead-review: akkoord 0000000" }] });
+  expect(kiesPrs([b, a]).gekozen.map((p) => p.number)).toEqual([1, 2]);
+});
 import { metStartHerstel, stopReden } from "./spawn-crash.ts";
 import { STANDAARD_POORT, bouwBody, ciWorkflow, geenCiMelding, gevaarScore, onschadelijk, standaardPoort, inStiltevenster, wachtrijEnv, kiesPrs, leesMarker, leesOpties, leesStempel, okRegels, stempelVan, zwaarsteGevaar, type Pr } from "./wachtrij.ts";
 
@@ -41,25 +47,6 @@ describe("wachtrijEnv", () => {
 });
 
 describe("kiesPrs", () => {
-  test("neemt alleen PR's met akkoord op de huidige head, op volgorde van nummer", () => {
-    const { gekozen, afgevallen } = kiesPrs([
-      pr(9),
-      pr(3, { comments: [] }),
-      pr(5, { comments: [{ body: "Lead-review: akkoord 1234567" }] }),
-      pr(4, { isCrossRepository: true }),
-      pr(2, { headRefName: "wachtrij/20261006-1200" }),
-      pr(7),
-    ]);
-    expect(gekozen.map((p) => p.number)).toEqual([7, 9]);
-    expect(afgevallen.map((a) => a.nummer).sort()).toEqual([2, 4, 5]);
-    expect(afgevallen.find((a) => a.nummer === 5)?.reden).toMatch(/verouderd akkoord/);
-  });
-
-  test("een akkoord moet aan het begin van de comment staan en de hele sha7 hebben", () => {
-    expect(kiesPrs([pr(1, { comments: [{ body: "ik: Lead-review: akkoord 1111111" }] })]).gekozen).toEqual([]);
-    expect(kiesPrs([pr(1, { comments: [{ body: "Lead-review: akkoord 11111112" }] })]).gekozen).toEqual([]);
-    expect(kiesPrs([pr(1, { comments: [{ body: "Lead-review: akkoord 1111111, goed" }] })]).gekozen.length).toBe(1);
-  });
 
   test("lege invoer geeft een lege wachtrij", () => {
     expect(kiesPrs([])).toEqual({ gekozen: [], afgevallen: [] });
@@ -104,7 +91,7 @@ describe("body van de integratie-PR", () => {
   test("de body noemt de echte basis en dat de lead de lijst controleert", () => {
     const body = bouwBody({ gemerged: [pr(1)], afgevallen: [], head: "abcdef0123", poortCmd: "x", basis: "origin/release", vasteLijst: true });
     expect(body).toContain("vanaf origin/release (vaste lijst via --prs)");
-    expect(body).toContain("De lead controleert deze lijst");
+    expect(body).toContain("Controleer deze lijst vóór integratie");
     expect(body).not.toContain("vanaf origin/main");
   });
 
@@ -439,12 +426,12 @@ describe("wachtrij.ts", () => {
     expect(git(wt, "merge-base", "--is-ancestor", sha("tak-2"), "HEAD").code).not.toBe(0);
   });
 
-  test("een verouderd akkoord telt niet mee (lege wachtrij)", () => {
+  test("een concept telt niet mee (lege wachtrij)", () => {
     maakTak("tak-1", "b.txt", "een\n");
-    zetPrs([prVoorTak(1, "tak-1", { comments: [{ body: "Lead-review: akkoord 0000000" }] })]);
+    zetPrs([prVoorTak(1, "tak-1", { isDraft: true, comments: [{ body: "Lead-review: akkoord 0000000" }] })]);
     const r = draaiWachtrij(["--nu", "20261006-1200", "--map", wt]);
     expect(r.code).toBe(0);
-    expect(r.uit).toMatch(/#1 overgeslagen: verouderd akkoord/);
+    expect(r.uit).toMatch(/#1 overgeslagen: is een concept/);
     expect(r.uit).toMatch(/leeg/);
   });
 
@@ -516,8 +503,8 @@ describe("wachtrij.ts", () => {
       maakTak("tak-1", "b.txt", "een\n");
       maakTak("tak-2", "c.txt", "twee\n");
       maakTak("tak-3", "d.txt", "drie\n");
-      // 3: geen akkoord; 4 staat niet in de lijst met open PR's; 5: verouderd akkoord
-      zetPrs([prVoorTak(1, "tak-1"), prVoorTak(2, "tak-2"), prVoorTak(3, "tak-3", { comments: [] }), pr(5, { comments: [{ body: "Lead-review: akkoord 1234567" }] })]);
+      // 3: is een concept; 4 staat niet in de lijst met open PR's; 5: is een concept
+      zetPrs([prVoorTak(1, "tak-1"), prVoorTak(2, "tak-2"), prVoorTak(3, "tak-3", { isDraft: true, comments: [] }), pr(5, { isDraft: true, comments: [{ body: "Lead-review: akkoord 1234567" }] })]);
     };
     const geenSporen = () => {
       expect(existsSync(wt)).toBe(false);
@@ -534,9 +521,9 @@ describe("wachtrij.ts", () => {
       const r = draaiWachtrij(["--nu", "20261006-1200", "--map", wt, "--poort-cmd", poort, "--prs", "2,3,4,5"]);
       expect(r.reden).toBe("exit 1");
       expect(r.fout).toContain("3 van de 4");
-      expect(r.fout).toMatch(/#3: .*akkoord/);
-      expect(r.fout).toMatch(/#4: niet open of zonder geldig akkoord/);
-      expect(r.fout).toMatch(/#5: .*verouderd akkoord/);
+      expect(r.fout).toMatch(/#3: is een concept/);
+      expect(r.fout).toMatch(/#4: niet open of ongeschikt/);
+      expect(r.fout).toMatch(/#5: .*is een concept/);
       expect(r.fout).toContain("--sla-afgevallen-over");
       expect(existsSync(join(dir, "poort-gedraaid"))).toBe(false);
       geenSporen();
@@ -1019,7 +1006,7 @@ describe("merge.sh bezitscheck", () => {
     stuk.comments = [];
     writeFileSync(join(dir, "prview.json"), JSON.stringify(stuk));
     const g = merge(["50", "--droog", "--contract", contract, "--spoor", "D2"]);
-    expect(g.code).toBe(1);
-    expect(g.fout).toMatch(/Lead-review: akkoord/);
+    expect(g.code).toBe(0);
+    expect(g.uit).toContain("droog:");
   });
 });

@@ -15,7 +15,6 @@
     "scripts/lead/peers/**/*.ts",
     "scripts/lead/git-hard.ts",
     "scripts/lead/leadnaam.ts",
-    "scripts/lead/push-werker.ts",
     "scripts/lead/relay.ts",
     "scripts/lead/spawn-crash.ts",
     "scripts/lead/installeer-hooks.ts",

@@ -1,16 +1,13 @@
 // Claude-generator: pure functie van de beleidsbron naar `~/.claude/settings.json` (alleen `.hooks`).
 // Schrijft niets en leest niets; de installer (installeer-hooks.ts) doet de bestanden.
 //
-// Eigen entries zijn herkenbaar aan `lab-lead-hooks/hook.sh` in het commando (de markering van vóór de
-// beleidslaag; behouden zodat bestaande installaties als eigen gelden en byte-gelijk blijven) of aan
-// `LAB_BELEID_ID=<id>` (nieuwe entries, zoals grenzen). Al het andere blijft ongemoeid.
+// Eigen entries zijn herkenbaar aan lab-lead-hooks/hook.sh; andere entries blijven ongemoeid.
 
-import { dirname, join } from "node:path";
+import { join } from "node:path";
 import { hosts } from "./hosts";
 import type { Beleid, Hook, Host } from "./typen";
 
 export const MERK = "lab-lead-hooks/hook.sh";
-export const BELEID_MERK = "LAB_BELEID_ID=";
 export const WEKKER_TIMEOUT = 1900;
 
 type HookCfg = { type?: string; command?: string; timeout?: number; asyncRewake?: boolean; [k: string]: unknown };
@@ -27,10 +24,6 @@ export type ClaudeOpties = {
   /** Pad van settings.json en de huidige inhoud (geparst; ontbreekt = nieuw bestand). */
   settings: string;
   bestaand?: Json;
-  /** Fase 1: uit. Brian heeft de grenzen-entry met de hand; adoptie volgt met de installer in fase 2. */
-  metGrenzen?: boolean;
-  /** Pad van grenzen.sh (standaard `<home>/.claude/hooks/grenzen.sh`). */
-  grensPad?: string;
   /** Bestaat dit pad? Voor `alsBestaat`; standaard ja. */
   bestaat?: (pad: string) => boolean;
 };
@@ -45,17 +38,16 @@ export function commando(doel: string, bun: string, arg = ""): string {
 }
 
 /** De hooks voor Claude, in de volgorde van de bron, met hostevent en matcher uit de vertaaltabel. */
-export function claudeSpecs(beleid: Beleid, o: Pick<ClaudeOpties, "metGrenzen" | "bestaat">, waarschuwingen: string[] = []): Spec[] {
+export function claudeSpecs(beleid: Beleid, o: Pick<ClaudeOpties, "bestaat">, waarschuwingen: string[] = []): Spec[] {
   const t = hosts.claude;
   if (!t) throw new Error("hosts.claude ontbreekt");
   const uit: Spec[] = [];
   for (const h of beleid.hooks) {
     if (h.hosts && !h.hosts.includes("claude")) continue;
-    if (h.script !== "lead-hook" && h.script !== "grenzen") {
+    if (h.script !== "lead-hook") {
       waarschuwingen.push(`hook ${h.id}: script ${h.script} is nog niet in de Claude-generator; overgeslagen`);
       continue;
     }
-    if (h.script === "grenzen" && !o.metGrenzen) continue;
     if (h.alsBestaat && !(o.bestaat ?? (() => true))(h.alsBestaat)) {
       waarschuwingen.push(`hook ${h.id}: ${h.alsBestaat} bestaat niet; overgeslagen`);
       continue;
@@ -81,12 +73,11 @@ export function claudeSpecs(beleid: Beleid, o: Pick<ClaudeOpties, "metGrenzen" |
   return uit;
 }
 
-function commandoVoor(spec: Spec, o: Pick<ClaudeOpties, "doel" | "bun" | "grensPad">): string {
-  if (spec.hook.script === "grenzen") return `${BELEID_MERK}${spec.hook.id} ${shq(o.grensPad ?? "")}`;
+function commandoVoor(spec: Spec, o: Pick<ClaudeOpties, "doel" | "bun">): string {
   return commando(o.doel, o.bun);
 }
 
-function eigenGroepen(o: Pick<ClaudeOpties, "doel" | "bun" | "metWekker" | "grensPad">, spec: Spec): Groep[] {
+function eigenGroepen(o: Pick<ClaudeOpties, "doel" | "bun" | "metWekker">, spec: Spec): Groep[] {
   const g: Groep = {};
   if (spec.matcher) g.matcher = spec.matcher;
   g.hooks = [{ type: "command", command: commandoVoor(spec, o), timeout: spec.timeout }];
@@ -115,12 +106,11 @@ function strip(groepen: Groep[], eigen: (h: HookCfg) => boolean): { rest: Groep[
 }
 
 /** Pure functie: de nieuwe `.hooks` voor een bestaande. */
-export function nieuweHooks(oud: unknown, specs: Spec[], o: Pick<ClaudeOpties, "doel" | "bun" | "metWekker" | "verwijder" | "metGrenzen" | "grensPad">): Json | undefined {
+export function nieuweHooks(oud: unknown, specs: Spec[], o: Pick<ClaudeOpties, "doel" | "bun" | "metWekker" | "verwijder">): Json | undefined {
   if (oud !== undefined && (typeof oud !== "object" || oud === null || Array.isArray(oud))) throw new Error("`.hooks` in settings.json is geen object");
-  const grensCmd = o.grensPad;
   const eigen = (h: HookCfg) =>
     typeof h.command === "string" &&
-    (h.command.includes(MERK) || (!!o.metGrenzen && (h.command.includes(BELEID_MERK) || (grensCmd !== undefined && h.command === grensCmd))));
+    (h.command.includes(MERK) || /^LAB_BELEID_ID=grenzen(?:[ \t]|$)/.test(h.command.trimStart()));
   const uit: Json = kopie((oud as Json | undefined) ?? {});
   const events = new Set([...specs.map((s) => s.event), ...Object.keys(uit)]);
   for (const ev of events) {
@@ -146,7 +136,7 @@ export function genereer(beleid: Beleid, host: Host, o: ClaudeOpties): { bestand
   if (host !== "claude") return { bestanden: [], waarschuwingen: [`host ${host}: nog geen generator (fase 2)`] };
   const t = hosts.claude;
   for (const n of t?.nietVertaalbaar ?? []) waarschuwingen.push(n);
-  const opties = { ...o, grensPad: o.grensPad ?? join(dirname(o.doel), "grenzen.sh") };
+  const opties = o;
   const specs = claudeSpecs(beleid, o, waarschuwingen);
   const hooks = nieuweHooks(o.bestaand?.hooks, specs, opties);
   const nieuw: Json = { ...(o.bestaand ?? {}) };

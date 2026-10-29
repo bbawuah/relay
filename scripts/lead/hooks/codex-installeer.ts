@@ -1,42 +1,18 @@
-// Installeert de lead-hooks voor Codex (0.164.0) in $CODEX_HOME/config.toml, mét blijvend vertrouwen.
-//
-//   bun scripts/lead/hooks/codex-installeer.ts [--droog] [--verwijder] [--codex-home <map>] [--doel <map>] [--codex <pad>]
-//
-//   --droog        print het blok, de te kopiëren bestanden en wat er vertrouwd zou worden; schrijft niets
-//   --verwijder    haalt het eigen blok weg (de gekopieerde bestanden en de trust-tabellen blijven staan)
-//   --codex-home   standaard $CODEX_HOME, anders ~/.codex
-//   --doel         standaard <codex-home>/hooks/lab-lead-hooks
-//   --codex        het codex-programma (standaard `codex` uit PATH); voor tests
-//
-// Hoe vertrouwen werkt in Codex 0.164.0 (uitgezocht met een tijdelijke CODEX_HOME): een hook uit config.toml draait pas
-// als `[hooks.state."<pad config.toml>:<event>:<groep>:<handler>"] trusted_hash = "sha256:…"` klopt met de hash van de
-// hookdefinitie (hooks/list geeft key, currentHash en trustStatus: untrusted | trusted | modified | managed). Zonder dat
-// draaien hooks stil niet; `-c hooks…` op de opdrachtregel werkt niet; `--dangerously-bypass-hook-trust` gebruiken we niet.
-// De installer schrijft daarom (1) het blok met hooks tussen markeringen, en (2) vraagt `codex app-server` de hashes te
-// berekenen (hooks/list) en ze vast te leggen (config/value/write op hooks.state). Een tweede run met ongewijzigde
-// bronbestanden schrijft het blok niet opnieuw en vraagt geen nieuw vertrouwen; de bestanden onder --doel worden wel
-// elke run opnieuw gekopieerd. Voor de eerste schrijfactie komt een backup `config.toml.voor-peerbus` (een bestaande
-// backup, de oorspronkelijke, blijft staan). Wijzigt het commando (nieuw pad) of past iemand het blok met de hand aan,
-// dan wordt de hash `modified`: draai de installer opnieuw om hem weer te vertrouwen.
-//
-// Twee PreToolUse-groepen: groep 0 (`.*`) draait hook.sh (register, rapport-gate), groep 1 (`Bash|apply_patch`) draait
-// grenzen.sh (spoor E: de rolregels, bijvoorbeeld geen schrijven in de hoofdcheckout). Beide via codex-wrap.sh, dat de
-// identiteit van de sessie in hun omgeving zet. `spawn.sh --vendor codex` weigert te starten zonder de grenzen-groep én
-// zijn trusted_hash (hooks/codex-controle.ts): zonder die hook zouden de rolregels stil niet gelden.
+// Optionele eventregistratie en peerroutering voor Codex.
+// Schrijft alleen op expliciet verzoek het eigen hookblok en kopieën; geen governancehook,
+// geen rolbeleid en geen automatische hooktrust. Bevestig native hooktrust zelf in Codex.
+// Gebruik: codex-installeer.ts [--droog] [--verwijder] [--codex-home <map>] [--doel <map>]
 
 import { chmodSync, copyFileSync, existsSync, mkdirSync, readFileSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
-import { type AppServer, type HookInfo, startAppServer } from "./codex-appserver";
 import { kiesBun } from "../installeer-hooks";
 import { peersKopieen } from "./peers-kopie";
 
 export const START = "# >>> lab-peerbus hooks (beheerd door codex-installeer.ts; niet met de hand wijzigen) >>>";
 export const EINDE = "# <<< lab-peerbus hooks <<<";
 export const MERK = "lab-lead-hooks/codex-wrap.sh";
-export const BESTANDEN = ["hook.sh", "hook.ts", "register.ts", "codex-adapter.ts", "codex-wrap.sh", "codex-wrap.ts", "grenzen.sh"];
-export const GRENZEN_MERK = "lab-lead-hooks/grenzen.sh";
-export const GRENZEN_MATCHER = "Bash|apply_patch";
+export const BESTANDEN = ["hook.sh", "hook.ts", "register.ts", "codex-adapter.ts", "codex-wrap.sh", "codex-wrap.ts"];
 const TOOLS = "WebFetch|WebSearch|mcp__.*|Bash|apply_patch";
 
 type EventSpec = { event: string; matcher?: string; timeout: number; script?: string };
@@ -44,7 +20,6 @@ export const EVENTS: EventSpec[] = [
   { event: "SessionStart", timeout: 5 },
   { event: "UserPromptSubmit", timeout: 5 },
   { event: "PreToolUse", matcher: ".*", timeout: 5 },
-  { event: "PreToolUse", matcher: GRENZEN_MATCHER, timeout: 10, script: "grenzen.sh" },
   { event: "PostToolUse", matcher: TOOLS, timeout: 5 },
   { event: "Stop", timeout: 5 },
   { event: "SessionEnd", timeout: 2 },
@@ -52,7 +27,6 @@ export const EVENTS: EventSpec[] = [
 
 export type Opties = { droog: boolean; verwijder: boolean; codexHome: string; doel: string; bun: string; codex: string; bron: string };
 export type Uitslag = { code: number; stdout: string; stderr: string };
-export type Deps = { start?: (codex: string, home: string, cwd: string) => Promise<AppServer> };
 
 const shq = (s: string) => (/^[A-Za-z0-9_/.:@+=-]+$/.test(s) ? s : `'${s.replaceAll("'", `'\\''`)}'`);
 
@@ -101,9 +75,6 @@ export function blokIn(tekst: string): string | null {
   return a >= 0 && b >= 0 ? tekst.slice(a, b + EINDE.length) : null;
 }
 
-const eigenHook = (h: HookInfo) => typeof h.command === "string" && h.command.includes(MERK);
-const nietVertrouwd = (h: HookInfo) => h.trustStatus !== "trusted" && h.trustStatus !== "managed";
-
 function schrijfAtomair(pad: string, inhoud: string, modus: number): void {
   const echt = existsSync(pad) ? realpathSync(pad) : pad;
   const tmp = `${echt}.${process.pid}.tmp`;
@@ -116,7 +87,7 @@ function schrijfAtomair(pad: string, inhoud: string, modus: number): void {
   }
 }
 
-export async function installeer(o: Opties, deps: Deps = {}): Promise<Uitslag> {
+export async function installeer(o: Opties): Promise<Uitslag> {
   const cfg = join(o.codexHome, "config.toml");
   const backup = `${cfg}.voor-peerbus`;
   const uit: string[] = [];
@@ -141,7 +112,7 @@ export async function installeer(o: Opties, deps: Deps = {}): Promise<Uitslag> {
   }
   uit.push(`${dr}backup: ${existsSync(backup) ? `${backup} bestaat al en blijft staan` : existsSync(cfg) ? `${backup} wordt gemaakt vóór de eerste wijziging` : "geen (er is nog geen config.toml)"}`);
   if (o.droog) {
-    uit.push("droog: daarna vraagt de installer `codex app-server` de hooks (hooks/list) en legt de hash van elke eigen hook vast (config/value/write op hooks.state)", "droog: er is niets geschreven");
+    uit.push("droog: native hooktrust wordt niet gewijzigd", "droog: er is niets geschreven");
     return { code: 0, stdout: `${uit.join("\n")}\n`, stderr: "" };
   }
 
@@ -170,31 +141,7 @@ export async function installeer(o: Opties, deps: Deps = {}): Promise<Uitslag> {
   }
   if (o.verwijder) return { code: 0, stdout: `${uit.join("\n")}\n`, stderr: "" };
 
-  // Vertrouwen: hashes door Codex zelf laten berekenen en vastleggen.
-  const start = deps.start ?? ((c, h, w) => startAppServer(c, h, w));
-  let server: AppServer;
-  try {
-    server = await start(o.codex, o.codexHome, o.codexHome);
-  } catch (e) {
-    return fout(`codex app-server startte niet (${(e as Error).message}). De hooks staan in ${cfg} maar zijn nog niet vertrouwd; draai de installer opnieuw als codex werkt.`);
-  }
-  try {
-    const eigen = (await server.hooks(o.codexHome)).filter(eigenHook);
-    if (eigen.length !== EVENTS.length) return fout(`Codex ziet ${eigen.length} eigen hooks, verwacht ${EVENTS.length}; controleer ${cfg}`);
-    const open = eigen.filter(nietVertrouwd);
-    if (open.length > 0) {
-      maakBackup();
-      await server.vertrouw(Object.fromEntries(open.map((h) => [h.key, h.currentHash])));
-      uit.push(`vertrouwd: ${open.length} hook(s): ${open.map((h) => h.eventName).join(", ")}`);
-    } else uit.push("vertrouwen: alle eigen hooks waren al vertrouwd");
-    const controle = (await server.hooks(o.codexHome)).filter(eigenHook).filter(nietVertrouwd);
-    if (controle.length > 0) return fout(`na het vastleggen zijn nog niet vertrouwd: ${controle.map((h) => `${h.eventName} (${h.trustStatus})`).join(", ")}`);
-    uit.push(`klaar: ${EVENTS.length} hooks vertrouwd in ${cfg}`);
-  } catch (e) {
-    return fout((e as Error).message);
-  } finally {
-    server.sluit();
-  }
+  uit.push("klaar: optionele hooks geschreven; native hooktrust blijft bij de gebruiker");
   return { code: 0, stdout: `${uit.join("\n")}\n`, stderr: "" };
 }
 

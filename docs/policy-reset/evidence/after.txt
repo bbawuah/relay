@@ -1,0 +1,17 @@
+source SHA: 9550c094af8db00cb8b2518c3f09cd3a30e75af8
+capture: actual stdout from disposable fixture; synthetic names/text only
+routing: alice and bob have different leads; role=agent; no inbound override
+send alice -> bob: {"ok":true,"id":"018bcfe5-6800-71c7-92fe-fb50231612af","status":"afgeleverd","gewekt":{"gewekt":false,"route":"geen"}}
+read bob: unread=1, held=0
+ack bob: unread=0
+reply bob -> alice: {"ok":true,"id":"018bcfe5-6800-71c8-9edd-07216e0001a4","status":"afgeleverd","gewekt":{"gewekt":false,"route":"geen"}}
+read alice: unread=1, hop=2
+ack alice: unread=0
+recovery: one historical fixture; caller owns mailbox; LAB_AGENT_ROL=agent
+$ cli.ts vrijgeven recovery-target 018bcfe5-6800-7000-8000-000000000001 [attempt 1]
+exit=0: 1 bericht vrijgegeven aan recovery-target.
+$ cli.ts vrijgeven recovery-target 018bcfe5-6800-7000-8000-000000000001 [attempt 2]
+exit=0: 0 berichten vrijgegeven aan recovery-target.
+recovery counts: held=0, unread=1
+hook probe: evaluate synthetic JSON only; the tmux command is never executed
+retired hook exit=0, stdout bytes=0, stderr=(empty)
