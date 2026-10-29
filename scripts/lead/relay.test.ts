@@ -67,6 +67,21 @@ describe("relay", () => {
     expect(n.aanroepen[0]!.argv).toEqual(["bash", path.join(root, "scripts/lead/lead-codex.sh"), "werk door"]);
   });
 
+  test("codex zonder -l opent dezelfde lead-starter, met optionele prompt", async () => {
+    const n = opnemer(); const root = nepRoot();
+    expect(await draai(["codex"], { root, uitvoer: n.run })).toBe(0);
+    expect(n.aanroepen[0]!.argv).toEqual(["bash", path.join(root, "scripts/lead/lead-codex.sh")]);
+    expect(await draai(["codex", "onderzoek dit"], { root, uitvoer: n.run })).toBe(0);
+    expect(n.aanroepen[1]!.argv).toEqual(["bash", path.join(root, "scripts/lead/lead-codex.sh"), "onderzoek dit"]);
+  });
+
+  test("codex zonder -l houdt vlaggen en meerdere promptdelen tegen", async () => {
+    const n = opnemer(); const root = nepRoot();
+    expect(await draai(["codex", "eerste", "tweede"], { root, uitvoer: n.run })).toBe(2);
+    expect(await draai(["codex", "--netwerk"], { root, uitvoer: n.run })).toBe(2);
+    expect(n.aanroepen).toHaveLength(0);
+  });
+
   test("claude -l volgt de gedocumenteerde lead-startregel", async () => {
     const n = opnemer(); const oudNaam = process.env.LAB_AGENT_NAAM; const oudLead = process.env.LAB_LEAD_NAAM;
     process.env.LAB_AGENT_NAAM = process.env.LAB_LEAD_NAAM = "lead-relay";

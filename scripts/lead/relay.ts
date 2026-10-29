@@ -11,7 +11,8 @@ type Opties = { root?: string; cwd?: string; uitvoer?: Uitvoerder };
 
 const gebruik = `Gebruik:
   relay claude -l
-  relay codex -l [prompt]
+  relay codex [prompt]
+  relay codex -l [prompt]       # compatibele alias
   relay claude|codex -w <naam> <opdracht> [--map <map>]
   relay ls
   relay send <naam> <tekst>
@@ -72,15 +73,19 @@ export async function draai(args: string[], opties: Opties = {}): Promise<number
   }
 
   if (vendorOfOpdracht === "claude" || vendorOfOpdracht === "codex") {
+    // Codex is de natuurlijke standaard van Relay: geen vlag en geen vooraf
+    // geschreven opdrachtbestand zijn nodig om een lead-sessie te openen.
+    // Houd `-l` als leesbare, achterwaarts compatibele alias.
+    if (vendorOfOpdracht === "codex" && vorm !== "-w") {
+      const prompt = vorm === "-l" ? rest : args.slice(1);
+      if (prompt.length > 1 || prompt[0]?.startsWith("-")) return fout("codex staat hoogstens één gewone prompt toe");
+      return voerUit(["bash", codexLead, ...prompt]);
+    }
     if (vorm === "-w") {
       const werk = werkerArgs(vendorOfOpdracht, rest);
       return typeof werk === "string" ? fout(werk) : voerUit(["bash", spawn, ...werk]);
     }
     if (vorm !== "-l") return fout(`${vendorOfOpdracht} verwacht -l of -w\n${gebruik}`);
-    if (vendorOfOpdracht === "codex") {
-      if (rest.length > 1 || rest[0]?.startsWith("-")) return fout("codex -l staat hoogstens één gewone prompt toe");
-      return voerUit(["bash", codexLead, ...rest]);
-    }
     // De Claude-lead heeft nog geen starter-script. Dit is precies de gedocumenteerde
     // startregel (README.md), zonder extra policy of tmux-route toe te voegen.
     if (rest.length) return fout("claude -l neemt geen extra argumenten");
