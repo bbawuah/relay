@@ -90,6 +90,10 @@ export async function main(argv: string[], input: Environment = process.env): Pr
   if (command === "--version" || command === "-v") { console.log(VERSION); return 0; }
   if (command === "mcp") {
     if (args.length) throw new Error("mcp takes no arguments; use global --name and --state before mcp");
+    if (env.RELAY_NAME) {
+      if (!geldigeNaam(env.RELAY_NAME)) throw new Error("MCP --name / RELAY_NAME must be a valid session name");
+      env.RELAY_MCP_NAME = env.RELAY_NAME;
+    }
     return child("scripts/lead/peers/server.ts", []);
   }
   if (command === "status") {
