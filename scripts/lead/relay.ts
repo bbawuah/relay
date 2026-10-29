@@ -63,7 +63,7 @@ export async function draai(args: string[], opties: Opties = {}): Promise<number
   const voerUit = (argv: string[], env?: Record<string, string | undefined>) => run(argv, cwd, kindOmgeving(env));
   const [vendorOfOpdracht, vorm, ...rest] = args;
   const spawn = pad(root, "scripts/lead/spawn.sh");
-  const codexLead = pad(root, "scripts/lead/lead-codex.sh");
+  const codexLead = pad(root, "scripts/lead/lead-codex-auto.sh");
   const peers = pad(root, "scripts/lead/peers/cli.ts");
   const status = pad(root, "scripts/lead/status.sh");
 

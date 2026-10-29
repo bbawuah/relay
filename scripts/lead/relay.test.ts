@@ -41,7 +41,7 @@ function nepRepo() {
   cpSync(path.join(import.meta.dir, "relay.ts"), path.join(root, "scripts/lead/relay.ts"));
   const shell = "#!/bin/sh\nprintf '%s:%s\\n' \"$(basename \"$0\")\" \"$*\" >>\"$RELAY_LOG\"\nexit \"${RELAY_EXIT:-0}\"\n";
   schrijfUitvoerbaar(path.join(root, "scripts/lead/spawn.sh"), shell);
-  schrijfUitvoerbaar(path.join(root, "scripts/lead/lead-codex.sh"), shell);
+  schrijfUitvoerbaar(path.join(root, "scripts/lead/lead-codex-auto.sh"), shell);
   schrijfUitvoerbaar(path.join(root, "scripts/lead/status.sh"), shell);
   writeFileSync(path.join(root, "scripts/lead/peers/cli.ts"), 'import { appendFileSync } from "node:fs"; appendFileSync(process.env.RELAY_LOG!, `cli.ts:${process.argv.slice(2).join(" ")}\\n`); process.exit(Number(process.env.RELAY_EXIT ?? 0));\n');
   const bin = path.join(root, "bin"); mkdirSync(bin);
@@ -64,15 +64,15 @@ describe("relay", () => {
   test("codex -l geeft de bestaande starter ongewijzigd door", async () => {
     const n = opnemer(17); const root = nepRoot();
     expect(await draai(["codex", "-l", "werk door"], { root, uitvoer: n.run })).toBe(17);
-    expect(n.aanroepen[0]!.argv).toEqual(["bash", path.join(root, "scripts/lead/lead-codex.sh"), "werk door"]);
+    expect(n.aanroepen[0]!.argv).toEqual(["bash", path.join(root, "scripts/lead/lead-codex-auto.sh"), "werk door"]);
   });
 
   test("codex zonder -l opent dezelfde lead-starter, met optionele prompt", async () => {
     const n = opnemer(); const root = nepRoot();
     expect(await draai(["codex"], { root, uitvoer: n.run })).toBe(0);
-    expect(n.aanroepen[0]!.argv).toEqual(["bash", path.join(root, "scripts/lead/lead-codex.sh")]);
+    expect(n.aanroepen[0]!.argv).toEqual(["bash", path.join(root, "scripts/lead/lead-codex-auto.sh")]);
     expect(await draai(["codex", "onderzoek dit"], { root, uitvoer: n.run })).toBe(0);
-    expect(n.aanroepen[1]!.argv).toEqual(["bash", path.join(root, "scripts/lead/lead-codex.sh"), "onderzoek dit"]);
+    expect(n.aanroepen[1]!.argv).toEqual(["bash", path.join(root, "scripts/lead/lead-codex-auto.sh"), "onderzoek dit"]);
   });
 
   test("codex zonder -l houdt vlaggen en meerdere promptdelen tegen", async () => {
@@ -150,7 +150,7 @@ describe("relay", () => {
     expect(echteRelay(n.root, ["status"], n.env).code).toBe(0);
     expect(echteRelay(n.root, ["codex", "-w", "w1", "taak.md"], { ...n.env, RELAY_EXIT: "7" }).code).toBe(7);
     const regels = readFileSync(n.log, "utf8").trim().split("\n");
-    expect(regels).toContain("lead-codex.sh:prompt");
+    expect(regels).toContain("lead-codex-auto.sh:prompt");
     expect(regels).toContain("claude:-n lead-relay");
     expect(regels).toContain("spawn.sh:--vendor claude --naam w1 --opdracht taak.md --map werk");
     expect(regels).toContain("cli.ts:send w1 bericht");

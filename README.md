@@ -23,7 +23,9 @@ projectspecificieke checks en regels horen daar, niet in deze repository.
 
 ## Codex starten
 
-De korte vorm opent een gecontroleerde Codex-lead; een taak is optioneel:
+De korte vorm opent een gecontroleerde Codex-lead; een taak is optioneel. Vanuit
+de hoofdcheckout maakt Relay een sibling-worktree `<repo>-codex-lead` op
+`lead/codex`; vanuit een linked worktree gebruikt hij die direct.
 
 ```sh
 relay codex
