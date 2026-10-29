@@ -7,7 +7,7 @@ Sources for the four-pane replay: four terminal panes in one tmux window, driven
 | `run.sh` | Builds the private environment and the owned tmux server, runs the three sequenced native sessions, captures the panes. `--preview` runs no model. |
 | `setup.sh` | Isolated Relay install (private prefix and HOME), new namespace and state, four manually registered peers, per-agent wrappers, the two child-start helpers. |
 | `as.ts` | Fixed-peer wrapper: `--peer`, state and namespace are fixed per agent; only `send`, `inbox`, `ack`, `list` are accepted. Logs each call and prints an alias-only view into the agent's pane. |
-| `launch.sh`, `pane-wait.sh` | Bounded launcher: starts one native CLI process in a pane (240 s deadline), prints its status and exit. Prompts for every session are in `launch.sh`. |
+| `launch.sh`, `pane-wait.sh`, `supervise.py` | Bounded launcher: starts one native CLI process in a pane through a small supervisor (own session/process group, hard 240 s deadline, TERM then KILL of that exact group, handles INT/TERM/HUP), prints its status and exit, and writes the exit code to a marker. Prompts for every session are in `launch.sh`. |
 | `capture.ts` | `tmux capture-pane -p -e` of the four panes of the owned socket whenever something changed. |
 | `to-cast.ts`, `render.sh`, `../render-panes.swift` | Sanitised cast and transcript, then a faithful 2x2 render of the captured panes into PNG frames and a GIF. |
 
@@ -18,7 +18,15 @@ docs/demos/terminal/run.sh --preview   # no model: layout check
 docs/demos/terminal/run.sh             # full run; refuses to start if the CLAUDECODE marker is present
 ```
 
-Run from a normal terminal. The full run is fail-closed: if `CLAUDECODE` is present in the environment it exits (status 3) before any model starts. Nothing is unset or overridden, and no approval or sandbox bypass is used. Everything lives in a fresh `/private/tmp/relay-h6run.*` directory; the tmux server uses its own socket there, with the default config disabled and `TMUX`/`TMUX_PANE` cleared for the tmux client.
+Run from a normal terminal. The runner stops at the first problem: a missing or non-zero exit marker, a parent that exits without asking for its child, or a child that never starts ends the run, stops the capture, the owned tmux server and the supervisors. The full run is fail-closed: if `CLAUDECODE` is present in the environment it exits (status 3) before any model starts. Nothing is unset or overridden, and no approval or sandbox bypass is used. Everything lives in a fresh `/private/tmp/relay-h6run.*` directory; the tmux server uses its own socket there, with the default config disabled and `TMUX`/`TMUX_PANE` cleared for the tmux client.
+
+## Layout
+
+One tmux window of 93x42 characters holds four panes of exactly 46x20 (checked by `run.sh`; the title sits on the pane border). The renderer draws the same 46 columns and 20 rows at 22 pt, so the capture is wrapped by tmux at the real width, not cropped afterwards. The source frame is 1274 px wide, about 12 px text at GitHub's 728 px width; phones need the full-size image and transcript.
+
+## Models and effort
+
+Models: Claude `--model sonnet` (native alias), Codex `-m gpt-6.1-sol`. Reasoning effort is the native default of each CLI; `--effort low` is passed to Claude only because the option exists in its help. Codex effort is reported only if its own CLI header prints it. Resolved model names are shown only when the CLI's own output reports them, else "not reported".
 
 ## Process creation versus Relay
 

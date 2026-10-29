@@ -13,8 +13,8 @@ const scrub = (s: string) => s.split(dir).join("<demo>");
 const titles = ["Claude parent · claude-parent", "Codex parent · codex-parent", "Claude subagent · claude-sub", "Codex subagent · codex-sub"];
 const preview = flag === "--preview";
 const banner = preview
-  ? "PREVIEW · captured tmux panes · no model run yet · four panes in one tmux window"
-  : "REPLAY of captured terminal panes · real native CLIs in one tmux window · waits shortened · panes show process status + Relay calls";
+  ? "PREVIEW · captured tmux panes · no model run yet · four panes, one tmux window"
+  : "REPLAY of captured terminal panes · real native CLIs, one tmux window · waits shortened";
 const pretty = (e: any) => {
   if (e.kind === "process" && e.what === "start") return `SHELL · process creation: ${e.role} started by ${e.by} (not Relay)`;
   if (e.kind === "process" && e.what === "child-request") return `SHELL · ${e.by} asked the shell to start its own helper process in its pane (not Relay)`;

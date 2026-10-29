@@ -1,5 +1,6 @@
 // Renders a cast of captured tmux panes (2x2) into PNG frames plus an ffconcat list.
 // Input JSONL, one frame per line:
+// (82-column note removed) pane geometry is COLS x ROWS and must equal the tmux pane size.
 //   {"dur": 1.2, "banner": "...", "caption": "...", "panes": [{"title": "...", "ansi": "captured text with SGR escapes"}, ... x4]}
 // Pane order: top-left, top-right, bottom-left, bottom-right.
 // Usage: swiftc -O render-panes.swift -o render-panes && ./render-panes CAST.jsonl OUTDIR
@@ -9,7 +10,8 @@ import CoreText
 import ImageIO
 import UniformTypeIdentifiers
 
-let COLS = 82, ROWS = 22, FS: CGFloat = 13.5, LH = 17, TITLE = 26, GAP = 8, HEAD = 40, FOOT = 56, PADX = 8
+// Real tmux pane geometry: 46 columns x 20 rows per pane (window 93x42 with top pane-border titles). 22 pt Menlo keeps text ~12 px at GitHub's 728 px width.
+let COLS = 46, ROWS = 20, FS: CGFloat = 22, LH = 27, TITLE = 34, GAP = 8, HEAD = 72, FOOT = 72, PADX = 8, BANNER_WRAP = 96
 let font = CTFontCreateWithName("Menlo" as CFString, FS, nil)
 let fontB = CTFontCreateWithName("Menlo-Bold" as CFString, FS, nil)
 let cw = CTFontGetAdvancesForGlyphs(font, .horizontal, [CTFontGetGlyphWithName(font, "M" as CFString)], nil, 1)
@@ -82,17 +84,19 @@ func wrapText(_ s: String, _ n: Int) -> [String] {
 }
 func render(_ f: [String: Any], _ path: String) {
   let g = ctx(); fillR(g, bg, CGRect(x: 0, y: 0, width: W, height: H))
-  text(g, (f["banner"] as? String) ?? "", x: 12, yTop: 11, color: amber, bold: true, size: 15)
+  for (i, row) in wrapText((f["banner"] as? String) ?? "", BANNER_WRAP).prefix(2).enumerated() { text(g, row, x: 12, yTop: CGFloat(10 + i * 27), color: amber, bold: true, size: 20) }
   let panes = f["panes"] as! [[String: Any]]
   for (idx, p) in panes.enumerated() {
     let x0 = GAP + (idx % 2) * (paneW + GAP), y0 = HEAD + GAP + (idx / 2) * (paneH + GAP)
     fillR(g, panebg, CGRect(x: x0, y: H - y0 - paneH, width: paneW, height: paneH))
     fillR(g, bar, CGRect(x: x0, y: H - y0 - TITLE, width: paneW, height: TITLE))
-    text(g, (p["title"] as? String) ?? "", x: CGFloat(x0 + PADX), yTop: CGFloat(y0 + 6), color: fgDef, bold: true, size: 13)
+    text(g, (p["title"] as? String) ?? "", x: CGFloat(x0 + PADX), yTop: CGFloat(y0 + 8), color: fgDef, bold: true, size: 20)
     let lines = ((p["ansi"] as? String) ?? "").split(separator: "\n", omittingEmptySubsequences: false).map(String.init)
     for (r, line) in lines.prefix(ROWS).enumerated() {
       var col = 0
-      for (ch, st) in parse(line) {
+      let cells = parse(line)
+      if cells.count > COLS { FileHandle.standardError.write("warning: pane line wider than \(COLS) columns (capture does not match the layout)\n".data(using: .utf8)!) }
+      for (ch, st) in cells {
         let x = CGFloat(x0 + PADX) + CGFloat(col) * cw, yT = CGFloat(y0 + TITLE + 3 + r * LH)
         var fgc = st.fg ?? fgDef, bgc = st.bg
         if st.rev { let t = fgc; fgc = bgc ?? panebg; bgc = t }
@@ -106,7 +110,7 @@ func render(_ f: [String: Any], _ path: String) {
     }
   }
   fillR(g, bar, CGRect(x: 0, y: 0, width: W, height: FOOT))
-  for (i, row) in wrapText((f["caption"] as? String) ?? "", 130).prefix(2).enumerated() { text(g, row, x: 12, yTop: CGFloat(H - FOOT + 9 + i * 20), color: fgDef, bold: true, size: 15) }
+  for (i, row) in wrapText((f["caption"] as? String) ?? "", BANNER_WRAP).prefix(2).enumerated() { text(g, row, x: 12, yTop: CGFloat(H - FOOT + 9 + i * 28), color: fgDef, bold: true, size: 20) }
   let url = URL(fileURLWithPath: path) as CFURL
   let d = CGImageDestinationCreateWithURL(url, UTType.png.identifier as CFString, 1, nil)!
   CGImageDestinationAddImage(d, g.makeImage()!, nil); CGImageDestinationFinalize(d)

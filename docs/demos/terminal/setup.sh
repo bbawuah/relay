@@ -23,6 +23,8 @@ PY
 mkhelper() { # kind parent
   cat > "$D/bin/start-$1-child" <<HELPER
 #!/bin/sh
+[ \$# -eq 0 ] || { echo "start-$1-child takes no arguments" >&2; exit 2; }
+touch "$D/proof/child-requested-$1-sub"
 printf 'main $2\n' > "$D/proof/start-$1-sub.tmp" && mv "$D/proof/start-$1-sub.tmp" "$D/proof/start-$1-sub"
 perl -MTime::HiRes=time -e 'printf qq({"t":%d,"kind":"process","what":"child-request","by":"$2","role":"$1-sub"}\n), time*1000' >> "$D/proof/events.jsonl"
 HELPER
