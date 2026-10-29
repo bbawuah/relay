@@ -26,7 +26,7 @@
 
 import type { Bus } from "../peers/types";
 import { type Bron, PEERS_SEND, herkomstNa, leesBron, peerVelden, sendAfgeleverd } from "./codex-adapter";
-import { type Omgeving, type Rec, type Toestand, dubbeleLeads, eigenLeadNaam, inboxGrootte, inboxMelding, leesOfMaak, leesRecord, lopendeSubagents, isKindProces, meldAdres, nieuwRecord, pakOngelezen, regelsTekst, schrijfRecord, staatMap, tmuxPanes, voorgangerInPane, ververseIdentiteit, wisExternMarkering, wisIdentiteit, zetToestand } from "./register";
+import { type Omgeving, type Rec, type Toestand, dubbeleLeads, eigenLeadNaam, inboxGrootte, inboxMelding, leesOfMaak, leesRecord, logIdentiteitOnderhoudFout, lopendeSubagents, isKindProces, meldAdres, nieuwRecord, pakOngelezen, regelsTekst, schrijfRecord, staatMap, tmuxPanes, voorgangerInPane, ververseIdentiteit, wisExternMarkering, wisIdentiteit, zetToestand } from "./register";
 
 export type Uitslag = { code: number; stdout: string; stderr: string };
 export type Opties = {
@@ -58,6 +58,16 @@ const LEEG: Uitslag = { code: 0, stdout: "", stderr: "" };
 
 type Invoer = { [k: string]: unknown };
 const tekst = (v: unknown): string => (typeof v === "string" ? v : "");
+
+/** Optional identity upkeep must never cancel state, peer notices or idle. */
+function identiteitOnderhoud(state: string, spawnId: string, action: () => void): void {
+  try { action(); }
+  catch (error) {
+    const message = (error as Error).message;
+    console.error(`relay hooks: identity maintenance failed: ${message}`);
+    logIdentiteitOnderhoudFout(state, spawnId, message);
+  }
+}
 
 /**
  * Pane-metadata hoort bij de sessie, niet bij spawn.sh: ook een handmatig
@@ -269,7 +279,7 @@ export async function verwerk(event: string, invoer: Invoer, env: Omgeving, opti
     }
     case "UserPromptSubmit": {
       // H2
-      ververseIdentiteit(staat, cwd, env.LAB_SPAWN_ID || "", t);
+      identiteitOnderhoud(staat, env.LAB_SPAWN_ID || "", () => ververseIdentiteit(staat, cwd, env.LAB_SPAWN_ID || "", t));
       const r = laad();
       zetToestand(r, "bezig", t);
       r.tools_in_beurt = 0;
@@ -351,7 +361,7 @@ export async function verwerk(event: string, invoer: Invoer, env: Omgeving, opti
       return LEEG;
     }
     case "Stop":
-      ververseIdentiteit(staat, cwd, env.LAB_SPAWN_ID || "", t);
+      identiteitOnderhoud(staat, env.LAB_SPAWN_ID || "", () => ververseIdentiteit(staat, cwd, env.LAB_SPAWN_ID || "", t));
       return stop(staat, laad(), invoer, isLead, lead, naamVan, t, peers, bron, opties);
     case "StopFailure": {
       // H8
@@ -387,8 +397,8 @@ export async function verwerk(event: string, invoer: Invoer, env: Omgeving, opti
       schrijfRecord(staat, r);
       wisPaneVendor(env, sessieId, opties);
       // De identiteit van deze spawn (codex-wrap) is niet meer nodig; een nieuwe spawn in dezelfde checkout blijft staan.
-      wisIdentiteit(staat, cwd, env.LAB_SPAWN_ID || "", t);
       await idleGemeld(bus, naamVan(r), "weg", IDLE_BUDGET_EINDE_MS, opties);
+      identiteitOnderhoud(staat, env.LAB_SPAWN_ID || "", () => wisIdentiteit(staat, cwd, env.LAB_SPAWN_ID || "", t));
       return LEEG;
     }
     default:

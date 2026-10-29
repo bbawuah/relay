@@ -15,7 +15,7 @@ import { deleteLaunchLease, launcherOwner, launchLeases, ownerStatus, saveLaunch
 
 const ROOT = resolve(import.meta.dir, "..");
 
-export function launchPlan(vendor: "claude" | "codex", args: string[], input: Environment) {
+export function launchPlan(vendor: "claude" | "codex", args: string[], input: Environment, runtimeBun?: string) {
   let env = environment(input);
   let name = env.LAB_AGENT_NAAM || "";
   let lead = env.LAB_LEAD_NAAM || "";
@@ -42,7 +42,7 @@ export function launchPlan(vendor: "claude" | "codex", args: string[], input: En
     if (reserved.some((flag) => flag.startsWith("--") ? arg === flag || arg.startsWith(`${flag}=`) : arg.startsWith(flag))) throw new Error("pass directory/model through Relay options; settings that replace Relay hooks or identity cannot be passed after --");
   }
   cwd = realpathSync(cwd);
-  const bun = kiesBun((name) => Bun.which(name, { PATH: env.PATH ?? process.env.PATH ?? "" }));
+  const bun = runtimeBun ?? kiesBun((name) => Bun.which(name, { PATH: env.PATH ?? process.env.PATH ?? "" }));
   env = { ...env, LAB_AGENT_NAAM: name, LAB_LEAD_NAAM: lead, LAB_AGENT_ROL: "agent", LAB_LEAD_BUN: bun, LAB_SPAWN_ID: crypto.randomUUID() };
   // A parent's RELAY_* identity must not override this launch in its MCP subprocess.
   delete env.RELAY_NAME;
@@ -53,6 +53,7 @@ export function launchPlan(vendor: "claude" | "codex", args: string[], input: En
   // Explicit values override stale aliases inherited from a shared daemon.
   mcpEnv.RELAY_STATE_DIR = env.LAB_LEAD_STAAT!;
   for (const key of ["RELAY_NAME", "RELAY_LEAD", "RELAY_ROLE", "RELAY_MCP_NAME"]) mcpEnv[key] = "";
+  for (const key of ["BUN_OPTIONS", "NODE_OPTIONS"]) mcpEnv[key] = "";
   // Codex can restart MCP after its launcher dies. Resolve its identity from the
   // live checkout owner, rather than falling back to the inherited TUI identity.
   if (vendor === "codex") for (const key of ["LAB_AGENT_NAAM", "LAB_LEAD_NAAM", "LAB_AGENT_ROL"]) mcpEnv[key] = "";
@@ -60,7 +61,7 @@ export function launchPlan(vendor: "claude" | "codex", args: string[], input: En
   const server = { command: bun, args: bunArgs(join(ROOT, "bin/relay.ts"), ["mcp"]), env: mcpEnv };
   const argv: string[] = [vendor];
   if (vendor === "claude") {
-    const generated = genereer(beleid, "claude", { doel: join(ROOT, "scripts/lead/hooks"), bun: process.execPath, staat: env.LAB_LEAD_STAAT, metWekker: false, verwijder: false, settings: "", bestaand: {} });
+    const generated = genereer(beleid, "claude", { doel: join(ROOT, "scripts/lead/hooks"), bun, staat: env.LAB_LEAD_STAAT, metWekker: false, verwijder: false, settings: "", bestaand: {} });
     argv.push("-n", name, "--settings", generated.bestanden[0]!.inhoud, "--mcp-config", JSON.stringify({ mcpServers: { peers: server } }));
     if (model) argv.push("--model", model);
   } else {
@@ -75,10 +76,24 @@ export function launchPlan(vendor: "claude" | "codex", args: string[], input: En
   return { argv: [...argv, ...extra], env, cwd, name, vendor };
 }
 
+export function verifiedBun(input: Environment): string {
+  const env = environment(input);
+  const preferred = kiesBun((name) => Bun.which(name, { PATH: env.PATH ?? "" }));
+  for (const bun of new Set([preferred, process.execPath])) {
+    try {
+      const result = Bun.spawnSync([bun, ...bunArgs("--version")], { cwd: ROOT, env: { HOME: env.HOME, PATH: "/usr/bin:/bin", BUN_OPTIONS: "", NODE_OPTIONS: "" }, stdout: "pipe", stderr: "pipe", timeout: 1000 });
+      const version = /^(\d+)\.(\d+)\.(\d+)(?:[-+].*)?$/.exec(result.stdout.toString().trim());
+      if (result.exitCode === 0 && version && (Number(version[1]) > 1 || (Number(version[1]) === 1 && (Number(version[2]) > 4 || (Number(version[2]) === 4 && Number(version[3]) >= 2))))) return bun;
+    } catch { /* Try the running, trusted runtime before reporting incompatibility. */ }
+  }
+  throw new Error("Relay launch requires Bun >= 1.4.2; neither PATH Bun nor the running Bun is compatible");
+}
+
 export async function launch(vendor: "claude" | "codex", args: string[], input: Environment): Promise<number> {
-  const plan = launchPlan(vendor, args, input);
+  const plan = launchPlan(vendor, args, input, verifiedBun(input));
   const state = staatMap(plan.env);
-  if (!Bun.which(vendor)) throw new Error(`${vendor} is not installed; install and authenticate its CLI first`);
+  const executable = Bun.which(vendor, { PATH: plan.env.PATH ?? "" });
+  if (!executable) throw new Error(`${vendor} is not installed; install and authenticate its CLI first`);
   if (vendor === "codex") {
     const config = join(plan.env.CODEX_HOME!, "config.toml");
     if (!existsSync(config) || !blokIn(readFileSync(config, "utf8"))) throw new Error("Codex hooks are not configured. Run relay setup codex --dry-run, then relay setup codex.");
@@ -115,7 +130,7 @@ export async function launch(vendor: "claude" | "codex", args: string[], input: 
   process.on("SIGTERM", terminate);
   process.on("SIGHUP", hangup);
   try {
-    p = Bun.spawn(plan.argv, { cwd: plan.cwd, env: plan.env, stdin: "inherit", stdout: "inherit", stderr: "inherit" });
+    p = Bun.spawn([plan.env.LAB_LEAD_BUN!, ...bunArgs(join(ROOT, "src/session-child.ts"), [JSON.stringify({ state, lease: { spawn, name: plan.name, cwd: plan.cwd, vendor, owner }, argv: [executable, ...plan.argv.slice(1)] })])], { cwd: plan.cwd, env: plan.env, stdin: "inherit", stdout: "inherit", stderr: "inherit" });
     return await p.exited;
   } finally {
     process.off("SIGINT", interrupt);
@@ -123,7 +138,9 @@ export async function launch(vendor: "claude" | "codex", args: string[], input: 
     process.off("SIGHUP", hangup);
     // A CLI crash may omit SessionEnd. Retire only records from this exact launch.
     const owned = withLaunchLock(state, (db) => {
-      if (vendor === "codex") wisLauncherIdentiteit(state, plan.cwd, spawn);
+      const lease = launchLeases(db).find((lease) => lease.spawn === spawn);
+      if (lease && lease.owner.pid !== (p?.pid ?? owner.pid) && lease.owner.pid !== owner.pid) throw new Error("Relay session owner changed unexpectedly; preserving state");
+      if (vendor === "codex" && lease) wisLauncherIdentiteit(state, plan.cwd, spawn, lease.owner);
       const records = alleRecords(state).filter((record) => record.spawn_id === spawn && record.toestand !== "weg");
       for (const record of records) schrijfRecord(state, { ...record, toestand: "weg", sinds: Date.now(), einde: Date.now() });
       deleteLaunchLease(db, spawn);

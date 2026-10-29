@@ -1,11 +1,11 @@
-import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { mkdtempSync, rmSync } from "node:fs";
+import { afterEach, beforeEach, describe, expect, spyOn, test } from "bun:test";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { geenWekker, maakBus } from "../peers/bus";
 import { type Bus, MAX_WACHTRIJ, seintje } from "../peers/types";
 import { type Opties, verwerk } from "./hook";
-import { leesRecord } from "./register";
+import { identiteitPad, launcherOwner, leesIdentiteit, leesRecord, schrijfIdentiteit, withLaunchLock } from "./register";
 
 // Hooks → bus: seintje bij UserPromptSubmit en Stop, idleGemeld bij Stop en SessionEnd. Wegwerpmap, nep-klok, echte bus.
 
@@ -24,7 +24,7 @@ const reden = (stdout: string): string => JSON.parse(stdout).reason;
 const context = (stdout: string): string => JSON.parse(stdout).hookSpecificOutput.additionalContext;
 
 beforeEach(async () => {
-  dir = mkdtempSync(join(tmpdir(), "lead-hook-bus-"));
+  dir = realpathSync(mkdtempSync(join(tmpdir(), "lead-hook-bus-")));
   staat = join(dir, "staat");
   klok = T0;
   bus = maakBus({ staat, nu: () => klok, wekker: geenWekker, machine: "testmachine", wacht: async (ms) => void (klok += ms) });
@@ -35,6 +35,126 @@ beforeEach(async () => {
 afterEach(() => rmSync(dir, { recursive: true, force: true }));
 
 describe("hooks → bus", () => {
+  for (const kind of ["unmanaged", "other-spawn", "managed-corrupt", "managed-symlink"]) {
+    test(`optional identity maintenance cannot abort real core events: ${kind}`, async () => {
+      const maintenanceEnv = { ...W(), LAB_SPAWN_ID: "owned-spawn" };
+      const cwd = join(dir, "checkout");
+      mkdirSync(cwd);
+      const managed = kind.startsWith("managed-");
+      if (kind === "managed-symlink") {
+        const alias = join(dir, "alias");
+        symlinkSync(staat, alias);
+        maintenanceEnv.LAB_LEAD_STAAT = alias;
+      }
+      if (managed || kind === "other-spawn") schrijfIdentiteit(staat, cwd, {
+        naam: "w1", rol: "agent", lead: "lead-x", opdracht: "", ts: T0 - 120_000,
+        spawn_id: managed ? "owned-spawn" : "another-spawn", relay_owner: launcherOwner(),
+      });
+      const identity = managed ? readFileSync(identiteitPad(staat, cwd)) : null;
+      if (kind !== "managed-symlink") {
+        mkdirSync(join(staat, "launchers"), { mode: 0o700 });
+        writeFileSync(join(staat, "launchers/leases.sqlite"), "unknown database: preserve", { mode: 0o600 });
+      }
+      const errors = spyOn(console, "error").mockImplementation(() => {});
+      try {
+        await verwerk("Stop", inv("w1", { cwd, stop_hook_active: true }), maintenanceEnv, opt);
+        expect(leesRecord(staat, "w1")?.toestand).toBe("idle");
+        await verwerk("UserPromptSubmit", inv("w1", { cwd }), maintenanceEnv, opt);
+        expect(leesRecord(staat, "w1")?.toestand).toBe("bezig");
+        await bus.send("lead-x", "w1", "unread notice survives maintenance failure");
+        expect(reden((await verwerk("Stop", inv("w1", { cwd }), maintenanceEnv, opt)).stdout)).toBe(seintje(1));
+        expect(bus.notifyWhenIdle("lead-x", "w1").ok).toBe(true);
+        await verwerk("SessionEnd", inv("w1", { cwd }), maintenanceEnv, opt);
+        expect(leesRecord(staat, "w1")?.toestand).toBe("weg");
+        expect(bus.inbox("lead-x").some((entry) => entry.soort === "idle" && entry.tekst === "w1 is weg")).toBe(true);
+        if (managed) {
+          expect(errors).toHaveBeenCalled();
+          expect(readFileSync(identiteitPad(staat, cwd))).toEqual(identity!);
+          if (kind !== "managed-symlink") {
+            const logs = readdirSync(join(staat, "identiteit")).filter((name) => name.endsWith(".error"));
+            expect(logs).toHaveLength(1);
+            const log = join(staat, "identiteit", logs[0]!);
+            expect(JSON.parse(readFileSync(log, "utf8")).kind).toBe("relay-identity-maintenance-error-v1");
+            expect(statSync(log).mode & 0o777).toBe(0o600);
+          }
+        } else expect(errors).not.toHaveBeenCalled();
+        if (kind !== "managed-symlink") expect(readFileSync(join(staat, "launchers/leases.sqlite"), "utf8")).toBe("unknown database: preserve");
+        else expect(existsSync(join(staat, "launchers"))).toBe(false);
+      } finally { errors.mockRestore(); }
+    });
+  }
+
+  test("an unmanaged spawn creates no reservation DB for any core event", async () => {
+    const unmanaged = { ...W(), LAB_SPAWN_ID: "legacy-spawn" };
+    for (const event of ["UserPromptSubmit", "Stop", "SessionEnd"]) await verwerk(event, inv("w1"), unmanaged, opt);
+    expect(existsSync(join(staat, "launchers"))).toBe(false);
+  });
+
+  test("busy managed DB maintenance cannot consume the hook budget or cancel core events", async () => {
+    const cwd = join(dir, "checkout");
+    mkdirSync(cwd);
+    const managedEnv = { ...W(), LAB_SPAWN_ID: "managed-spawn" };
+    schrijfIdentiteit(staat, cwd, { naam: "w1", rol: "agent", lead: "lead-x", opdracht: "", spawn_id: "managed-spawn", ts: T0 - 120_000, relay_owner: launcherOwner() });
+    withLaunchLock(staat, () => {});
+    const database = join(staat, "launchers/leases.sqlite");
+    const before = readFileSync(database);
+    const ready = join(dir, "db-held"), script = join(dir, "hold-db.ts");
+    writeFileSync(script, `import { withLaunchLock } from ${JSON.stringify(join(import.meta.dir, "register.ts"))};
+import { writeFileSync } from "node:fs";
+withLaunchLock(${JSON.stringify(staat)}, () => { writeFileSync(${JSON.stringify(ready)}, "ready"); Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 5000); });`);
+    const child = Bun.spawn([process.execPath, "--config=/dev/null", "--no-env-file", script], { cwd: dir, env: { HOME: dir, PATH: "/usr/bin:/bin" }, stdin: "ignore", stdout: "pipe", stderr: "pipe" });
+    const errors = spyOn(console, "error").mockImplementation(() => {});
+    try {
+      const deadline = Date.now() + 2000;
+      while (!existsSync(ready)) { if (Date.now() > deadline) throw new Error("DB holder timed out"); await Bun.sleep(5); }
+      const started = Date.now();
+      await verwerk("UserPromptSubmit", inv("w1", { cwd }), managedEnv, opt);
+      expect(leesRecord(staat, "w1")?.toestand).toBe("bezig");
+      await bus.send("lead-x", "w1", "notice");
+      expect(reden((await verwerk("Stop", inv("w1", { cwd }), managedEnv, opt)).stdout)).toBe(seintje(1));
+      expect(bus.notifyWhenIdle("lead-x", "w1").ok).toBe(true);
+      await verwerk("SessionEnd", inv("w1", { cwd }), managedEnv, opt);
+      expect(leesRecord(staat, "w1")?.toestand).toBe("weg");
+      expect(bus.inbox("lead-x").some((entry) => entry.soort === "idle" && entry.tekst === "w1 is weg")).toBe(true);
+      expect(Date.now() - started).toBeLessThan(500);
+      expect(errors).toHaveBeenCalled();
+      expect(readFileSync(database)).toEqual(before);
+    } finally {
+      errors.mockRestore();
+      if (child.exitCode === null) child.kill("SIGKILL");
+      await child.exited;
+    }
+  });
+
+  for (const database of ["absent", "unknown"]) {
+    test(`matching legacy identity refreshes and cleans up without SQLite: ${database}`, async () => {
+      const cwd = join(dir, "legacy-checkout");
+      mkdirSync(cwd);
+      schrijfIdentiteit(staat, cwd, { naam: "w1", rol: "agent", lead: "lead-x", opdracht: "", spawn_id: "legacy-spawn", ts: T0 - 120_000 });
+      const legacyEnv = { ...W(), LAB_SPAWN_ID: "legacy-spawn" };
+      const db = join(staat, "launchers/leases.sqlite");
+      if (database === "unknown") {
+        mkdirSync(join(staat, "launchers"), { mode: 0o700 });
+        writeFileSync(db, "keep unknown DB byte identical", { mode: 0o600 });
+      }
+      const errors = spyOn(console, "error").mockImplementation(() => {});
+      try {
+        await verwerk("UserPromptSubmit", inv("w1", { cwd }), legacyEnv, opt);
+        expect(leesIdentiteit(staat, cwd, klok)?.ts).toBe(klok);
+        await bus.send("lead-x", "w1", "notice");
+        expect(reden((await verwerk("Stop", inv("w1", { cwd }), legacyEnv, opt)).stdout)).toBe(seintje(1));
+        expect(bus.notifyWhenIdle("lead-x", "w1").ok).toBe(true);
+        await verwerk("SessionEnd", inv("w1", { cwd }), legacyEnv, opt);
+        expect(existsSync(identiteitPad(staat, cwd))).toBe(false);
+        expect(leesRecord(staat, "w1")?.toestand).toBe("weg");
+        expect(bus.inbox("lead-x").some((entry) => entry.soort === "idle" && entry.tekst === "w1 is weg")).toBe(true);
+        expect(errors).not.toHaveBeenCalled();
+        if (database === "absent") expect(existsSync(join(staat, "launchers"))).toBe(false);
+        else expect(readFileSync(db, "utf8")).toBe("keep unknown DB byte identical");
+      } finally { errors.mockRestore(); }
+    });
+  }
+
   test("UserPromptSubmit zonder post: geen extra context", async () => {
     const u = await verwerk("UserPromptSubmit", inv("w1"), W(), opt);
     expect(u.stdout).toBe("");

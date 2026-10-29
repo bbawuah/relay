@@ -3,7 +3,7 @@ import { chmodSync, existsSync, linkSync, lstatSync, mkdtempSync, mkdirSync, rea
 import { Database } from "bun:sqlite";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import { launchPlan } from "../src/launch";
+import { launchPlan, verifiedBun } from "../src/launch";
 import { alleRecords, heeftIdentiteitsbestand, identiteitPad, IDENTITEIT_MAX_MS, launcherOwner, leesIdentiteit, nieuwRecord, ruimDodeLauncherIdentiteitenOp, schrijfIdentiteit, schrijfRecord, withLaunchLock } from "../scripts/lead/hooks/register";
 import { identiteitEnv } from "../scripts/lead/hooks/codex-wrap";
 import { maakBlok } from "../scripts/lead/hooks/codex-installeer";
@@ -77,6 +77,41 @@ test("Codex MCP resolves a living owner while Claude retains its per-process ide
   const claude = launchPlan("claude", ["--name", "worker", "--cwd", dir], env);
   const config = JSON.parse(claude.argv[claude.argv.indexOf("--mcp-config") + 1]!);
   expect(config.mcpServers.peers.env).toMatchObject({ LAB_AGENT_NAAM: "worker", LAB_AGENT_ROL: "agent" });
+  for (const values of [mcpEnv, config.mcpServers.peers.env]) expect(values).toMatchObject({ BUN_OPTIONS: "", NODE_OPTIONS: "" });
+});
+
+test("launch verifies Bun >= 1.4.2 outside the checkout and uses one runtime for Claude hooks and MCP", () => {
+  const bin = join(dir, "bin");
+  mkdirSync(bin);
+  const candidate = join(bin, "bun");
+  const observed = join(dir, "version-cwd");
+  writeFileSync(candidate, `#!/bin/sh\npwd > '${observed}'\nprintf '1.3.0\\n'\n`);
+  chmodSync(candidate, 0o755);
+  expect(verifiedBun({ ...env, PATH: bin, BUN_OPTIONS: "--preload=bad", NODE_OPTIONS: "--require=bad" })).toBe(process.execPath);
+  expect(readFileSync(observed, "utf8").trim()).toBe(realpathSync(join(import.meta.dir, "..")));
+  writeFileSync(candidate, "#!/bin/sh\nprintf '1.4.2\\n'\n");
+  expect(verifiedBun({ ...env, PATH: bin })).toBe(candidate);
+  const plan = launchPlan("claude", ["--name", "worker", "--cwd", dir], env, candidate);
+  const config = JSON.parse(plan.argv[plan.argv.indexOf("--mcp-config") + 1]!);
+  expect(config.mcpServers.peers.command).toBe(candidate);
+  expect(plan.argv[plan.argv.indexOf("--settings") + 1]!).toContain(candidate);
+  expect(plan.env.LAB_LEAD_BUN).toBe(candidate);
+});
+
+test("the generated outer MCP process clears runtime options supplied by its host", () => {
+  const marker = join(dir, "preload-ran");
+  const preload = join(dir, "preload.ts");
+  writeFileSync(preload, `await Bun.write(${JSON.stringify(marker)}, "preload ran"); console.log("PRELOAD-STDOUT");`);
+  const plan = launchPlan("claude", ["--name", "worker", "--cwd", dir], env, process.execPath);
+  const config = JSON.parse(plan.argv[plan.argv.indexOf("--mcp-config") + 1]!);
+  const server = config.mcpServers.peers;
+  const child = Bun.spawnSync([server.command, ...server.args], {
+    cwd: dir, env: { ...env, BUN_OPTIONS: `--preload=${preload}`, NODE_OPTIONS: `--require=${preload}`, ...server.env },
+    stdin: Buffer.from(JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/list" }) + "\n"), stdout: "pipe", stderr: "pipe",
+  });
+  expect(child.exitCode).toBe(0);
+  expect(existsSync(marker)).toBe(false);
+  expect(JSON.parse(child.stdout.toString()).id).toBe(1);
 });
 
 test("live owners survive the legacy TTL; legacy, expired and malformed identities are preserved", () => {
@@ -137,6 +172,10 @@ if (process.argv[2] === "app-server") {
   }
   for (const signal of ["SIGHUP", "SIGINT", "SIGTERM"]) process.on(signal, () => process.exit(0));
   writeFileSync(${JSON.stringify(join(dir, "started-"))} + process.env.LAB_AGENT_NAAM, JSON.stringify({ pid: process.pid, spawn }));
+  if (process.env.RELAY_TEST_STDIN) {
+    writeFileSync(${JSON.stringify(join(dir, "stdin-result"))}, await Bun.stdin.text());
+    process.exit(23);
+  }
   if (process.env.RELAY_TEST_EXIT) process.exit(Number(process.env.RELAY_TEST_EXIT));
   setInterval(() => {}, 1000);
 }
@@ -150,8 +189,8 @@ catch (error) { console.error(error.message); process.exit(1); }
 
 function resolveSource(path: string): string { return join(import.meta.dir, "..", path); }
 
-function start(name: string, cwd = dir, extraEnv = {}) {
-  const child = Bun.spawn([process.execPath, join(dir, "runner.ts"), "--name", name, "--cwd", cwd], { cwd: dir, env: { ...env, ...extraEnv }, stdin: "ignore", stdout: "ignore", stderr: "pipe" });
+function start(name: string, cwd = dir, extraEnv = {}, input?: string) {
+  const child = Bun.spawn([process.execPath, join(dir, "runner.ts"), "--name", name, "--cwd", cwd], { cwd: dir, env: { ...env, ...extraEnv }, stdin: input === undefined ? "ignore" : Buffer.from(input), stdout: "ignore", stderr: "pipe" });
   children.push(child);
   return child;
 }
@@ -181,18 +220,92 @@ test("a live Codex child gets a working MCP identity from its checkout lease", a
   expect(response.result.content[0].text).toBe("Geen berichten.");
 });
 
-for (const signal of ["SIGHUP", "SIGKILL"] as const) {
+test("killing only the launcher leaves the live vendor owning its name and checkout", async () => {
+  fakeCodex();
+  const first = start("worker1");
+  const marker = await started("worker1");
+  first.kill("SIGKILL");
+  await first.exited;
+  expect(() => process.kill(marker.pid, 0)).not.toThrow();
+  for (const name of ["worker2", "worker1", "worker2"]) {
+    const second = start(name, dir, { RELAY_TEST_EXIT: "23" });
+    expect(await second.exited).toBe(1);
+    expect(identiteitEnv({ LAB_LEAD_STAAT: state }, dir).LAB_AGENT_NAAM).toBe("worker1");
+    expect(() => process.kill(marker.pid, 0)).not.toThrow();
+  }
+  process.kill(marker.pid, "SIGKILL");
+  await until(() => leesIdentiteit(state, dir) === null);
+  const replacement = start("worker2", dir, { RELAY_TEST_EXIT: "23" });
+  expect(await replacement.exited).toBe(23);
+});
+
+test("the real launch bootstrap preserves vendor stdin and exit code", async () => {
+  fakeCodex();
+  const child = start("worker", dir, { RELAY_TEST_STDIN: "1" }, "interactive stdin\n");
+  expect(await child.exited).toBe(23);
+  expect(readFileSync(join(dir, "stdin-result"), "utf8")).toBe("interactive stdin\n");
+});
+
+for (const reclaimed of [true, false]) test(`parent death before self-claim: ${reclaimed ? "reclaimer" : "bootstrap"} wins the lock`, async () => {
+  fakeCodex();
+  const blocked = join(dir, "bootstrap-waiting");
+  const released = join(dir, "release-bootstrap");
+  const bun = join(dir, "bin/bun");
+  writeFileSync(bun, `#!/bin/sh
+case "$*" in *--version*) exec '${process.execPath}' "$@";; esac
+printf '%s' "$$" > '${blocked}'
+while [ ! -f '${released}' ]; do /bin/sleep 0.01; done
+exec '${process.execPath}' "$@"
+`);
+  chmodSync(bun, 0o755);
+  const first = start("worker1");
+  await until(() => existsSync(blocked));
+  const bootstrapPid = Number(readFileSync(blocked, "utf8"));
+  vendorPids.push(bootstrapPid);
+  first.kill("SIGKILL");
+  await first.exited;
+  expect(existsSync(join(dir, "started-worker1"))).toBe(false);
+  const replacementEnv = { PATH: `${dirname(process.execPath)}:${env.PATH}` };
+  if (reclaimed) {
+    const second = start("worker2", dir, replacementEnv);
+    await started("worker2");
+    writeFileSync(released, "release");
+    await until(() => {
+      const result = Bun.spawnSync(["/bin/ps", "-p", String(bootstrapPid), "-o", "stat="], { stdout: "pipe", stderr: "ignore" });
+      return result.exitCode !== 0 || result.stdout.toString().trim().startsWith("Z");
+    });
+    expect(existsSync(join(dir, "started-worker1"))).toBe(false);
+    expect(leesIdentiteit(state, dir)?.naam).toBe("worker2");
+    second.kill("SIGHUP");
+    expect(await second.exited).toBe(0);
+  } else {
+    writeFileSync(released, "release");
+    const vendor = await started("worker1");
+    expect(vendor.pid).toBe(bootstrapPid);
+    expect(leesIdentiteit(state, dir)?.relay_owner?.pid).toBe(bootstrapPid);
+    for (const name of ["worker2", "worker1"]) {
+      const second = start(name, dir, replacementEnv);
+      expect(await second.exited).toBe(1);
+      expect(leesIdentiteit(state, dir)?.naam).toBe("worker1");
+    }
+  }
+});
+
+for (const signal of ["SIGHUP", "SIGINT", "SIGTERM", "SIGKILL"] as const) {
   test(`${signal}: dead launcher loses identity, only its records retire, and the same name can restart`, async () => {
     fakeCodex();
     const first = start("worker");
     const marker = await started("worker");
-    expect(leesIdentiteit(state, dir)?.relay_owner?.pid).toBe(first.pid);
+    expect(leesIdentiteit(state, dir)?.relay_owner?.pid).toBe(marker.pid);
     schrijfRecord(state, nieuwRecord("legacy", { LAB_AGENT_NAAM: "legacy", LAB_SPAWN_ID: "legacy-spawn" }, dir, Date.now()));
     first.kill(signal);
     await first.exited;
-    expect(identiteitEnv({ LAB_LEAD_STAAT: state }, dir)).toEqual({});
-    if (signal === "SIGHUP") expect(existsSync(identiteitPad(state, dir))).toBe(false);
+    if (signal !== "SIGKILL") {
+      expect(identiteitEnv({ LAB_LEAD_STAAT: state }, dir)).toEqual({});
+      expect(existsSync(identiteitPad(state, dir))).toBe(false);
+    } else expect(identiteitEnv({ LAB_LEAD_STAAT: state }, dir).LAB_AGENT_NAAM).toBe("worker");
     try { process.kill(marker.pid, "SIGKILL"); } catch {}
+    await until(() => leesIdentiteit(state, dir) === null);
     const second = start("worker", dir, { RELAY_TEST_EXIT: "23" });
     expect(await second.exited).toBe(23);
     expect(existsSync(identiteitPad(state, dir))).toBe(false);
@@ -211,8 +324,8 @@ test("simultaneous names in one checkout cannot overwrite the winning live ident
   expect(await loser.exited).toBe(1);
   expect(await new Response(loser.stderr).text()).toContain("session identity");
   const name = winner === first ? "one" : "two";
-  await started(name);
-  expect(leesIdentiteit(state, dir)).toMatchObject({ naam: name, relay_owner: { pid: winner.pid } });
+  const marker = await started(name);
+  expect(leesIdentiteit(state, dir)).toMatchObject({ naam: name, relay_owner: { pid: marker.pid } });
   const sub = join(dir, "sub");
   mkdirSync(sub);
   const nested = start("nested", sub);

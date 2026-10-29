@@ -1,5 +1,5 @@
 import type { Database } from "bun:sqlite";
-import { isLauncherOwner, type LauncherOwner } from "../scripts/lead/hooks/register";
+import { claimLauncherIdentiteit, isLauncherOwner, launcherOwner, withLaunchLock, type LauncherOwner } from "../scripts/lead/hooks/register";
 export { launcherOwner, ownerStatus, withLaunchLock } from "../scripts/lead/hooks/register";
 
 export type LaunchLease = { spawn: string; name: string; cwd: string; vendor: "claude" | "codex"; owner: LauncherOwner };
@@ -18,4 +18,16 @@ export function saveLaunchLease(db: Database, lease: LaunchLease): void {
 
 export function deleteLaunchLease(db: Database, spawn: string): void {
   db.query("DELETE FROM leases WHERE spawn = ?").run(spawn);
+}
+
+/** The bootstrap claims itself before exec; a reclaimed/missing reservation
+ * can never authorize a vendor. Both sides of the handoff use the same lock. */
+export function claimSession(state: string, expected: LaunchLease): void {
+  const owner = launcherOwner();
+  withLaunchLock(state, (db) => {
+    const lease = launchLeases(db).find((item) => item.spawn === expected.spawn);
+    if (!lease || lease.name !== expected.name || lease.cwd !== expected.cwd || lease.vendor !== expected.vendor || lease.owner.pid !== expected.owner.pid || lease.owner.start !== expected.owner.start) throw new Error("Relay session reservation changed or disappeared before bootstrap");
+    if (lease.vendor === "codex") claimLauncherIdentiteit(state, lease.cwd, lease.spawn, lease.owner, owner);
+    db.query("UPDATE leases SET payload = ? WHERE spawn = ?").run(JSON.stringify({ ...lease, owner }), lease.spawn);
+  });
 }

@@ -8,7 +8,7 @@
 //
 // Er worden nooit prompttekst, tool-invoer, antwoorden of transcripts bewaard.
 
-import { appendFileSync, closeSync, constants as FS, existsSync, fstatSync, lstatSync, mkdirSync, mkdtempSync, openSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { appendFileSync, closeSync, constants as FS, existsSync, fstatSync, lstatSync, mkdirSync, mkdtempSync, openSync, readdirSync, readFileSync, realpathSync, renameSync, rmdirSync, rmSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { homedir } from "node:os";
 import { dirname, join, parse, resolve } from "node:path";
@@ -381,8 +381,8 @@ const leaseError = (reason: string): Error => new Error(`unsafe Relay reservatio
 
 /** Inspect all existing parents before mkdir. Canonical root-owned OS aliases
  * such as macOS /var are allowed; symlinks anywhere below them are refused. */
-function leaseDirectory(state: string): string {
-  const absolute = resolve(state, "launchers");
+function leaseDirectory(state: string, leaf = "launchers"): string {
+  const absolute = resolve(state, leaf);
   let current = parse(absolute).root;
   let missing = false;
   for (const part of absolute.slice(current.length).split("/")) {
@@ -468,12 +468,16 @@ function verifyLeaseDatabase(directory: string): void {
 /** SQLite supplies a crash-released, cross-process lock. Only registered files
  * are opened, with NOFOLLOW, and PERSIST keeps the journal inode recognizable. */
 export function withLaunchLock<T>(state: string, action: (db: Database) => T): T {
+  return launchLock(state, action, 2000);
+}
+
+function launchLock<T>(state: string, action: (db: Database) => T, waitMs: number): T {
   const directory = leaseDirectory(state);
   initializeLeaseDirectory(directory);
   verifyLeaseDatabase(directory);
   const db = new Database(join(directory, "leases.sqlite"), SQLITE.SQLITE_OPEN_READWRITE | SQLITE.SQLITE_OPEN_NOFOLLOW);
   try {
-    db.exec("PRAGMA busy_timeout = 2000; PRAGMA journal_mode = PERSIST; BEGIN IMMEDIATE");
+    db.exec(`PRAGMA busy_timeout = ${waitMs}; PRAGMA journal_mode = PERSIST; BEGIN IMMEDIATE`);
     try {
       const result = action(db);
       db.exec("COMMIT");
@@ -493,8 +497,65 @@ export function identiteitPad(staat: string, cwd: string): string {
 
 /** Door spawn.sh --vendor codex: de identiteit van de sessie in deze checkout, voor codex-wrap (modus 600 in een map 700). */
 export function schrijfIdentiteit(staat: string, cwd: string, i: Identiteit): void {
-  mkdirSync(join(staat, "identiteit"), { recursive: true, mode: 0o700 });
-  schrijfAtomair(identiteitPad(staat, cwd), `${JSON.stringify(i)}\n`);
+  withIdentityLock(staat, () => schrijfAtomair(identiteitPad(staat, cwd), `${JSON.stringify(i)}\n`));
+}
+
+/** Shared by legacy and managed identity writers. Publish a nonempty directory
+ * atomically, so every visible lock has an immutable PID/birth-time token.
+ * Reclaim only that dead token; rmdir cannot delete a new owner's nonempty lock.
+ * Legacy maintenance never opens or creates the reservation database. */
+function withIdentityLock<T>(state: string, action: () => T, waitMs = 2000): T {
+  const directory = leaseDirectory(state, "identiteit");
+  mkdirSync(directory, { recursive: true, mode: 0o700 });
+  if (!eigenPrive(directory, true)) throw new Error("unsafe Relay identity directory; preserving state");
+  const temporary = mkdtempSync(join(directory, ".claim-"));
+  const token = crypto.randomUUID();
+  const slot = join(directory, ".maintenance-lock");
+  let acquired = false;
+  try {
+    writeFileSync(join(temporary, token), JSON.stringify(launcherOwner()), { mode: 0o600, flag: "wx" });
+    const deadline = Date.now() + waitMs;
+    for (;;) {
+      try { renameSync(temporary, slot); acquired = true; break; }
+      catch (error) { if (!["EEXIST", "ENOTEMPTY"].includes((error as NodeJS.ErrnoException).code || "")) throw error; }
+      try {
+        const st = lstatSync(slot);
+        if (!st.isDirectory() || (st.mode & 0o077) !== 0 || (typeof process.getuid === "function" && st.uid !== process.getuid())) throw new Error("unsafe Relay identity lock; preserving state");
+        const tokens = readdirSync(slot);
+        if (tokens.length === 1 && /^[0-9a-f-]{36}$/.test(tokens[0]!)) {
+          const path = join(slot, tokens[0]!);
+          let owner;
+          try { owner = JSON.parse(privateLeaseFile(path).bytes.toString()); }
+          catch (error) { if (!existsSync(path)) continue; throw error; }
+          if (isLauncherOwner(owner) && ownerStatus(owner) === "dead") {
+            unlinkSync(path);
+            try { rmdirSync(slot); } catch (error) { if (!["ENOENT", "ENOTEMPTY", "EEXIST"].includes((error as NodeJS.ErrnoException).code || "")) throw error; }
+            continue;
+          }
+        }
+      } catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
+      if (Date.now() >= deadline) throw new Error("Relay identity maintenance lock timed out; preserving state");
+      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 10);
+    }
+    return action();
+  } finally {
+    if (acquired) {
+      unlinkSync(join(slot, token));
+      try { rmdirSync(slot); } catch (error) { if (!["ENOENT", "ENOTEMPTY", "EEXIST"].includes((error as NodeJS.ErrnoException).code || "")) throw error; }
+    } else rmSync(temporary, { recursive: true, force: true });
+  }
+}
+
+/** hook.sh suppresses exit-0 stderr. Preserve the first upkeep failure per spawn
+ * as a private, exclusive diagnostic; never follow a symlink or replace a file.
+ * No identity, prompt or argv data is recorded. Unsafe paths remain stderr-only. */
+export function logIdentiteitOnderhoudFout(state: string, spawnId: string, message: string): void {
+  try {
+    const directory = leaseDirectory(state, "identiteit");
+    if (!eigenPrive(directory, true)) return;
+    const key = createHash("sha256").update(spawnId).digest("hex").slice(0, 24);
+    writeFileSync(join(directory, `maintenance-${key}.error`), `${JSON.stringify({ kind: "relay-identity-maintenance-error-v1", at: Date.now(), message: message.slice(0, 256) })}\n`, { mode: 0o600, flag: "wx" });
+  } catch { /* Diagnostics must not replace core work or write through unsafe paths. */ }
 }
 
 /** Rollen die een gespawnde werker kan hebben; "lead" of iets anders in het bestand is nooit geldig (geen escalatie via het bestand). */
@@ -573,49 +634,75 @@ export function heeftIdentiteitsbestand(staat: string, cwd: string, ookDodeLaunc
 export function ruimDodeLauncherIdentiteitenOp(staat: string): string[] {
   const map = join(staat, "identiteit");
   if (!eigenPrive(map, true)) return [];
-  const spawns: string[] = [];
-  for (const naam of readdirSync(map)) {
-    if (!naam.endsWith(".json")) continue;
-    const pad = join(map, naam);
-    const identiteit = leesIdentiteitBestand(pad, Date.now(), false);
-    if (!identiteit?.relay_owner || ownerStatus(identiteit.relay_owner) !== "dead") continue;
-    rmSync(pad);
-    spawns.push(identiteit.spawn_id);
-  }
-  return spawns;
+  return withIdentityLock(staat, () => {
+    const spawns: string[] = [];
+    for (const naam of readdirSync(map)) {
+      if (!naam.endsWith(".json")) continue;
+      const pad = join(map, naam);
+      const identiteit = leesIdentiteitBestand(pad, Date.now(), false);
+      if (!identiteit?.relay_owner || ownerStatus(identiteit.relay_owner) !== "dead") continue;
+      rmSync(pad);
+      spawns.push(identiteit.spawn_id);
+    }
+    return spawns;
+  });
 }
 
 /** Alleen onder withLaunchLock; ook een verlopen eigen identiteit mag bij launcher-exit weg. */
-export function wisLauncherIdentiteit(staat: string, cwd: string, spawnId: string): void {
-  const pad = identiteitPad(staat, cwd);
-  const identiteit = leesIdentiteitBestand(pad, Date.now(), false);
-  if (identiteit?.relay_owner && identiteit.spawn_id === spawnId && identiteit.relay_owner.pid === process.pid) rmSync(pad, { force: true });
+export function wisLauncherIdentiteit(staat: string, cwd: string, spawnId: string, owner: LauncherOwner = launcherOwner()): void {
+  withIdentityLock(staat, () => {
+    const pad = identiteitPad(staat, cwd);
+    const identiteit = leesIdentiteitBestand(pad, Date.now(), false);
+    if (identiteit?.relay_owner && identiteit.spawn_id === spawnId && identiteit.relay_owner.pid === owner.pid && identiteit.relay_owner.start === owner.start) rmSync(pad, { force: true });
+  });
+}
+
+/** Only under the reservation lock, before the bootstrap starts its vendor. */
+export function claimLauncherIdentiteit(staat: string, cwd: string, spawnId: string, previous: LauncherOwner, owner: LauncherOwner): void {
+  withIdentityLock(staat, () => {
+    const pad = identiteitPad(staat, cwd);
+    const identiteit = leesIdentiteitBestand(pad, Date.now(), false);
+    if (!identiteit || identiteit.spawn_id !== spawnId || identiteit.relay_owner?.pid !== previous.pid || identiteit.relay_owner.start !== previous.start) throw new Error("Relay session identity changed or disappeared before bootstrap");
+    schrijfAtomair(pad, `${JSON.stringify({ ...identiteit, relay_owner: owner })}\n`);
+  });
 }
 
 /** Houdt de identiteit van een levende sessie vers (ts = nu): hij verloopt alleen na IDENTITEIT_MAX_MS zonder activiteit. */
 export function ververseIdentiteit(staat: string, cwd: string, spawnId: string, nu = Date.now()): void {
   if (!spawnId) return;
-  withLaunchLock(staat, () => {
+  const found = zoekIdentiteit(staat, cwd, nu);
+  if (!found || found.identiteit.spawn_id !== spawnId || nu - found.identiteit.ts <= 60_000) return;
+  const refresh = () => withIdentityLock(staat, () => {
     const g = zoekIdentiteit(staat, cwd, nu);
-    if (g && g.identiteit.spawn_id === spawnId && nu - g.identiteit.ts > 60_000) schrijfAtomair(g.pad, `${JSON.stringify({ ...g.identiteit, ts: nu })}\n`);
-  });
+    if (g && g.identiteit.spawn_id === spawnId && !!g.identiteit.relay_owner === !!found.identiteit.relay_owner && nu - g.identiteit.ts > 60_000) schrijfAtomair(g.pad, `${JSON.stringify({ ...g.identiteit, ts: nu })}\n`);
+  }, 0);
+  if (found.identiteit.relay_owner) launchLock(staat, refresh, 0);
+  else refresh();
 }
 
 /** Bindt de werkruimte-identiteit van een proeflead eenmalig aan haar Codex-sessie. Andere sessies mogen haar nooit overnemen. */
 export function bindLeadProefSessie(staat: string, cwd: string, spawnId: string, sessieId: string, nu = Date.now()): boolean {
   if (!spawnId || !sessieId) return false;
-  const g = zoekIdentiteit(staat, cwd, nu);
-  if (!g || g.identiteit.rol !== "lead-proef" || g.identiteit.spawn_id !== spawnId) return false;
-  if (g.identiteit.sessie_id && g.identiteit.sessie_id !== sessieId) return false;
-  if (!g.identiteit.sessie_id) schrijfAtomair(g.pad, `${JSON.stringify({ ...g.identiteit, sessie_id: sessieId })}\n`);
-  return true;
+  const found = zoekIdentiteit(staat, cwd, nu);
+  if (!found || found.identiteit.rol !== "lead-proef" || found.identiteit.spawn_id !== spawnId) return false;
+  return withIdentityLock(staat, () => {
+    const g = zoekIdentiteit(staat, cwd, nu);
+    if (!g || g.identiteit.rol !== "lead-proef" || g.identiteit.spawn_id !== spawnId) return false;
+    if (g.identiteit.sessie_id && g.identiteit.sessie_id !== sessieId) return false;
+    if (!g.identiteit.sessie_id) schrijfAtomair(g.pad, `${JSON.stringify({ ...g.identiteit, sessie_id: sessieId })}\n`);
+    return true;
+  });
 }
 
 /** SessionEnd: haalt de identiteit weg als hij nog van deze spawn is (een nieuwe spawn in dezelfde checkout blijft staan). */
 export function wisIdentiteit(staat: string, cwd: string, spawnId: string, nu = Date.now()): void {
   if (!spawnId) return;
-  withLaunchLock(staat, () => {
+  const found = zoekIdentiteit(staat, cwd, nu);
+  if (!found || found.identiteit.spawn_id !== spawnId || found.identiteit.rol === "lead-proef") return;
+  const remove = () => withIdentityLock(staat, () => {
     const g = zoekIdentiteit(staat, cwd, nu);
-    if (g && g.identiteit.rol !== "lead-proef" && g.identiteit.spawn_id === spawnId) rmSync(g.pad, { force: true });
-  });
+    if (g && g.identiteit.rol !== "lead-proef" && g.identiteit.spawn_id === spawnId && !!g.identiteit.relay_owner === !!found.identiteit.relay_owner) rmSync(g.pad, { force: true });
+  }, 0);
+  if (found.identiteit.relay_owner) launchLock(staat, remove, 0);
+  else remove();
 }
