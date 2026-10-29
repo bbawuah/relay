@@ -272,6 +272,8 @@ export function maakBus(opties: BusOpties): BusMetKlaar {
       (e.herkomst === "schoon" || e.herkomst === "extern");
   }
 
+  const envelopInhoud = (e: Envelop): string => JSON.stringify(Object.keys(e).sort().map((k) => [k, (e as unknown as Record<string, unknown>)[k]]));
+
   function nepOfEcht(r: unknown): r is Envelop {
     return !!r && typeof r === "object" && typeof (r as Envelop).id === "string";
   }
@@ -632,7 +634,15 @@ export function maakBus(opties: BusOpties): BusMetKlaar {
         const vast = houdVast(naam);
         const kies = vast.filter((e) => herstelbaar(e, naam) && (!ids || ids.includes(e.id)));
         if (kies.length === 0) return { n: 0, wek: null };
-        const bekend = new Set(alleEnvelops(naam).map((e) => e.id));
+        const geselecteerd = new Set(kies.map((e) => e.id));
+        const bestaand = alleEnvelops(naam);
+        const inhoud = new Map<string, string>();
+        for (const e of [...bestaand.filter((e) => geselecteerd.has(e.id)), ...kies]) {
+          const canoniek = envelopInhoud(e);
+          if (inhoud.has(e.id) && inhoud.get(e.id) !== canoniek) throw new Error("Herstel gestopt: hetzelfde bericht-id heeft conflicterende inhoud; bestanden blijven behouden.");
+          inhoud.set(e.id, canoniek);
+        }
+        const bekend = new Set(bestaand.map((e) => e.id));
         const nieuw = kies.filter((e) => {
           if (bekend.has(e.id)) return false;
           bekend.add(e.id);
@@ -652,7 +662,7 @@ export function maakBus(opties: BusOpties): BusMetKlaar {
         const rest = readFileSync(bestand, "utf8").split(/(?<=\n)/).filter((regel) => {
           try {
             const e = JSON.parse(regel);
-            return !e || e.naar !== naam || !weg.has(e.id);
+            return !nepOfEcht(e) || !herstelbaar(e, naam) || !weg.has(e.id);
           } catch {
             return true;
           }

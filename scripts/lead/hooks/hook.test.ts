@@ -9,6 +9,18 @@ import { type Rec, gelezenOffset, inboxMelding, inboxPad, leesRecord, schrijfRec
 
 const HOOK_SH = join(import.meta.dir, "hook.sh");
 
+test("lead-proef behoudt statusmeldingen zonder rolverhoging of Stop-blokkade", async () => {
+  const env = omgeving({ LAB_AGENT_NAAM: "codex-lead", LAB_AGENT_ROL: "lead-proef", LAB_LEAD_NAAM: "codex-lead" });
+  const invoer = inv({ session_id: "proef-status" });
+  await verwerk("SessionStart", invoer, env, opt);
+  inboxMelding(staat, "codex-lead", "werker", "fixture-status klaar", T0);
+  const r = await verwerk("UserPromptSubmit", invoer, env, opt);
+  expect(r.stdout).toContain("fixture-status klaar");
+  expect(gelezenOffset(staat, "codex-lead")).toBeGreaterThan(0);
+  expect(leesRecord(staat, "proef-status")?.rol).toBe("lead-proef");
+  expect((await verwerk("Stop", invoer, env, opt)).stdout).toBe("");
+});
+
 test("sessieregistratie gebruikt rollen alleen als statusetiket", async () => {
   for (const rol of ["", "gast", "agent", "lead"]) {
     const id = `rol-${rol || "leeg"}`;

@@ -15,6 +15,24 @@ let doel: string;
 const NU = new Date("2026-10-07T10:11:12.345Z");
 const BRON = join(import.meta.dir, "..", "hooks");
 
+test("upgrade en verwijderen pensioneren exact de oude eigen grenzenmarker en bewaren native hooks", () => {
+  for (const verwijder of [false, true]) {
+    const native = { type: "command", command: "/native/security-hook" };
+    const andereMarker = { type: "command", command: "LAB_BELEID_ID=grenzen-extra /native/ander.sh" };
+    const oudeGrens = { type: "command", command: "LAB_BELEID_ID=grenzen /legacy/grenzen.sh" };
+    const oud = { permissions: { deny: ["native-rule"] }, hooks: { PreToolUse: [{ matcher: ".*", hooks: [native, oudeGrens, andereMarker] }] } };
+    writeFileSync(settings, JSON.stringify(oud));
+    const r = installeer({ droog: false, verwijder, metWekker: false, settings, doel, bun: process.execPath, nu: NU, bron: BRON });
+    expect(r.code).toBe(0);
+    const nieuw = JSON.parse(readFileSync(settings, "utf8"));
+    const commands = nieuw.hooks.PreToolUse.flatMap((g: { hooks: { command: string }[] }) => g.hooks.map((h) => h.command));
+    expect(commands).toContain(native.command);
+    expect(commands).toContain(andereMarker.command);
+    expect(commands).not.toContain(oudeGrens.command);
+    expect(nieuw.permissions).toEqual(oud.permissions);
+  }
+});
+
 // De structuur van Brians settings.json met nep-waarden: eigen sleutels, tmux-pwa, werknotities en grenzen.sh.
 const BRIAN = () => ({
   autoMode: { allow: ["nep regel"], soft_deny: ["nep"] },

@@ -123,3 +123,34 @@ test("twee herstelprocessen publiceren dezelfde historische envelop samen precie
   expect(bus().inbox("b").map((x) => x.id)).toEqual([e.id]);
   expect(bus().vastgehouden("b")).toEqual([]);
 });
+
+test("een id-conflict verliest geen heldpost en een ongeldige regel met hetzelfde id wordt niet opgeruimd", async () => {
+  registreer("b");
+  const e = oudePost(staat, "b", "versie één");
+  oudePost(staat, "b", "versie twee", { id: e.id, draad: e.draad });
+  const bestand = join(staat, "peers/vastgehouden/b.jsonl");
+  const voor = readFileSync(bestand, "utf8");
+  const r = await draai(["vrijgeven", "b", e.id], { LAB_AGENT_NAAM: "b", LAB_AGENT_ROL: "agent", LAB_LEAD_STAAT: staat }, bus());
+  expect(r.code).toBe(1);
+  expect(r.fout).toContain("conflicterende inhoud");
+  expect(r.fout).not.toContain(e.tekst);
+  expect(readFileSync(bestand, "utf8")).toBe(voor);
+  expect(bus().inbox("b")).toEqual([]);
+
+  const ongeldig = `${JSON.stringify({ id: e.id, naar: "b" })}\n`;
+  writeFileSync(bestand, `${JSON.stringify(e)}\n${ongeldig}`);
+  expect(await bus().vrijgeven("b", [e.id])).toBe(1);
+  expect(readFileSync(bestand, "utf8")).toBe(ongeldig);
+});
+
+test("een corrupte inboxregel met een geselecteerd id verhindert dat geldige heldpost wordt weggegooid", async () => {
+  registreer("b");
+  const e = oudePost(staat, "b", "geldige historische post");
+  mkdirSync(join(staat, "peers/inbox"), { recursive: true });
+  const inboxPad = join(staat, "peers/inbox/b.jsonl");
+  const corrupt = `${JSON.stringify({ id: e.id })}\n`;
+  writeFileSync(inboxPad, corrupt);
+  await expect(bus().vrijgeven("b", [e.id])).rejects.toThrow("conflicterende inhoud");
+  expect(bus().vastgehouden("b").map((x) => x.id)).toEqual([e.id]);
+  expect(readFileSync(inboxPad, "utf8")).toBe(corrupt);
+});

@@ -50,7 +50,8 @@ export type Opties = {
 export const IDLE_BUDGET_STOP_MS = 1000;
 export const IDLE_BUDGET_EINDE_MS = 500;
 
-const isLeadRol = (rol: string): boolean => rol === "lead";
+// Statusroutering, geen privilege: behoud ook de bestaande proefleadmeldingen.
+const isLeadRol = (rol: string): boolean => rol === "lead" || rol === "lead-proef";
 const LEEG: Uitslag = { code: 0, stdout: "", stderr: "" };
 
 type Invoer = { [k: string]: unknown };

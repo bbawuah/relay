@@ -115,8 +115,12 @@ async function draaiOpdracht(args: string[], env: Omgeving, bus: Bus, leesStdin:
       if (eigenaar) return eigenaar;
       const alle = ids.length === 1 && ids[0] === "--alle";
       if (!alle && (!ids.length || ids.some((id) => !id || id.startsWith("--")))) return mis(GEBRUIK);
-      const n = await bus.vrijgeven(naam, alle ? undefined : ids);
-      return ok(`${n} bericht${n === 1 ? "" : "en"} vrijgegeven aan ${naam}.`);
+      try {
+        const n = await bus.vrijgeven(naam, alle ? undefined : ids);
+        return ok(`${n} bericht${n === 1 ? "" : "en"} vrijgegeven aan ${naam}.`);
+      } catch (e) {
+        return mis(e instanceof Error ? e.message : "Herstel mislukte.");
+      }
     }
     default:
       return mis(GEBRUIK);

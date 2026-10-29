@@ -320,3 +320,7 @@ Akkoordmarkers vervallen; geschikte PR-selectie, conflicten, headverschuiving en
 - een akkoord moet aan het begin van de comment staan en de hele sha7 hebben
 - een verouderd akkoord telt niet mee (lege wachtrij)
 
+
+## Reviewcorrecties boven op het eerste checkpoint
+
+De review van `c13a599` vond vijf concrete regressies. Er is vervangende dekking toegevoegd voor malformed heldregels met een geselecteerd ID, corrupte inboxbewijzen, de exact gemarkeerde oude Claude-governancehook, statusbezorging voor `lead-proef`, en rolvrije parentvalidatie met naamambiguïteit. De bestaande binding/lifecycle en native hooks blijven behouden. Recovery stopt bij conflicterende ID-inhoud zonder deze bronbestanden te herschrijven.

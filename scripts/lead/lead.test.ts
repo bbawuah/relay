@@ -594,6 +594,18 @@ describe("spawn.sh", () => {
     writeFileSync(join(dir, "staat", "register", `${id}.json`), JSON.stringify(r));
   };
 
+  test("spawn accepteert dezelfde geregistreerde parent voor alle roletiketten en weigert naamambiguïteit", () => {
+    writeFileSync(join(dir, "panes.txt"), "%1\n%2\n");
+    const args = ["--naam", "w1", "--opdracht", opdracht(), "--lead", "parent", "--droog"];
+    for (const rol of ["", "agent", "reviewer", "lead-proef", "lead", "sublead", "vervolg"]) {
+      leadRecord("parent-id", "parent", "%1", "bezig", rol);
+      const r = draai(SPAWN, args, basis());
+      expect(r.code, `${rol}: ${r.fout}`).toBe(0);
+    }
+    leadRecord("andere-parent", "Parent", "%2", "bezig", "reviewer");
+    expect(draai(SPAWN, args, basis()).code).toBe(1);
+  });
+
   test("weigert een dubbele leadnaam (twee levende leads, aanroeper onbekend)", () => {
     writeFileSync(join(dir, "panes.txt"), "%1\n%2\n");
     leadRecord("aaaa1111", "lead", "%1");
@@ -629,8 +641,8 @@ describe("spawn.sh", () => {
     const r = draai(SPAWN, [...args, "--lead", "lead-peerbus"], basis());
     expect(r.code).toBe(1);
     expect(r.fout).toMatch(/^spawn: lead 'lead-peerbus' staat niet in het register/);
-    expect(r.fout).toContain("`lead`");
-    expect(r.fout).toContain("LAB_LEAD=1 LAB_AGENT_ROL=lead LAB_AGENT_NAAM=lead-peerbus LAB_LEAD_NAAM=lead-peerbus claude --resume <id> -n lead-peerbus");
+    expect(r.fout).toContain("Registreer of herstart");
+    expect(r.fout).toContain("geen specifieke rol nodig");
     expect(log("spawn.log")).toBe("");
     // ook via LAB_LEAD_NAAM, en voor --sublead (zelfde pad)
     expect(draai(SPAWN, args, basis({ LAB_LEAD_NAAM: "lead-peerbus" })).code).toBe(1);

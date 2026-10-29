@@ -317,6 +317,14 @@ export function levendeLeads(staat: string, panes: Set<string> | null, nu = Date
   return kand.filter((r) => !r.pane || jongste.get(r.pane) === r.start);
 }
 
+/** Levende sessies voor naamroutering, onafhankelijk van rol. Per pane telt alleen de jongste start. */
+export function levendeSessies(staat: string, panes: Set<string> | null, nu = Date.now()): Rec[] {
+  const kand = alleRecords(staat).filter((r) => r.soort === "sessie" && r.toestand !== "weg" && (r.pane ? !panes || panes.has(r.pane) : nu - r.sinds < 24 * 3600_000));
+  const jongste = new Map<string, number>();
+  for (const r of kand) if (r.pane) jongste.set(r.pane, Math.max(jongste.get(r.pane) ?? 0, r.start));
+  return kand.filter((r) => !r.pane || jongste.get(r.pane) === r.start);
+}
+
 /** Andere levende leads met dezelfde naam als `naam` (het eigen record, `eigenId`, telt niet mee). */
 export function dubbeleLeads(staat: string, naam: string, eigenId: string, panes: Set<string> | null, nu = Date.now()): Rec[] {
   return levendeLeads(staat, panes, nu).filter((r) => r.naam === naam && r.id !== eigenId);

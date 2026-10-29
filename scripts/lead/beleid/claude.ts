@@ -110,7 +110,7 @@ export function nieuweHooks(oud: unknown, specs: Spec[], o: Pick<ClaudeOpties, "
   if (oud !== undefined && (typeof oud !== "object" || oud === null || Array.isArray(oud))) throw new Error("`.hooks` in settings.json is geen object");
   const eigen = (h: HookCfg) =>
     typeof h.command === "string" &&
-    h.command.includes(MERK);
+    (h.command.includes(MERK) || /^LAB_BELEID_ID=grenzen(?:[ \t]|$)/.test(h.command.trimStart()));
   const uit: Json = kopie((oud as Json | undefined) ?? {});
   const events = new Set([...specs.map((s) => s.event), ...Object.keys(uit)]);
   for (const ev of events) {
