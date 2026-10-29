@@ -2,7 +2,8 @@ import { expect, test } from "bun:test";
 import { chmodSync, cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, renameSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { install } from "../src/install";
+import { install, uninstall } from "../src/install";
+import { bunArgs } from "../src/runtime";
 import { environment } from "../src/environment";
 
 const ROOT = resolve(import.meta.dir, "..");
@@ -273,3 +274,166 @@ for (const stable of [true, false]) {
     expect(existsSync(marker)).toBe(false);
   });
 }
+
+for (const backingName of ["backing", "storage/lib"]) {
+  test(`C4 self-uninstall uses original prefix with symlink-lib to ${backingName}`, () => {
+    const f = fixture();
+    const other = join(f.home, ".local");
+    const prefix = join(f.dir, "custom prefix");
+    const backing = join(f.dir, backingName);
+    mkdirSync(prefix);
+    mkdirSync(backing, { recursive: true });
+    symlinkSync(backing, join(prefix, "lib"));
+    install(["--prefix", other], f.env);
+    install(["--prefix", prefix], f.env);
+    const otherLauncher = readFileSync(join(other, "bin/relay"), "utf8");
+    const unrelated = join(f.dir, "storage/bin/relay");
+    mkdirSync(join(f.dir, "storage/bin"), { recursive: true });
+    writeFileSync(unrelated, "#!/bin/sh\n# Relay managed launcher\n# unrelated command\n");
+    const result = run([join(prefix, "bin/relay"), "uninstall"], f);
+    expect(result.code).toBe(0);
+    expect(existsSync(join(prefix, "bin/relay"))).toBe(false);
+    expect(existsSync(join(backing, "relay"))).toBe(false);
+    expect(readFileSync(join(other, "bin/relay"), "utf8")).toBe(otherLauncher);
+    expect(run([join(other, "bin/relay"), "--version"], f).code).toBe(0);
+    expect(readFileSync(unrelated, "utf8")).toContain("unrelated command");
+  });
+}
+
+test("C4 default installation stores its original prefix and self-uninstalls", () => {
+  const f = fixture();
+  const prefix = join(f.home, ".local");
+  install([], f.env);
+  const marker = JSON.parse(readFileSync(join(prefix, "lib/relay/.relay-install.json"), "utf8"));
+  expect(marker.prefix).toBe(prefix);
+  const result = run([join(prefix, "bin/relay"), "uninstall"], f);
+  expect(result.code).toBe(0);
+  expect(existsSync(join(prefix, "lib/relay"))).toBe(false);
+  expect(existsSync(join(prefix, "bin/relay"))).toBe(false);
+});
+
+test("C4 changed lib alias refuses without touching either installation", () => {
+  const f = fixture();
+  const prefix = join(f.dir, "prefix");
+  const backing = join(f.dir, "backing");
+  const other = join(f.home, ".local");
+  mkdirSync(prefix);
+  mkdirSync(backing);
+  symlinkSync(backing, join(prefix, "lib"));
+  install(["--prefix", other], f.env);
+  install(["--prefix", prefix], f.env);
+  const original = readFileSync(join(prefix, "bin/relay"), "utf8");
+  const otherLauncher = readFileSync(join(other, "bin/relay"), "utf8");
+  renameSync(join(prefix, "lib"), join(prefix, "lib.retired"));
+  symlinkSync(join(other, "lib"), join(prefix, "lib"));
+  for (const args of [["--dry-run"], []]) {
+    const result = run([join(prefix, "bin/relay"), "uninstall", ...args], f);
+    expect(result.code).not.toBe(0);
+    expect(result.err).toContain("--prefix");
+  }
+  expect(readFileSync(join(prefix, "bin/relay"), "utf8")).toBe(original);
+  expect(readFileSync(join(other, "bin/relay"), "utf8")).toBe(otherLauncher);
+  expect(existsSync(join(backing, "relay"))).toBe(true);
+  expect(run([join(other, "bin/relay"), "--version"], f).code).toBe(0);
+});
+
+test("C4 changed bin alias cannot remove another installation's launcher", () => {
+  const f = fixture();
+  const prefix = join(f.dir, "prefix");
+  const other = join(f.home, ".local");
+  install(["--prefix", prefix], f.env);
+  install(["--prefix", other], f.env);
+  const otherLauncher = readFileSync(join(other, "bin/relay"), "utf8");
+  renameSync(join(prefix, "bin"), join(prefix, "original-bin"));
+  symlinkSync(join(other, "bin"), join(prefix, "bin"));
+  const result = run([join(prefix, "original-bin/relay"), "uninstall"], f);
+  expect(result.code).not.toBe(0);
+  expect(result.err).toContain("--prefix");
+  expect(readFileSync(join(other, "bin/relay"), "utf8")).toBe(otherLauncher);
+  expect(existsSync(join(prefix, "lib/relay"))).toBe(true);
+  expect(existsSync(join(prefix, "original-bin/relay"))).toBe(true);
+});
+
+test("C4 changed prefix alias preserves the original runtime and the replacement installation", () => {
+  const f = fixture();
+  const actual = join(f.dir, "actual-prefix");
+  const alias = join(f.dir, "prefix-alias");
+  const other = join(f.home, ".local");
+  mkdirSync(actual);
+  symlinkSync(actual, alias);
+  install(["--prefix", alias], f.env);
+  install(["--prefix", other], f.env);
+  const marker = JSON.parse(readFileSync(join(actual, "lib/relay/.relay-install.json"), "utf8"));
+  expect(marker.prefix).toBe(alias);
+  const original = readFileSync(join(actual, "bin/relay"), "utf8");
+  const otherLauncher = readFileSync(join(other, "bin/relay"), "utf8");
+  renameSync(alias, `${alias}.retired`);
+  symlinkSync(other, alias);
+  const result = run([join(actual, "bin/relay"), "uninstall"], f);
+  expect(result.code).not.toBe(0);
+  expect(result.err).toContain("--prefix");
+  expect(readFileSync(join(actual, "bin/relay"), "utf8")).toBe(original);
+  expect(readFileSync(join(other, "bin/relay"), "utf8")).toBe(otherLauncher);
+  expect(existsSync(join(actual, "lib/relay"))).toBe(true);
+  expect(run([join(other, "bin/relay"), "--version"], f).code).toBe(0);
+});
+
+test("C4 replacing a launcher with another managed launcher fails safe", () => {
+  const f = fixture();
+  const prefix = join(f.dir, "prefix");
+  const other = join(f.home, ".local");
+  install(["--prefix", prefix], f.env);
+  install(["--prefix", other], f.env);
+  const otherLauncher = readFileSync(join(other, "bin/relay"), "utf8");
+  const retained = join(prefix, "bin/original-relay");
+  renameSync(join(prefix, "bin/relay"), retained);
+  cpSync(join(other, "bin/relay"), join(prefix, "bin/relay"));
+  const result = run([retained, "uninstall"], f);
+  expect(result.code).not.toBe(0);
+  expect(result.err).toContain("--prefix");
+  expect(readFileSync(join(prefix, "bin/relay"), "utf8")).toBe(otherLauncher);
+  expect(readFileSync(join(other, "bin/relay"), "utf8")).toBe(otherLauncher);
+  expect(existsSync(join(prefix, "lib/relay"))).toBe(true);
+});
+
+test("C4 legacy origin refuses implicit uninstall but accepts explicit managed prefix", () => {
+  const f = fixture();
+  const prefix = join(f.dir, "prefix");
+  const other = join(f.home, ".local");
+  install(["--prefix", prefix], f.env);
+  install(["--prefix", other], f.env);
+  const marker = join(prefix, "lib/relay/.relay-install.json");
+  writeFileSync(marker, JSON.stringify({ application: "relay", version: "0.1.0" }));
+  const refused = run([join(prefix, "bin/relay"), "uninstall"], f);
+  expect(refused.code).not.toBe(0);
+  expect(refused.err).toContain("--prefix");
+  expect(existsSync(join(prefix, "lib/relay"))).toBe(true);
+  expect(existsSync(join(other, "bin/relay"))).toBe(true);
+  const explicit = run([join(prefix, "bin/relay"), "uninstall", "--prefix", prefix], f);
+  expect(explicit.code).toBe(0);
+  expect(existsSync(join(prefix, "lib/relay"))).toBe(false);
+  expect(run([join(other, "bin/relay"), "--version"], f).code).toBe(0);
+});
+
+test("C4 changed marker prefix refuses another managed installation", () => {
+  const f = fixture();
+  const prefix = join(f.dir, "prefix");
+  const other = join(f.home, ".local");
+  install(["--prefix", prefix], f.env);
+  install(["--prefix", other], f.env);
+  const marker = join(prefix, "lib/relay/.relay-install.json");
+  const data = JSON.parse(readFileSync(marker, "utf8"));
+  writeFileSync(marker, JSON.stringify({ ...data, prefix: other }));
+  const result = run([join(prefix, "bin/relay"), "uninstall"], f);
+  expect(result.code).not.toBe(0);
+  expect(result.err).toContain("--prefix");
+  expect(existsSync(join(prefix, "lib/relay"))).toBe(true);
+  expect(run([join(other, "bin/relay"), "--version"], f).code).toBe(0);
+});
+
+test("C4 missing marker does not guess the default installation", () => {
+  const f = fixture();
+  install([], f.env);
+  expect(() => uninstall([], f.env)).toThrow("--prefix");
+  expect(run([join(f.home, ".local/bin/relay"), "--version"], f).code).toBe(0);
+});
