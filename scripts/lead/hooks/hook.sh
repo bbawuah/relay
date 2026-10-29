@@ -17,9 +17,10 @@ fi
 [ -n "$BUN" ] && [ -x "$BUN" ] || exit 0
 
 HERE=$(dirname "$0")
+unset BUN_OPTIONS NODE_OPTIONS
 
 exec 3>&1
-err=$("$BUN" "$HERE/hook.ts" "$@" 2>&1 1>&3 3>&-)
+err=$("$BUN" --config=/dev/null --tsconfig-override=/dev/null --no-env-file --no-macros --no-install "$HERE/hook.ts" "$@" 2>&1 1>&3 3>&-)
 rc=$?
 exec 3>&-
 

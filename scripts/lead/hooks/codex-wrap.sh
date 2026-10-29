@@ -18,4 +18,5 @@ if [ -z "$BUN" ] || [ ! -x "$BUN" ]; then
   esac
   exit 0
 fi
-exec "$BUN" "$(dirname "$0")/codex-wrap.ts" "$@"
+unset BUN_OPTIONS NODE_OPTIONS
+exec "$BUN" --config=/dev/null --tsconfig-override=/dev/null --no-env-file --no-macros --no-install "$(dirname "$0")/codex-wrap.ts" "$@"

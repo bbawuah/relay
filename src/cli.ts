@@ -5,6 +5,7 @@ import { draai } from "../scripts/lead/peers/cli";
 import { standaardBus } from "../scripts/lead/peers/standaard";
 import { alleRecords, leesRecord, nieuwRecord, schrijfRecord, staatMap } from "../scripts/lead/hooks/register";
 import { environment, type Environment } from "./environment";
+import { bunArgs } from "./runtime";
 
 export const ROOT = resolve(import.meta.dir, "..");
 export const VERSION = (JSON.parse(readFileSync(join(ROOT, "package.json"), "utf8")) as { version: string }).version;
@@ -79,7 +80,7 @@ export function register(args: string[], env: Environment, now = Date.now()): st
 export async function main(argv: string[], input: Environment = process.env): Promise<number> {
   const { command, args, env } = parse(argv, input);
   const child = async (script: string, extra: string[]): Promise<number> => {
-    const p = Bun.spawn([process.execPath, join(ROOT, script), ...extra], { env, stdin: "inherit", stdout: "inherit", stderr: "inherit" });
+    const p = Bun.spawn([process.execPath, ...bunArgs(join(ROOT, script), extra)], { env, stdin: "inherit", stdout: "inherit", stderr: "inherit" });
     return await p.exited;
   };
   if (command === "--help" || command === "-h" || command === "help") {

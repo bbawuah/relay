@@ -1,14 +1,15 @@
 import { chmodSync, cpSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { dirname, join, resolve } from "node:path";
+import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 import { shellQuote, type Environment } from "./environment";
+import { bunArgs } from "./runtime";
 
 const ROOT = resolve(import.meta.dir, "..");
 const MARKER = ".relay-install.json";
 const SIGNATURE = "# Relay managed launcher";
 
-function options(args: string[], env: Environment) {
-  let prefix = join(env.HOME || homedir(), ".local");
+function options(args: string[], env: Environment, defaultPrefix = join(env.HOME || homedir(), ".local")) {
+  let prefix = defaultPrefix;
   let dryRun = false;
   for (let i = 0; i < args.length; i++) {
     if (args[i] === "--dry-run") dryRun = true;
@@ -23,6 +24,38 @@ function isPresent(path: string): boolean {
   try { lstatSync(path); return true; } catch (e) { if ((e as NodeJS.ErrnoException).code === "ENOENT") return false; throw e; }
 }
 
+/** Resolve existing ancestors before creating anything, including a missing prefix. */
+function canonicalDestination(path: string): string {
+  const missing: string[] = [];
+  let ancestor = path;
+  while (!isPresent(ancestor)) {
+    missing.unshift(basename(ancestor));
+    ancestor = dirname(ancestor);
+  }
+  return join(realpathSync(ancestor), ...missing);
+}
+
+function outsideSource(prefix: string, target: string, launcher: string, uninstallSelf = false): string {
+  const source = realpathSync(ROOT);
+  for (const path of [prefix, target, launcher]) {
+    const destination = canonicalDestination(path);
+    if (uninstallSelf && path === target && destination === source) continue;
+    if (source === destination || destination.startsWith(`${source}/`) || (path !== prefix && source.startsWith(`${destination}/`))) {
+      throw new Error("installation prefix must be outside the source checkout");
+    }
+  }
+  return source;
+}
+
+function ownPrefix(): string | undefined {
+  if (basename(ROOT) !== "relay" || basename(dirname(ROOT)) !== "lib" || !isPresent(join(ROOT, MARKER))) return;
+  const marker = join(ROOT, MARKER);
+  if (lstatSync(marker).isSymbolicLink() || JSON.parse(readFileSync(marker, "utf8")).application !== "relay") {
+    throw new Error(`invalid installation marker: ${ROOT}`);
+  }
+  return dirname(dirname(ROOT));
+}
+
 function owned(target: string, launcher: string): void {
   if (isPresent(target)) {
     if (lstatSync(target).isSymbolicLink() || !lstatSync(target).isDirectory() || !existsSync(join(target, MARKER))) throw new Error(`refusing to replace an unmanaged directory: ${target}`);
@@ -34,10 +67,8 @@ function owned(target: string, launcher: string): void {
 
 export function install(args: string[], env: Environment = process.env): string {
   const { prefix, dryRun, target, launcher } = options(args, env);
+  const source = outsideSource(prefix, target, launcher);
   owned(target, launcher);
-  const source = realpathSync(ROOT);
-  const destination = existsSync(target) ? realpathSync(target) : target;
-  if (source === destination || destination.startsWith(`${source}/`) || source.startsWith(`${destination}/`)) throw new Error("installation prefix must be outside the source checkout");
   if (dryRun) return `Would install Relay into ${target}\nWould write ${launcher}\nNo hooks, shell profiles or state would be changed.`;
   mkdirSync(dirname(target), { recursive: true });
   mkdirSync(dirname(launcher), { recursive: true });
@@ -56,7 +87,12 @@ export function install(args: string[], env: Environment = process.env): string 
     renameSync(stage, target);
     const temporaryLauncher = join(dirname(launcher), `.relay-${crypto.randomUUID()}.tmp`);
     try {
-      writeFileSync(temporaryLauncher, `#!/bin/sh\n${SIGNATURE}\nunset BUN_OPTIONS NODE_OPTIONS\nexec ${shellQuote(process.execPath)} ${shellQuote(join(target, "bin", "relay.ts"))} "$@"\n`, { mode: 0o755 });
+      // Keep the PATH symlink (e.g. Homebrew bin/bun), rather than its versioned
+      // realpath. If that executable disappears, discover the replacement at use.
+      const stableBun = Bun.which("bun", { PATH: env.PATH ?? process.env.PATH ?? "" });
+      const bun = stableBun && isAbsolute(stableBun) ? stableBun : process.execPath;
+      const argv = bunArgs(join(target, "bin", "relay.ts")).map(shellQuote).join(" ");
+      writeFileSync(temporaryLauncher, `#!/bin/sh\n${SIGNATURE}\nunset BUN_OPTIONS NODE_OPTIONS\nBUN=${shellQuote(bun)}\nif [ ! -x "$BUN" ]; then BUN=$(command -v bun 2>/dev/null); fi\nif [ -z "$BUN" ] || [ ! -x "$BUN" ]; then echo 'Relay needs Bun >= 1.4.2 on PATH.' >&2; exit 127; fi\nexec "$BUN" ${argv} "$@"\n`, { mode: 0o755 });
       chmodSync(temporaryLauncher, 0o755);
       renameSync(temporaryLauncher, launcher);
     } finally { rmSync(temporaryLauncher, { force: true }); }
@@ -72,7 +108,8 @@ export function install(args: string[], env: Environment = process.env): string 
 }
 
 export function uninstall(args: string[], env: Environment = process.env): string {
-  const { dryRun, target, launcher } = options(args, env);
+  const { prefix, dryRun, target, launcher } = options(args, env, args.includes("--prefix") ? undefined : ownPrefix());
+  outsideSource(prefix, target, launcher, true);
   owned(target, launcher);
   if (dryRun) return `Would remove the managed installation at ${target} and ${launcher}. State and hook settings remain.`;
   rmSync(launcher, { force: true });
