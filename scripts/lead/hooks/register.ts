@@ -8,11 +8,12 @@
 //
 // Er worden nooit prompttekst, tool-invoer, antwoorden of transcripts bewaard.
 
-import { appendFileSync, existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { appendFileSync, closeSync, constants as FS, existsSync, fstatSync, lstatSync, mkdirSync, mkdtempSync, openSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { homedir } from "node:os";
-import { dirname, join } from "node:path";
+import { dirname, join, parse, resolve } from "node:path";
 import type { PeerVelden } from "../peers/types";
+import { constants as SQLITE, Database } from "bun:sqlite";
 
 export type Toestand = "bezig" | "idle" | "goedkeuring" | "klaar" | "vrij" | "vastgelopen" | "weg";
 
@@ -343,10 +344,148 @@ export function wisExternMarkering(staat: string, naam: string): void {
 
 // ---- identiteit per checkout (hooks van Codex erven de omgeving van de app-server-daemon, niet van de sessie) ----
 
-/** Een identiteit verloopt na deze tijd, ook als de sessie nooit netjes eindigde. */
+/** A PID alone can be reused. Keep the OS process birth time as well. */
+export type LauncherOwner = { pid: number; start: string };
+
+export function isLauncherOwner(value: unknown): value is LauncherOwner {
+  const owner = value as LauncherOwner | null;
+  return !!owner && Number.isSafeInteger(owner.pid) && owner.pid > 0 && typeof owner.start === "string" && !!owner.start.trim();
+}
+
+function processInfo(pid: number): { start: string; zombie: boolean } | null {
+  const result = Bun.spawnSync(["/bin/ps", "-p", String(pid), "-o", "lstart=", "-o", "stat="], { env: { PATH: "/usr/bin:/bin", LC_ALL: "C" }, stdout: "pipe", stderr: "ignore", timeout: 1000 });
+  if (result.exitCode !== 0) return null;
+  const match = result.stdout.toString().trim().match(/^(.*?)\s+(\S+)$/);
+  return match ? { start: match[1]!.trim(), zombie: match[2]!.startsWith("Z") } : null;
+}
+
+export function launcherOwner(): LauncherOwner {
+  const info = processInfo(process.pid);
+  if (!info || info.zombie) throw new Error("cannot verify Relay launcher ownership");
+  return { pid: process.pid, start: info.start };
+}
+
+export function ownerStatus(owner: LauncherOwner): "alive" | "dead" | "unknown" {
+  try { process.kill(owner.pid, 0); }
+  catch (error) { return (error as NodeJS.ErrnoException).code === "ESRCH" ? "dead" : "unknown"; }
+  const info = processInfo(owner.pid);
+  if (!info) return "unknown";
+  return info.zombie || info.start !== owner.start ? "dead" : "alive";
+}
+
+const LEASE_APP_ID = 0x524c5931;
+const LEASE_SCHEMA = "CREATE TABLE leases (spawn TEXT PRIMARY KEY, payload TEXT NOT NULL)";
+type FileIdentity = { dev: number; ino: number };
+type LeaseMarker = { kind: "relay-launchers-v1"; database: FileIdentity; journal: FileIdentity };
+const leaseError = (reason: string): Error => new Error(`unsafe Relay reservation database: ${reason}; preserving existing state`);
+
+/** Inspect all existing parents before mkdir. Canonical root-owned OS aliases
+ * such as macOS /var are allowed; symlinks anywhere below them are refused. */
+function leaseDirectory(state: string): string {
+  const absolute = resolve(state, "launchers");
+  let current = parse(absolute).root;
+  let missing = false;
+  for (const part of absolute.slice(current.length).split("/")) {
+    current = join(current, part);
+    if (missing) continue;
+    let st;
+    try { st = lstatSync(current); }
+    catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") { missing = true; continue; } throw leaseError("cannot inspect parent"); }
+    if (st.isSymbolicLink()) {
+      if (dirname(current) !== "/" || st.uid !== 0) throw leaseError("symlink parent");
+      current = realpathSync(current);
+    } else if (!st.isDirectory()) throw leaseError("parent is not a directory");
+  }
+  return current;
+}
+
+function privateLeaseFile(path: string): { bytes: Buffer; identity: FileIdentity } {
+  let fd: number;
+  try { fd = openSync(path, FS.O_RDONLY | FS.O_NOFOLLOW | FS.O_NONBLOCK); }
+  catch { throw leaseError("missing or symlink file"); }
+  try {
+    const st = fstatSync(fd);
+    if (!st.isFile() || st.nlink !== 1 || (st.mode & 0o077) !== 0 || (typeof process.getuid === "function" && st.uid !== process.getuid())) throw leaseError("file is not private and exclusively owned");
+    return { bytes: readFileSync(fd), identity: { dev: st.dev, ino: st.ino } };
+  } finally { closeSync(fd); }
+}
+
+function initializeLeaseDirectory(directory: string): void {
+  try { lstatSync(directory); return; }
+  catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
+  mkdirSync(dirname(directory), { recursive: true, mode: 0o700 });
+  const temporary = mkdtempSync(join(dirname(directory), ".relay-launchers-"));
+  try {
+    const initial = new Database(":memory:");
+    try {
+      initial.exec(`PRAGMA application_id = ${LEASE_APP_ID}; PRAGMA user_version = 1; ${LEASE_SCHEMA}`);
+      writeFileSync(join(temporary, "leases.sqlite"), initial.serialize(), { mode: 0o600, flag: "wx" });
+    } finally { initial.close(); }
+    writeFileSync(join(temporary, "leases.sqlite-journal"), "", { mode: 0o600, flag: "wx" });
+    const marker: LeaseMarker = { kind: "relay-launchers-v1", database: privateLeaseFile(join(temporary, "leases.sqlite")).identity, journal: privateLeaseFile(join(temporary, "leases.sqlite-journal")).identity };
+    writeFileSync(join(temporary, "owner.json"), JSON.stringify(marker), { mode: 0o600, flag: "wx" });
+    try { renameSync(temporary, directory); }
+    catch (error) { if (!["EEXIST", "ENOTEMPTY"].includes((error as NodeJS.ErrnoException).code || "")) throw error; }
+  } finally { rmSync(temporary, { recursive: true, force: true }); }
+}
+
+/** Validate bytes in memory: never let SQLite recover or initialize an unknown file. */
+function verifyLeaseDatabase(directory: string): void {
+  if (!eigenPrive(directory, true)) throw leaseError("reservation directory is not private");
+  let marker: LeaseMarker;
+  try { marker = JSON.parse(privateLeaseFile(join(directory, "owner.json")).bytes.toString()); }
+  catch { throw leaseError("unknown ownership marker"); }
+  if (marker?.kind !== "relay-launchers-v1") throw leaseError("unknown ownership marker");
+  const path = join(directory, "leases.sqlite");
+  for (const suffix of ["-wal", "-shm"]) {
+    try { lstatSync(path + suffix); throw leaseError(`unknown ${suffix} sidecar`); }
+    catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
+  }
+  const database = privateLeaseFile(path);
+  const journal = privateLeaseFile(path + "-journal");
+  const same = (actual: FileIdentity, expected: FileIdentity | undefined) => expected && actual.dev === expected.dev && actual.ino === expected.ino;
+  if (!same(database.identity, marker.database) || !same(journal.identity, marker.journal)) throw leaseError("unknown database or journal inode");
+  // PERSIST journals are either empty/invalidated (all-zero header), or have the
+  // SQLite rollback-journal signature. Their registered inode proves provenance.
+  const header = journal.bytes.subarray(0, 8);
+  if (journal.bytes.length && (journal.bytes.length < 512 || (!header.every((byte) => byte === 0) && header.toString("hex") !== "d9d505f920a163d7"))) throw leaseError("corrupt journal");
+  // Relay never ATTACHes another database. A master-journal trailer can name a
+  // file outside this state directory and must never reach SQLite recovery.
+  if (journal.bytes.length >= 16 && journal.bytes.subarray(-8).toString("hex") === "d9d505f920a163d7") throw leaseError("unsupported super-journal");
+  if (database.bytes[18] !== 1 || database.bytes[19] !== 1) throw leaseError("unsupported journal mode");
+  let copy: Database | undefined;
+  try {
+    copy = Database.deserialize(database.bytes, true);
+    const app = copy.query("PRAGMA application_id").get() as { application_id: number };
+    const version = copy.query("PRAGMA user_version").get() as { user_version: number };
+    const schema = copy.query("SELECT type, name, sql FROM sqlite_master WHERE name NOT GLOB 'sqlite_*' ORDER BY name").all() as { type: string; name: string; sql: string }[];
+    const integrity = copy.query("PRAGMA quick_check").get() as { quick_check: string };
+    if (app.application_id !== LEASE_APP_ID || version.user_version !== 1 || schema.length !== 1 || schema[0]?.type !== "table" || schema[0]?.name !== "leases" || schema[0]?.sql !== LEASE_SCHEMA || integrity.quick_check !== "ok") throw leaseError("unknown application or schema");
+  } catch { throw leaseError("unknown or corrupt database/schema"); }
+  finally { copy?.close(); }
+}
+
+/** SQLite supplies a crash-released, cross-process lock. Only registered files
+ * are opened, with NOFOLLOW, and PERSIST keeps the journal inode recognizable. */
+export function withLaunchLock<T>(state: string, action: (db: Database) => T): T {
+  const directory = leaseDirectory(state);
+  initializeLeaseDirectory(directory);
+  verifyLeaseDatabase(directory);
+  const db = new Database(join(directory, "leases.sqlite"), SQLITE.SQLITE_OPEN_READWRITE | SQLITE.SQLITE_OPEN_NOFOLLOW);
+  try {
+    db.exec("PRAGMA busy_timeout = 2000; PRAGMA journal_mode = PERSIST; BEGIN IMMEDIATE");
+    try {
+      const result = action(db);
+      db.exec("COMMIT");
+      return result;
+    } catch (error) { db.exec("ROLLBACK"); throw error; }
+  } finally { db.close(); }
+}
+
+/** Legacy-identiteiten verlopen na deze tijd; Relay-identiteiten volgen hun proces-eigenaar. */
 export const IDENTITEIT_MAX_MS = 12 * 3600_000;
 
-export type Identiteit = { naam: string; rol: string; lead: string; opdracht: string; spawn_id: string; ts: number; t3_thread?: string; sessie_id?: string };
+export type Identiteit = { naam: string; rol: string; lead: string; opdracht: string; spawn_id: string; ts: number; t3_thread?: string; sessie_id?: string; relay_owner?: LauncherOwner };
 
 export function identiteitPad(staat: string, cwd: string): string {
   return join(staat, "identiteit", `${createHash("sha256").update(cwd).digest("hex").slice(0, 24)}.json`);
@@ -373,13 +512,17 @@ function eigenPrive(pad: string, map: boolean): boolean {
   }
 }
 
-function leesIdentiteitBestand(pad: string, nu: number): Identiteit | null {
+function leesIdentiteitBestand(pad: string, nu: number, controleerLeven = true): Identiteit | null {
   try {
     if (!eigenPrive(dirname(pad), true) || !eigenPrive(pad, false)) return null;
     const o = JSON.parse(readFileSync(pad, "utf8"));
     if (!o || typeof o !== "object" || typeof o.naam !== "string" || !o.naam || !IDENTITEIT_ROLLEN.includes(o.rol)) return null;
-    if (typeof o.ts !== "number" || o.ts > nu || nu - o.ts > IDENTITEIT_MAX_MS) return null;
-    return { naam: o.naam, rol: o.rol, lead: String(o.lead ?? ""), opdracht: String(o.opdracht ?? ""), spawn_id: String(o.spawn_id ?? ""), ts: o.ts, ...(typeof o.t3_thread === "string" && o.t3_thread ? { t3_thread: o.t3_thread } : {}), ...(typeof o.sessie_id === "string" && o.sessie_id ? { sessie_id: o.sessie_id } : {}) };
+    if (typeof o.ts !== "number" || !Number.isFinite(o.ts) || o.ts > nu) return null;
+    if ("relay_owner" in o) {
+      if (!isLauncherOwner(o.relay_owner) || typeof o.spawn_id !== "string" || !o.spawn_id) return null;
+      if (controleerLeven && ownerStatus(o.relay_owner) !== "alive") return null;
+    } else if (nu - o.ts > IDENTITEIT_MAX_MS) return null;
+    return { naam: o.naam, rol: o.rol, lead: String(o.lead ?? ""), opdracht: String(o.opdracht ?? ""), spawn_id: String(o.spawn_id ?? ""), ts: o.ts, ...(o.relay_owner ? { relay_owner: o.relay_owner } : {}), ...(typeof o.t3_thread === "string" && o.t3_thread ? { t3_thread: o.t3_thread } : {}), ...(typeof o.sessie_id === "string" && o.sessie_id ? { sessie_id: o.sessie_id } : {}) };
   } catch {
     return null;
   }
@@ -403,7 +546,7 @@ export function zoekIdentiteit(staat: string, cwd: string, nu = Date.now()): { p
   return null;
 }
 
-/** Staat er een identiteitsbestand (geldig of niet, verlopen of kapot; elke andere lstat-fout dan ENOENT telt ook) voor `cwd` of een bovenliggende map? */
+/** Behoud legacy/onbekende bestanden; alleen een aantoonbaar dode Relay-eigenaar blokkeert niet meer. */
 export function heeftIdentiteitsbestand(staat: string, cwd: string): boolean {
   for (let d = cwd; d && d !== "/" && d !== "."; d = dirname(d)) {
     let echt = d;
@@ -411,7 +554,10 @@ export function heeftIdentiteitsbestand(staat: string, cwd: string): boolean {
       echt = realpathSync(d);
     } catch {}
     try {
-      lstatSync(identiteitPad(staat, echt));
+      const pad = identiteitPad(staat, echt);
+      lstatSync(pad);
+      const owned = leesIdentiteitBestand(pad, Date.now(), false);
+      if (owned?.relay_owner && ownerStatus(owned.relay_owner) === "dead") continue;
       return true;
     } catch (e) {
       // alleen "bestaat niet" is een nee; elke andere fout (rechten, I/O) telt als aanwezig (faalt dicht)
@@ -421,11 +567,36 @@ export function heeftIdentiteitsbestand(staat: string, cwd: string): boolean {
   return false;
 }
 
+/** Alleen onder withLaunchLock: verwijder aantoonbaar dode Relay-launchers, nooit legacy/onbekende bestanden. */
+export function ruimDodeLauncherIdentiteitenOp(staat: string): string[] {
+  const map = join(staat, "identiteit");
+  if (!eigenPrive(map, true)) return [];
+  const spawns: string[] = [];
+  for (const naam of readdirSync(map)) {
+    if (!naam.endsWith(".json")) continue;
+    const pad = join(map, naam);
+    const identiteit = leesIdentiteitBestand(pad, Date.now(), false);
+    if (!identiteit?.relay_owner || ownerStatus(identiteit.relay_owner) !== "dead") continue;
+    rmSync(pad);
+    spawns.push(identiteit.spawn_id);
+  }
+  return spawns;
+}
+
+/** Alleen onder withLaunchLock; ook een verlopen eigen identiteit mag bij launcher-exit weg. */
+export function wisLauncherIdentiteit(staat: string, cwd: string, spawnId: string): void {
+  const pad = identiteitPad(staat, cwd);
+  const identiteit = leesIdentiteitBestand(pad, Date.now(), false);
+  if (identiteit?.relay_owner && identiteit.spawn_id === spawnId && identiteit.relay_owner.pid === process.pid) rmSync(pad, { force: true });
+}
+
 /** Houdt de identiteit van een levende sessie vers (ts = nu): hij verloopt alleen na IDENTITEIT_MAX_MS zonder activiteit. */
 export function ververseIdentiteit(staat: string, cwd: string, spawnId: string, nu = Date.now()): void {
   if (!spawnId) return;
-  const g = zoekIdentiteit(staat, cwd, nu);
-  if (g && g.identiteit.spawn_id === spawnId && nu - g.identiteit.ts > 60_000) schrijfAtomair(g.pad, `${JSON.stringify({ ...g.identiteit, ts: nu })}\n`);
+  withLaunchLock(staat, () => {
+    const g = zoekIdentiteit(staat, cwd, nu);
+    if (g && g.identiteit.spawn_id === spawnId && nu - g.identiteit.ts > 60_000) schrijfAtomair(g.pad, `${JSON.stringify({ ...g.identiteit, ts: nu })}\n`);
+  });
 }
 
 /** Bindt de werkruimte-identiteit van een proeflead eenmalig aan haar Codex-sessie. Andere sessies mogen haar nooit overnemen. */
@@ -441,6 +612,8 @@ export function bindLeadProefSessie(staat: string, cwd: string, spawnId: string,
 /** SessionEnd: haalt de identiteit weg als hij nog van deze spawn is (een nieuwe spawn in dezelfde checkout blijft staan). */
 export function wisIdentiteit(staat: string, cwd: string, spawnId: string, nu = Date.now()): void {
   if (!spawnId) return;
-  const g = zoekIdentiteit(staat, cwd, nu);
-  if (g && g.identiteit.rol !== "lead-proef" && g.identiteit.spawn_id === spawnId) rmSync(g.pad, { force: true });
+  withLaunchLock(staat, () => {
+    const g = zoekIdentiteit(staat, cwd, nu);
+    if (g && g.identiteit.rol !== "lead-proef" && g.identiteit.spawn_id === spawnId) rmSync(g.pad, { force: true });
+  });
 }

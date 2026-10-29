@@ -3,12 +3,13 @@ import { join, resolve } from "node:path";
 import { genereer } from "../scripts/lead/beleid/claude";
 import { beleid } from "../scripts/lead/beleid/beleid";
 import { geldigeNaam } from "../scripts/lead/peers/bus";
-import { alleRecords, heeftIdentiteitsbestand, schrijfIdentiteit, schrijfRecord, wisIdentiteit, staatMap } from "../scripts/lead/hooks/register";
+import { alleRecords, heeftIdentiteitsbestand, schrijfIdentiteit, schrijfRecord, ruimDodeLauncherIdentiteitenOp, wisLauncherIdentiteit, staatMap } from "../scripts/lead/hooks/register";
 import { standaardBus } from "../scripts/lead/peers/standaard";
 import { blokIn } from "../scripts/lead/hooks/codex-installeer";
 import { startAppServer } from "../scripts/lead/hooks/codex-appserver";
 import { staatOmgeving, EVENTS, MERK } from "../scripts/lead/hooks/codex-installeer";
 import { environment, type Environment } from "./environment";
+import { deleteLaunchLease, launcherOwner, launchLeases, ownerStatus, saveLaunchLease, withLaunchLock } from "./identity";
 
 const ROOT = resolve(import.meta.dir, "..");
 
@@ -31,16 +32,23 @@ export function launchPlan(vendor: "claude" | "codex", args: string[], input: En
     else model = value;
   }
   if (!geldigeNaam(name) || (lead && !geldigeNaam(lead))) throw new Error("use --name NAME and a valid --lead NAME");
-  const reserved = vendor === "claude" ? ["--settings", "--mcp-config", "--setting-sources"] : ["-C", "--cd", "-c", "--config", "--profile", "-p"];
-  if (extra.some((arg) => reserved.some((flag) => arg === flag || arg.startsWith(`${flag}=`)))) throw new Error("pass directory/model through Relay options; settings that replace Relay hooks or identity cannot be passed after --");
+  const reserved = vendor === "claude"
+    ? ["--settings", "--mcp-config", "--setting-sources", "--name", "--agent", "--agents", "--plugin-dir", "--bare", "--dangerously-skip-permissions", "--allow-dangerously-skip-permissions", "--permission-mode", "--worktree", "-n", "-w"]
+    : ["-C", "--cd", "-c", "--config", "--profile", "-p", "--dangerously-bypass-approvals-and-sandbox", "--dangerously-bypass-hook-trust", "--yolo", "--sandbox", "-s", "--ask-for-approval", "-a", "--disable", "--enable"];
+  for (const arg of extra) {
+    if (arg === "--") break; // The vendor treats subsequent strings as literal prompt text.
+    if (reserved.some((flag) => flag.startsWith("--") ? arg === flag || arg.startsWith(`${flag}=`) : arg.startsWith(flag))) throw new Error("pass directory/model through Relay options; settings that replace Relay hooks or identity cannot be passed after --");
+  }
   cwd = realpathSync(cwd);
-  const role = vendor === "claude" && (!lead || lead === name) ? "lead" : "agent";
-  env = { ...env, LAB_AGENT_NAAM: name, LAB_LEAD_NAAM: lead || (role === "lead" ? name : ""), LAB_AGENT_ROL: role, LAB_LEAD_BUN: process.execPath, LAB_SPAWN_ID: crypto.randomUUID() };
+  env = { ...env, LAB_AGENT_NAAM: name, LAB_LEAD_NAAM: lead, LAB_AGENT_ROL: "agent", LAB_LEAD_BUN: process.execPath, LAB_SPAWN_ID: crypto.randomUUID() };
   // A parent's RELAY_* identity must not override this launch in its MCP subprocess.
   delete env.RELAY_NAME;
   delete env.RELAY_LEAD;
   delete env.RELAY_ROLE;
   const mcpEnv = Object.fromEntries(["LAB_AGENT_NAAM", "LAB_LEAD_NAAM", "LAB_AGENT_ROL", "LAB_LEAD_STAAT"].map((key) => [key, env[key]!]));
+  // Codex can restart MCP after its launcher dies. Resolve its identity from the
+  // live checkout owner, rather than falling back to the inherited TUI identity.
+  if (vendor === "codex") for (const key of ["LAB_AGENT_NAAM", "LAB_LEAD_NAAM", "LAB_AGENT_ROL"]) mcpEnv[key] = "";
   const server = { command: process.execPath, args: [join(ROOT, "bin/relay.ts"), "mcp"], env: mcpEnv };
   const argv: string[] = [vendor];
   if (vendor === "claude") {
@@ -63,33 +71,56 @@ export async function launch(vendor: "claude" | "codex", args: string[], input: 
   const plan = launchPlan(vendor, args, input);
   const state = staatMap(plan.env);
   if (!Bun.which(vendor)) throw new Error(`${vendor} is not installed; install and authenticate its CLI first`);
-  if (alleRecords(state).some((r) => r.toestand !== "weg" && r.naam.toLowerCase() === plan.name.toLowerCase())) throw new Error(`session name already active: ${plan.name}`);
   if (vendor === "codex") {
     const config = join(plan.env.CODEX_HOME!, "config.toml");
     if (!existsSync(config) || !blokIn(readFileSync(config, "utf8"))) throw new Error("Codex hooks are not configured. Run relay setup codex --dry-run, then relay setup codex.");
-    if (heeftIdentiteitsbestand(state, plan.cwd)) throw new Error("this checkout already has a session identity; use a separate worktree");
     const server = await startAppServer("codex", plan.env.CODEX_HOME!, plan.cwd);
     try {
       const own = (await server.hooks(plan.cwd)).filter((hook) => hook.command.includes(MERK));
       if (own.length !== EVENTS.length || own.some((hook) => !["trusted", "managed"].includes(hook.trustStatus) || !hook.command.includes(` ${staatOmgeving(state)} `))) throw new Error("Codex hooks are untrusted or use another state directory; run relay setup codex for this bus");
     } finally { server.sluit(); }
-    schrijfIdentiteit(state, plan.cwd, { naam: plan.name, rol: "agent", lead: plan.env.LAB_LEAD_NAAM!, opdracht: "", spawn_id: plan.env.LAB_SPAWN_ID!, ts: Date.now() });
   }
+  const spawn = plan.env.LAB_SPAWN_ID!;
+  const owner = launcherOwner();
+  withLaunchLock(state, (db) => {
+    const leases = launchLeases(db);
+    const dead = leases.filter((lease) => ownerStatus(lease.owner) === "dead");
+    const stale = new Set([...dead.map((lease) => lease.spawn), ...ruimDodeLauncherIdentiteitenOp(state)]);
+    for (const record of alleRecords(state)) {
+      if (record.spawn_id && stale.has(record.spawn_id) && record.toestand !== "weg") schrijfRecord(state, { ...record, toestand: "weg", sinds: Date.now(), einde: Date.now() });
+    }
+    for (const lease of dead) deleteLaunchLease(db, lease.spawn);
+    const live = leases.filter((lease) => !stale.has(lease.spawn));
+    if (live.some((lease) => lease.name.toLowerCase() === plan.name.toLowerCase()) || alleRecords(state).some((r) => r.toestand !== "weg" && r.naam.toLowerCase() === plan.name.toLowerCase())) throw new Error(`session name already active: ${plan.name}`);
+    if (vendor === "codex") {
+      const contains = (parent: string, child: string) => parent === child || child.startsWith(parent.endsWith("/") ? parent : `${parent}/`);
+      if (heeftIdentiteitsbestand(state, plan.cwd) || live.some((lease) => lease.vendor === "codex" && (contains(lease.cwd, plan.cwd) || contains(plan.cwd, lease.cwd)))) throw new Error("this checkout already has a session identity; use a separate worktree");
+    }
+    saveLaunchLease(db, { spawn, name: plan.name, cwd: plan.cwd, vendor, owner });
+    if (vendor === "codex") schrijfIdentiteit(state, plan.cwd, { naam: plan.name, rol: "agent", lead: plan.env.LAB_LEAD_NAAM!, opdracht: "", spawn_id: spawn, ts: Date.now(), relay_owner: owner });
+  });
   let p: ReturnType<typeof Bun.spawn> | undefined;
   const interrupt = () => p?.kill("SIGINT");
   const terminate = () => p?.kill("SIGTERM");
+  const hangup = () => p?.kill("SIGHUP");
   process.on("SIGINT", interrupt);
   process.on("SIGTERM", terminate);
+  process.on("SIGHUP", hangup);
   try {
     p = Bun.spawn(plan.argv, { cwd: plan.cwd, env: plan.env, stdin: "inherit", stdout: "inherit", stderr: "inherit" });
     return await p.exited;
   } finally {
     process.off("SIGINT", interrupt);
     process.off("SIGTERM", terminate);
-    if (vendor === "codex") wisIdentiteit(state, plan.cwd, plan.env.LAB_SPAWN_ID!);
+    process.off("SIGHUP", hangup);
     // A CLI crash may omit SessionEnd. Retire only records from this exact launch.
-    const owned = alleRecords(state).filter((record) => record.spawn_id === plan.env.LAB_SPAWN_ID && record.toestand !== "weg");
-    for (const record of owned) schrijfRecord(state, { ...record, toestand: "weg", sinds: Date.now(), einde: Date.now() });
+    const owned = withLaunchLock(state, (db) => {
+      if (vendor === "codex") wisLauncherIdentiteit(state, plan.cwd, spawn);
+      const records = alleRecords(state).filter((record) => record.spawn_id === spawn && record.toestand !== "weg");
+      for (const record of records) schrijfRecord(state, { ...record, toestand: "weg", sinds: Date.now(), einde: Date.now() });
+      deleteLaunchLease(db, spawn);
+      return records;
+    });
     if (owned.length) {
       const bus = standaardBus(plan.env);
       for (const record of owned) await bus.idleGemeld(record.naam, "weg");
