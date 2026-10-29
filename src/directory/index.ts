@@ -4,6 +4,7 @@ import * as validate from "./validation";
 
 export type DirectoryOptions = { store: MessageStore; now?: () => number; id?: () => string };
 export type RegisterRequest = { namespace: string; name: string; endpoint: Endpoint; peerId?: string };
+export type RebindRequest = { namespace: string; peerId: string; expectedGeneration: number; endpoint: Endpoint };
 
 /** Never let a display alias shadow a different stable peer ID. */
 export function resolvePeer(store: MessageStore, namespace: string, reference: string): Peer {
@@ -62,6 +63,23 @@ export function createDirectory({ store, now = Date.now, id = randomUUID }: Dire
       };
       // Atomic uniqueness and immutable binding are also enforced by the store.
       return structuredClone(store.register(peer));
+    },
+
+    rebind(input: RebindRequest): Peer {
+      validate.record(input, "rebind request");
+      validate.address(input.namespace, "namespace");
+      validate.address(input.peerId, "peerId");
+      validate.endpoint(input.endpoint);
+      if (!Number.isSafeInteger(input.expectedGeneration) || input.expectedGeneration < 0) {
+        throw new MessageError("invalid", "expectedGeneration must be a nonnegative safe integer");
+      }
+      if (input.endpoint.generation !== input.expectedGeneration + 1) {
+        throw new MessageError("invalid", "rebind endpoint generation must advance expectedGeneration by exactly one");
+      }
+      const peer = resolvePeer(store, input.namespace, input.peerId);
+      // The store checks the current generation and session uniqueness atomically.
+      // A preflight read cannot authorize overwriting a concurrent reconnect.
+      return structuredClone(store.rebindPeer(input.namespace, peer.id, input.expectedGeneration, structuredClone(input.endpoint), validate.timestamp(now)));
     },
 
     setPresence(namespace: string, peerId: string, presence: Presence): void {

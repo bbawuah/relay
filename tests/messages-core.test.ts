@@ -2,20 +2,22 @@ import { describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { createDirectory } from "../src/directory";
 import { createMessageService } from "../src/messages/service";
-import { MessageError, type MessageErrorCode, type EnqueueInput, type Envelope, type MessageStore, type Peer, type Receipt, type SendRequest } from "../src/messages/contracts";
+import { DEFAULT_IDEMPOTENCY_MS, DEFAULT_REFERENCE_MS, MessageError, type MessageErrorCode, type EnqueueInput, type Envelope, type MessageReference, type MessageStore, type Peer, type Receipt, type SendRequest } from "../src/messages/contracts";
 
 // A disposable transactional model of the seam, not evidence about SQLite or hosts.
-function memoryStore() {
+function memoryStore(clock: () => number, { idempotencyMs = DEFAULT_IDEMPOTENCY_MS, referenceMs = DEFAULT_REFERENCE_MS }: { idempotencyMs?: number; referenceMs?: number } = {}) {
   const peers: Peer[] = [];
   const messages: Envelope[] = [];
   const acknowledged = new Set<string>();
   const receipts = new Map<string, { fingerprint: string; receipt: Receipt }>();
+  const references = new Map<string, { reference: MessageReference; expiresAt: number }>();
   const enqueued: EnqueueInput[] = [];
   let failNextWrite = false;
   const key = (...parts: string[]) => JSON.stringify(parts);
   const unused = (): never => { throw new Error("notification operation outside core test"); };
   const store: MessageStore = {
     register(peer) { peers.push(structuredClone(peer)); return structuredClone(peer); },
+    rebindPeer: unused,
     getPeer(ns, id) { return peers.find((p) => p.namespace === ns && p.id === id) ?? null; },
     findPeer(ns, name) { return peers.find((p) => p.namespace === ns && p.name.toLowerCase() === name.toLowerCase()) ?? null; },
     listPeers(ns) { return peers.filter((p) => p.namespace === ns); },
@@ -26,7 +28,7 @@ function memoryStore() {
     },
     lookupReceipt(ns, sender, requestKey, fingerprint) {
       const previous = receipts.get(key(ns, sender, requestKey));
-      if (!previous) return null;
+      if (!previous || previous.receipt.expiresAt <= clock()) return null;
       if (previous.fingerprint !== fingerprint) throw new MessageError("conflict", "request key changed payload");
       return { ...previous.receipt, duplicate: true };
     },
@@ -40,12 +42,23 @@ function memoryStore() {
       if (store.unread(message.namespace, message.to) >= input.maxPending) throw new MessageError("queue_full", "mailbox full");
       if (Buffer.byteLength(message.body, "utf8") > input.maxBodyBytes) throw new MessageError("too_large", "body too large");
       if (store.getMessage(message.namespace, message.id)) throw new MessageError("conflict", "duplicate message id");
-      const receipt: Receipt = { id: message.id, state: "stored", duplicate: false, createdAt: message.createdAt, ...(requestKey === undefined ? {} : { requestKey }) };
+      const receipt: Receipt = { id: message.id, state: "stored", duplicate: false, createdAt: message.createdAt, expiresAt: clock() + idempotencyMs, ...(requestKey === undefined ? {} : { requestKey }) };
       messages.push(structuredClone(message)); enqueued.push(structuredClone(input));
       if (requestKey !== undefined) receipts.set(key(message.namespace, message.from, requestKey), { fingerprint, receipt });
+      const { body: _body, replyTo: _replyTo, version: _version, ...reference } = message;
+      references.set(key(message.namespace, message.id), { reference, expiresAt: clock() + referenceMs });
       return receipt;
     },
     getMessage(ns, id) { return messages.find((m) => m.namespace === ns && m.id === id) ?? null; },
+    getMessageReference(ns, id) {
+      const body = store.getMessage(ns, id);
+      if (body) {
+        const { body: _body, replyTo: _replyTo, version: _version, ...reference } = body;
+        return reference;
+      }
+      const retained = references.get(key(ns, id));
+      return retained && retained.expiresAt > clock() ? retained.reference : null;
+    },
     read(ns, peerId, limit) { return messages.filter((m) => m.namespace === ns && m.to === peerId && !acknowledged.has(key(ns, peerId, m.id))).slice(0, limit); },
     ack(ns, peerId, ids) {
       let count = 0;
@@ -63,29 +76,31 @@ function memoryStore() {
         const m = messages[i]!;
         if (m.createdAt < before && acknowledged.has(key(m.namespace, m.to, m.id))) { messages.splice(i, 1); count++; }
       }
+      for (const [key, saved] of references) if (saved.expiresAt <= clock()) references.delete(key);
+      for (const [key, saved] of receipts) if (saved.receipt.expiresAt <= clock()) receipts.delete(key);
       return count;
     },
-    claimNotifications: unused, completeNotification: unused, retryNotification: unused,
+    claimNotifications: unused, completeNotification: unused, failNotification: unused, retryNotification: unused, notificationStatus: unused,
     close() {},
   };
   return { store, peers, messages, enqueued, failNextWrite() { failNextWrite = true; } };
 }
 
-function fixture(options: { maxPending?: number; maxBodyBytes?: number } = {}) {
-  const memory = memoryStore();
-  let sequence = 0;
+function fixture({ idempotencyMs, referenceMs, ...options }: { maxPending?: number; maxBodyBytes?: number; idempotencyMs?: number; referenceMs?: number } = {}) {
   let timestamp = 100;
+  const memory = memoryStore(() => timestamp, { idempotencyMs, referenceMs });
+  let sequence = 0;
   const directory = createDirectory({ store: memory.store, now: () => timestamp, id: () => `peer-${++sequence}` });
   for (const namespace of ["project", "elsewhere"]) {
     for (const name of ["Alice", "Bob", "Carol"]) directory.register({ namespace, name, peerId: name.toLowerCase(), endpoint: { host: "manual", sessionId: name.toLowerCase(), generation: 1, target: {} } });
   }
   const service = createMessageService({ store: memory.store, now: () => timestamp++, id: () => `message-${++sequence}`, ...options });
   const request: SendRequest = { namespace: "project", from: "ALICE", to: "BOB", body: "hello" };
-  return { ...memory, service, directory, request };
+  return { ...memory, service, directory, request, time: () => timestamp, advance(ms: number) { timestamp += ms; } };
 }
 
 function errorCode(action: () => unknown, code: MessageErrorCode) {
-  try { action(); } catch (error) { expect(error).toBeInstanceOf(MessageError); expect((error as MessageError).code).toBe(code); return; }
+  try { action(); } catch (error) { expect(error).toBeInstanceOf(MessageError); expect((error as MessageError).code).toBe(code); return error as MessageError; }
   throw new Error(`expected ${code}`);
 }
 
@@ -189,19 +204,62 @@ describe("message service", () => {
     expect(service.send({ ...request, from: "Bob", to: "Alice", replyTo: root.id, conversationId }).state).toBe("stored");
   });
 
-  test("R1: retained keyed reply receipt is returned after pruning; changes still conflict", () => {
-    const { service, store, request, enqueued } = fixture();
+  test("R1/R2: keyed reply receipt bypasses an expired reference; changes still conflict", () => {
+    const { service, store, request, enqueued, advance } = fixture({ idempotencyMs: 1000, referenceMs: 10 });
     const original = service.send(request);
     const reply: SendRequest = { ...request, from: "Bob", to: "Alice", replyTo: original.id, requestKey: "reply" };
     const receipt = service.send(reply);
     service.ack({ namespace: "project", peerId: "Bob", ids: [original.id] });
     expect(store.prune(1000)).toBe(1);
     expect(store.getMessage("project", original.id)).toBeNull();
+    advance(20);
+    expect(store.getMessageReference("project", original.id)).toBeNull();
     expect(service.send(reply)).toEqual({ ...receipt, duplicate: true });
     for (const change of [{ body: "different" }, { to: "Carol" }, { replyTo: "different" }, { conversationId: "different" }]) {
       errorCode(() => service.send({ ...reply, ...change }), "conflict");
     }
     errorCode(() => service.send({ ...reply, requestKey: "new" }), "invalid");
+    expect(enqueued).toHaveLength(2);
+  });
+
+  test("R2: a new reply after body pruning uses the retained participant/conversation reference", () => {
+    const { service, store, request, messages } = fixture();
+    const root = service.send(request);
+    const conversationId = store.getMessage("project", root.id)!.conversationId;
+    service.ack({ namespace: "project", peerId: "Bob", ids: [root.id] });
+    expect(store.prune(1000)).toBe(1);
+    expect(store.getMessage("project", root.id)).toBeNull();
+    const reply = service.send({ ...request, from: "Bob", to: "Alice", replyTo: root.id, requestKey: "new-reply" });
+    expect(store.getMessage("project", reply.id)).toMatchObject({ conversationId, replyTo: root.id, from: "bob", to: "alice" });
+    errorCode(() => service.send({ ...request, from: "Carol", replyTo: root.id }), "invalid");
+    errorCode(() => service.send({ ...request, namespace: "elsewhere", replyTo: root.id }), "invalid");
+    expect(messages).toHaveLength(1);
+  });
+
+  test("R2: an expired pruned reply reference produces an explicit error and no new message", () => {
+    const { service, store, request, advance, messages } = fixture({ referenceMs: 10 });
+    const root = service.send(request);
+    service.ack({ namespace: "project", peerId: "Bob", ids: [root.id] });
+    store.prune(1000);
+    advance(10);
+    expect(errorCode(() => service.send({ ...request, from: "Bob", to: "Alice", replyTo: root.id }), "invalid").message).toContain("missing or expired");
+    expect(messages).toHaveLength(0);
+  });
+
+  test("R2: service passes persisted receipt expiry through; an expired key starts a new send", () => {
+    const { service, request, store, advance, time, enqueued } = fixture({ idempotencyMs: 10 });
+    const keyed = { ...request, requestKey: "bounded-retry" };
+    const receipt = service.send(keyed);
+    expect(receipt.expiresAt).toBe(time() + 10);
+    const retry = service.send(keyed);
+    expect(retry).toEqual({ ...receipt, duplicate: true });
+    errorCode(() => service.send({ ...keyed, body: "changed" }), "conflict");
+    advance(receipt.expiresAt - time());
+    const renewed = service.send({ ...keyed, body: "changed after expiry" });
+    expect(renewed).toMatchObject({ state: "stored", duplicate: false, requestKey: keyed.requestKey });
+    expect(renewed.id).not.toBe(receipt.id);
+    expect(renewed.expiresAt).toBeGreaterThan(receipt.expiresAt);
+    expect(store.getMessage("project", renewed.id)?.body).toBe("changed after expiry");
     expect(enqueued).toHaveLength(2);
   });
 

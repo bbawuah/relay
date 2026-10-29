@@ -25,6 +25,9 @@ export function endpoint(value: unknown): asserts value is Endpoint {
     address(key, "endpoint.target key");
     if (typeof target !== "string") throw new MessageError("invalid", "endpoint.target values must be strings");
   }
+  if (value.host === "t3" && value.target.threadId !== value.sessionId) {
+    throw new MessageError("invalid", "T3 endpoint.target.threadId must equal endpoint.sessionId");
+  }
 }
 
 export function presence(value: unknown): asserts value is Presence {

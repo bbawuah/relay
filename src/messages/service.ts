@@ -49,8 +49,9 @@ export function createMessageService({ store, now = Date.now, id = randomUUID, m
       }
       let conversationId = request.conversationId;
       if (request.replyTo !== undefined) {
-        const parent = store.getMessage(request.namespace, request.replyTo);
-        if (!parent || parent.namespace !== request.namespace
+        const parent = store.getMessageReference(request.namespace, request.replyTo);
+        if (!parent) throw new MessageError("invalid", "reply reference is missing or expired in this namespace");
+        if (parent.namespace !== request.namespace
           || !((parent.from === from.id && parent.to === to.id) || (parent.from === to.id && parent.to === from.id))) {
           throw new MessageError("invalid", "reply must reference an existing message between these peers in the same namespace");
         }
