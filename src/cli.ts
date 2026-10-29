@@ -1,130 +1,101 @@
-import { existsSync, readFileSync } from "node:fs";
+import { randomUUID } from "node:crypto";
+import { readFileSync } from "node:fs";
 import { join, resolve } from "node:path";
-import { geldigeNaam } from "../scripts/lead/peers/bus";
-import { draai } from "../scripts/lead/peers/cli";
-import { standaardBus } from "../scripts/lead/peers/standaard";
-import { alleRecords, heeftIdentiteitsbestand, leesRecord, nieuwRecord, schrijfRecord, staatMap } from "../scripts/lead/hooks/register";
+import { bindPeer, openRuntime, settings } from "./app/runtime";
+import { dispatchOnce } from "./dispatch";
 import { environment, type Environment } from "./environment";
-import { launchLeases, ownerStatus, withLaunchLock } from "./identity";
-import { bunArgs } from "./runtime";
+import type { Endpoint } from "./messages/contracts";
 
 export const ROOT = resolve(import.meta.dir, "..");
 export const VERSION = (JSON.parse(readFileSync(join(ROOT, "package.json"), "utf8")) as { version: string }).version;
+const MIGRATION = "Relay v2 is message-only. Roles, policy, launch and idle subscriptions were retired. Use register, explicit --peer ID, send, inbox and ack; import legacy mail into a separate v2 state directory.";
+const RETIRED = new Set(["--role", "--lead", "--name", "--accept", "--hold", "--refuse", "hold", "release", "vasthouden", "vrijgeven", "setup", "claude", "codex", "launch", "policy", "notify-when-idle", "notify_when_idle"]);
+const HELP = `Relay ${VERSION} — local message mailboxes (v2)
 
-const HELP = `Relay ${VERSION} — local messaging between Claude, Codex and T3 sessions
+Global options precede commands: --state DIR --namespace NAME --peer ID
+  register --name NAME [--host manual|t3|claude|codex] [--session-id ID] [--json]
+  list [--json]
+  send TO TEXT|- [--request-key KEY] [--conversation ID] [--reply-to ID] [--json]
+  inbox [--json] [--limit N]     read unread messages without acknowledging
+  ack ID... [--json]           acknowledge only the bound mailbox
+  unregister ID               mark offline, preserve the mailbox
+  rebind --peer ID --expected-generation N --host HOST --session-id ID
+  status [--json]
+  serve [--once]               resume notification dispatch; Ctrl-C to stop
+  mcp                         stdio server peers; explicit global --peer ID required
+  install|uninstall [--prefix DIR] [--dry-run]
+  doctor | help | --version
 
-  relay claude|codex --name NAME [--lead NAME] [--model MODEL] [--cwd DIR] [-- ARGS...]
-  relay send NAME TEXT|- [--draad ID] [--antwoord-op ID]
-  relay inbox [--niet-acken]
-  relay list [--json]
-  relay notify-when-idle NAME
-  relay hold NAME | release NAME [ID...]
-  relay status [--json] [--alles] [--lead NAME] [--git]
-  relay mcp                         stdio MCP server (server name: peers)
-  relay register --name NAME [--lead NAME] [--accept|--hold|--refuse]
-  relay unregister ID                end a manually registered session
-  relay install [--prefix DIR] [--dry-run]
-  relay uninstall [--prefix DIR] [--dry-run]
-  relay setup claude|codex [--dry-run] [--remove] [vendor options...]
-  relay doctor
-
-Identity: RELAY_NAME, RELAY_LEAD, RELAY_ROLE. State: RELAY_STATE_DIR.
-LAB_AGENT_NAAM / LAB_LEAD_NAAM / LAB_AGENT_ROL / LAB_LEAD_STAAT remain supported.
-Default state: ~/.local/state/relay. No global hooks are installed by install.
+State: RELAY_STATE_DIR (default ~/.local/state/relay/v2).
+Namespace: RELAY_NAMESPACE (default local). CLI binding: --peer or RELAY_PEER_ID.
+MCP requires a stable peer ID on its command line; environment identity is ignored.
+Polling is available; T3 notifications are unsupported until an external transport is proven.
+Inbox never acknowledges automatically. Send returns a stored receipt and request key.
 `;
 
-export type Invocation = { command: string; args: string[]; env: Environment; explicitName?: string };
+export type Invocation = { command: string; args: string[]; env: Environment; explicitPeer?: string };
 
-/** Global options are parsed only before the command, so message text is untouched. */
+/** Only the prefix is global; positional message bodies are always literal. */
 export function parse(args: string[], input: Environment): Invocation {
   const env = { ...input };
-  let explicitName: string | undefined;
+  let explicitPeer: string | undefined;
   let i = 0;
-  const options: Record<string, string> = { "--name": "RELAY_NAME", "--lead": "RELAY_LEAD", "--role": "RELAY_ROLE", "--state": "RELAY_STATE_DIR" };
-  while (options[args[i] ?? ""]) {
-    const key = options[args[i]!]!;
+  const options: Record<string, string> = { "--state": "RELAY_STATE_DIR", "--namespace": "RELAY_NAMESPACE", "--peer": "RELAY_PEER_ID" };
+  const seen = new Set<string>();
+  while (Object.hasOwn(options, args[i] ?? "")) {
+    const option = args[i]!;
+    if (seen.has(option)) throw new Error(`duplicate global option: ${option}`);
+    seen.add(option);
     const value = args[i + 1];
-    if (!value || value.startsWith("--")) throw new Error(`${args[i]} needs a value`);
-    env[key] = value;
-    if (key === "RELAY_NAME") explicitName = value;
+    if (!value || value.startsWith("--")) throw new Error(`${option} needs a value`);
+    env[options[option]!] = value;
+    if (option === "--peer") explicitPeer = value;
     i += 2;
   }
-  return { command: args[i] || "--help", args: args.slice(i + 1), env: environment(env), ...(explicitName ? { explicitName } : {}) };
+  if (RETIRED.has(args[i] ?? "")) throw new Error(MIGRATION);
+  return { command: args[i] || "help", args: args.slice(i + 1), env: environment(env), ...(explicitPeer ? { explicitPeer } : {}) };
 }
 
-export function register(args: string[], env: Environment, now = Date.now()): string {
-  let name = env.LAB_AGENT_NAAM || "";
-  let lead = env.LAB_LEAD_NAAM || "";
-  let inbound: "accept" | "hold" | "refuse" | undefined;
+function options(args: string[], flags: string[], values: string[]) {
+  const result: Record<string, string | boolean> = {};
   for (let i = 0; i < args.length; i++) {
-    const arg = args[i];
-    if (arg === "--name" || arg === "--lead") {
+    const key = args[i]!;
+    if (Object.hasOwn(result, key)) throw new Error(`duplicate option: ${key}`);
+    if (flags.includes(key)) result[key] = true;
+    else if (values.includes(key)) {
       const value = args[++i];
-      if (!geldigeNaam(value)) throw new Error(`${arg} requires a valid session name`);
-      if (arg === "--name") name = value!;
-      else lead = value!;
-    } else if (arg === "--accept" || arg === "--hold" || arg === "--refuse") {
-      if (inbound) throw new Error("choose one inbound policy");
-      inbound = arg.slice(2) as "accept" | "hold" | "refuse";
-    } else throw new Error(`unknown register option: ${arg}`);
+      if (!value || value.startsWith("--")) throw new Error(`${key} needs a value`);
+      result[key] = value;
+    } else if (RETIRED.has(key)) throw new Error(MIGRATION);
+    else throw new Error(`unknown option: ${key}; global options must precede the command`);
   }
-  if (!geldigeNaam(name) || (lead && !geldigeNaam(lead))) throw new Error("register requires --name NAME (letters, digits, '.', '_' or '-'; at most 100 characters)");
-  const state = staatMap(env);
-  return withLaunchLock(state, (db) => {
-    const leases = launchLeases(db);
-    const key = name.toLowerCase();
-    if (leases.some((lease) => lease.name.toLowerCase() === key && ownerStatus(lease.owner) !== "dead") || alleRecords(state).some((r) => r.toestand !== "weg" && r.naam.toLowerCase() === key)) throw new Error(`session name is already registered: ${name}`);
-    const id = `relay-${crypto.randomUUID()}`;
-    // The record is the manual claim: publish it before releasing launch's lock.
-    schrijfRecord(state, {
-      ...nieuwRecord(id, { ...env, LAB_AGENT_NAAM: name, LAB_LEAD_NAAM: lead }, process.cwd(), now),
-      host: "geen",
-      ...(inbound ? { inbound: { standaard: inbound } } : {}),
-    });
-    return id;
-  });
+  return result;
+}
+
+function integer(value: string, label: string, minimum = 1) {
+  if (!/^\d+$/.test(value) || !Number.isSafeInteger(Number(value)) || Number(value) < minimum) throw new Error(`${label} must be an integer >= ${minimum}`);
+  return Number(value);
+}
+
+function endpoint(host: string, sessionId: string | undefined, generation: number): Endpoint {
+  if (!["manual", "t3", "claude", "codex"].includes(host)) throw new Error("host must be manual, t3, claude or codex");
+  if (!sessionId && host !== "manual") throw new Error(`${host} requires an explicit --session-id ID`);
+  const session = sessionId ?? `manual-${randomUUID()}`;
+  return { host, sessionId: session, generation, target: host === "t3" ? { threadId: session } : {} };
+}
+
+function output(value: unknown, json: boolean, plain?: string) {
+  console.log(json || plain === undefined ? JSON.stringify(value) : plain);
 }
 
 export async function main(argv: string[], input: Environment = process.env): Promise<number> {
-  const { command, args, env, explicitName } = parse(argv, input);
-  const child = async (script: string, extra: string[]): Promise<number> => {
-    const p = Bun.spawn([process.execPath, ...bunArgs(join(ROOT, script), extra)], { env, stdin: "inherit", stdout: "inherit", stderr: "inherit" });
-    return await p.exited;
-  };
-  if (command === "--help" || command === "-h" || command === "help") {
-    console.log(HELP);
-    return 0;
-  }
-  if (command === "--version" || command === "-v") { console.log(VERSION); return 0; }
-  if (command === "mcp") {
-    if (args.length) throw new Error("mcp takes no arguments; use global --name and --state before mcp");
-    if (explicitName) {
-      if (!geldigeNaam(explicitName)) throw new Error("MCP --name must be a valid session name");
-      env.RELAY_MCP_NAME = explicitName;
-    } else if (!geldigeNaam(env.RELAY_MCP_NAME) && heeftIdentiteitsbestand(staatMap(env), process.cwd(), true)) {
-      // Environment defaults can belong to an older daemon/shell. A stale or
-      // unknown workspace identity must not fall back to that person's inbox.
-      for (const key of ["LAB_AGENT_NAAM", "LAB_LEAD_NAAM", "LAB_AGENT_ROL"]) env[key] = "";
-    }
-    return child("scripts/lead/peers/server.ts", []);
-  }
-  if (command === "status") {
-    const { status, gitInfo } = await import("../scripts/lead/hooks/status");
-    const project = process.cwd();
-    const result = status(args, env, Date.now(), (cwd) => gitInfo(cwd, project));
-    process.stdout.write(result.stdout);
-    process.stderr.write(result.stderr);
-    return result.code;
-  }
-  if (command === "register") { console.log(register(args, env)); return 0; }
-  if (command === "unregister") {
-    if (args.length !== 1 || !/^relay-[0-9a-f-]{36}$/.test(args[0]!)) throw new Error("unregister requires the ID returned by relay register");
-    const r = leesRecord(staatMap(env), args[0]!);
-    if (!r) throw new Error("manual session not found");
-    schrijfRecord(staatMap(env), { ...r, toestand: "weg", sinds: Date.now(), einde: Date.now() });
-    const bus = standaardBus(env);
-    await bus.idleGemeld(r.naam, "weg");
-    await bus.klaar();
+  const { command, args, env, explicitPeer } = parse(argv, input);
+  if (["help", "--help", "-h"].includes(command)) { options(args, [], []); console.log(HELP); return 0; }
+  if (["--version", "-v", "version"].includes(command)) { options(args, [], []); console.log(VERSION); return 0; }
+  if (command === "doctor") {
+    options(args, [], []);
+    const config = settings(env);
+    console.log(`Relay ${VERSION}\nBun ${Bun.version}; SQLite: built-in bun:sqlite\nState: ${config.state}\nNamespace: ${config.namespace}\nDispatcher: run relay serve explicitly; timeout 10000ms, lease > timeout + 1000ms. Without serve, notification retries are paused.\nT3 notifications: unsupported / polling (no proven safe external transport).\nMailbox send/read/ack work independently of host notifications.`);
     return 0;
   }
   if (command === "install" || command === "uninstall") {
@@ -132,31 +103,89 @@ export async function main(argv: string[], input: Environment = process.env): Pr
     console.log((command === "install" ? install : uninstall)(args, env));
     return 0;
   }
-  if (command === "claude" || command === "codex") {
-    const { launch } = await import("./launch");
-    return launch(command, args, env);
-  }
-  if (command === "setup") {
-    const [vendor, ...options] = args;
-    const translated = options.map((a) => a === "--dry-run" ? "--droog" : a === "--remove" ? "--verwijder" : a);
-    if (vendor === "claude") return child("scripts/lead/installeer-hooks.ts", ["--staat", env.LAB_LEAD_STAAT!, ...translated]);
-    if (vendor === "codex") return child("scripts/lead/hooks/codex-installeer.ts", ["--staat", env.LAB_LEAD_STAAT!, ...translated]);
-    throw new Error("setup requires claude or codex");
-  }
-  if (command === "doctor") {
-    if (args.length) throw new Error("doctor takes no arguments");
-    console.log(`Relay ${VERSION}\nBun ${Bun.version}\nState: ${staatMap(env)}`);
-    if (Bun.version === "1.4.2") console.log("Bun 1.4.2 can print a 'directory mismatch' diagnostic even when Relay succeeds. Startup isolation remains enabled; see README.");
-    for (const name of ["claude", "codex", "t3", "tmux", "git", "jq", "python3"]) console.log(`${name}: ${Bun.which(name) || "not installed (optional)"}`);
-    const required = ["scripts/lead/peers/server.ts", "scripts/lead/hooks/register.ts", "scripts/lead/hooks/codex-wrap.ts"];
-    if (required.some((file) => !existsSync(join(ROOT, file)))) throw new Error("incomplete Relay installation; reinstall from a complete checkout");
+  if (command === "mcp") {
+    options(args, [], []);
+    if (!explicitPeer) throw new Error("MCP requires explicit global --peer ID before mcp; RELAY_PEER_ID and shared environment cannot bind it.");
+    const runtime = openRuntime(env);
+    try {
+      const peer = bindPeer(runtime, explicitPeer, true);
+      const { serveMcp } = await import("./mcp/server");
+      await serveMcp(runtime, peer.id);
+    } finally { runtime.close(); }
     return 0;
   }
-  const aliases: Record<string, string> = { ls: "list", hold: "vasthouden", release: "vrijgeven" };
-  const cmd = aliases[command] || command;
-  if (!["send", "inbox", "list", "notify-when-idle", "vasthouden", "vrijgeven"].includes(cmd)) throw new Error(`unknown command: ${command}\nRun relay --help`);
-  const result = await draai([cmd, ...args], env, standaardBus(env));
-  process.stdout.write(result.uit);
-  process.stderr.write(result.fout);
-  return result.code;
+
+  let opts: Record<string, string | boolean> = {};
+  if (command === "register") {
+    opts = options(args, ["--json"], ["--name", "--host", "--session-id"]);
+    if (typeof opts["--name"] !== "string") throw new Error("register requires --name NAME");
+    endpoint(String(opts["--host"] ?? "manual"), opts["--session-id"] as string | undefined, 0);
+  } else if (command === "send") {
+    if (args.length < 2) throw new Error("send requires TO TEXT|- followed by options");
+    opts = options(args.slice(2), ["--json"], ["--request-key", "--conversation", "--reply-to"]);
+  } else if (command === "inbox") {
+    opts = options(args, ["--json"], ["--limit"]);
+    if (opts["--limit"] !== undefined) integer(String(opts["--limit"]), "limit");
+  } else if (command === "ack") {
+    const ids = args.filter((arg) => arg !== "--json");
+    if (!ids.length || ids.some((arg) => arg.startsWith("--"))) throw new Error("ack requires message IDs and optional --json");
+    opts = options(args.filter((arg) => arg === "--json"), ["--json"], []);
+  } else if (command === "rebind") {
+    opts = options(args, [], ["--peer", "--expected-generation", "--host", "--session-id"]);
+    for (const key of ["--peer", "--expected-generation", "--host", "--session-id"]) if (opts[key] === undefined) throw new Error(`rebind requires ${key}`);
+    integer(String(opts["--expected-generation"]), "expected generation", 0);
+    endpoint(String(opts["--host"]), String(opts["--session-id"]), 1);
+  } else if (command === "list" || command === "status") opts = options(args, ["--json"], []);
+  else if (command === "serve") opts = options(args, ["--once"], []);
+  else if (command === "unregister") {
+    if (args.length !== 1 || args[0]!.startsWith("--")) throw new Error("unregister requires a stable peer ID");
+  } else throw new Error(`unknown command: ${command}\nRun relay --help`);
+  if (["send", "inbox", "ack"].includes(command) && !env.RELAY_PEER_ID) throw new Error("Use explicit --peer ID before the command (or RELAY_PEER_ID for CLI).");
+
+  const runtime = openRuntime(env, command === "register");
+  const { namespace, store, service, directory } = runtime;
+  try {
+    if (command === "register") {
+      const peer = directory.register({ namespace, name: String(opts["--name"]), endpoint: endpoint(String(opts["--host"] ?? "manual"), opts["--session-id"] as string | undefined, 0) });
+      output(peer, !!opts["--json"], peer.id);
+    } else if (command === "list") output(service.list(namespace), !!opts["--json"]);
+    else if (command === "send") {
+      const peer = bindPeer(runtime, env.RELAY_PEER_ID);
+      const body = args[1] === "-" ? await Bun.stdin.text() : args[1]!;
+      const receipt = service.send({ namespace, from: peer.id, to: args[0]!, body,
+        requestKey: (opts["--request-key"] as string | undefined) ?? randomUUID(),
+        ...(opts["--conversation"] ? { conversationId: String(opts["--conversation"]) } : {}),
+        ...(opts["--reply-to"] ? { replyTo: String(opts["--reply-to"]) } : {}),
+      });
+      output(receipt, !!opts["--json"]);
+    } else if (command === "inbox") {
+      const peer = bindPeer(runtime, env.RELAY_PEER_ID);
+      output(service.read({ namespace, peerId: peer.id, ...(opts["--limit"] ? { limit: Number(opts["--limit"]) } : {}) }), !!opts["--json"]);
+    } else if (command === "ack") {
+      const peer = bindPeer(runtime, env.RELAY_PEER_ID);
+      output({ acknowledged: service.ack({ namespace, peerId: peer.id, ids: args.filter((arg) => arg !== "--json") }) }, !!opts["--json"]);
+    } else if (command === "unregister") {
+      if (!store.getPeer(namespace, args[0]!)) throw new Error("unregister requires an existing stable peer ID");
+      directory.setPresence(namespace, args[0]!, "offline");
+      output({ id: args[0], presence: "offline" }, true);
+    } else if (command === "rebind") {
+      const expectedGeneration = Number(opts["--expected-generation"]);
+      output(directory.rebind({ namespace, peerId: String(opts["--peer"]), expectedGeneration,
+        endpoint: endpoint(String(opts["--host"]), String(opts["--session-id"]), expectedGeneration + 1) }), true);
+    } else if (command === "status") {
+      output({ namespace, state: runtime.state, peers: service.list(namespace).map((peer) => ({ ...peer, unread: store.unread(namespace, peer.id) })),
+        notifications: store.notificationStatus(namespace), dispatcher: "Run relay serve explicitly; retries pause while stopped", t3: "unsupported/polling" }, !!opts["--json"]);
+    } else if (command === "serve") {
+      let stopped = false;
+      const stop = () => { stopped = true; };
+      process.on("SIGINT", stop); process.on("SIGTERM", stop);
+      try {
+        do {
+          output(await dispatchOnce({ store, adapters: [], leaseMs: 30_000 }), true);
+          if (!opts["--once"] && !stopped) await new Promise((done) => setTimeout(done, 1000));
+        } while (!opts["--once"] && !stopped);
+      } finally { process.off("SIGINT", stop); process.off("SIGTERM", stop); }
+    }
+  } finally { runtime.close(); }
+  return 0;
 }
