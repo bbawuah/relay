@@ -97,6 +97,8 @@ export interface MessageStore {
   findPeer(namespace: string, name: string): Peer | null;
   listPeers(namespace: string): Peer[];
   setPresence(namespace: string, id: string, presence: Presence, now: number): void;
+  /** Lookup before reply validation; mismatch throws conflict, absent returns null. */
+  lookupReceipt(namespace: string, senderId: string, requestKey: string, fingerprint: string): Receipt | null;
   /** Message + request-key receipt + outbox job commit atomically. */
   enqueue(input: EnqueueInput): Receipt;
   getMessage(namespace: string, id: string): Envelope | null;
