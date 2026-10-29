@@ -10,6 +10,7 @@ import { startAppServer } from "../scripts/lead/hooks/codex-appserver";
 import { staatOmgeving, EVENTS, MERK } from "../scripts/lead/hooks/codex-installeer";
 import { environment, type Environment } from "./environment";
 import { bunArgs } from "./runtime";
+import { kiesBun } from "../scripts/lead/installeer-hooks";
 import { deleteLaunchLease, launcherOwner, launchLeases, ownerStatus, saveLaunchLease, withLaunchLock } from "./identity";
 
 const ROOT = resolve(import.meta.dir, "..");
@@ -41,7 +42,8 @@ export function launchPlan(vendor: "claude" | "codex", args: string[], input: En
     if (reserved.some((flag) => flag.startsWith("--") ? arg === flag || arg.startsWith(`${flag}=`) : arg.startsWith(flag))) throw new Error("pass directory/model through Relay options; settings that replace Relay hooks or identity cannot be passed after --");
   }
   cwd = realpathSync(cwd);
-  env = { ...env, LAB_AGENT_NAAM: name, LAB_LEAD_NAAM: lead, LAB_AGENT_ROL: "agent", LAB_LEAD_BUN: process.execPath, LAB_SPAWN_ID: crypto.randomUUID() };
+  const bun = kiesBun((name) => Bun.which(name, { PATH: env.PATH ?? process.env.PATH ?? "" }));
+  env = { ...env, LAB_AGENT_NAAM: name, LAB_LEAD_NAAM: lead, LAB_AGENT_ROL: "agent", LAB_LEAD_BUN: bun, LAB_SPAWN_ID: crypto.randomUUID() };
   // A parent's RELAY_* identity must not override this launch in its MCP subprocess.
   delete env.RELAY_NAME;
   delete env.RELAY_LEAD;
@@ -55,7 +57,7 @@ export function launchPlan(vendor: "claude" | "codex", args: string[], input: En
   // live checkout owner, rather than falling back to the inherited TUI identity.
   if (vendor === "codex") for (const key of ["LAB_AGENT_NAAM", "LAB_LEAD_NAAM", "LAB_AGENT_ROL"]) mcpEnv[key] = "";
   else mcpEnv.RELAY_MCP_NAME = name;
-  const server = { command: process.execPath, args: bunArgs(join(ROOT, "bin/relay.ts"), ["mcp"]), env: mcpEnv };
+  const server = { command: bun, args: bunArgs(join(ROOT, "bin/relay.ts"), ["mcp"]), env: mcpEnv };
   const argv: string[] = [vendor];
   if (vendor === "claude") {
     const generated = genereer(beleid, "claude", { doel: join(ROOT, "scripts/lead/hooks"), bun: process.execPath, staat: env.LAB_LEAD_STAAT, metWekker: false, verwijder: false, settings: "", bestaand: {} });

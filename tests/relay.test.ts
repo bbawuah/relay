@@ -107,7 +107,7 @@ test("launch adds per-session hooks and MCP without changing global settings or 
   expect(plan.argv.some((arg) => /skip-permissions|bypass|allowedTools/.test(arg))).toBe(false);
   const codex = launchPlan("codex", ["--name", "worker", "--lead", "lead", "--cwd", dir], env);
   expect(codex.env.LAB_AGENT_ROL).toBe("agent");
-  expect(codex.argv).toContain("mcp_servers.peers.command=" + JSON.stringify(process.execPath));
+  expect(codex.argv).toContain("mcp_servers.peers.command=" + JSON.stringify(codex.env.LAB_LEAD_BUN));
   expect(existsSync(join(env.HOME!, ".codex"))).toBe(false);
   expect(() => launchPlan("codex", ["--name", "x", "--", "-C", "/another/checkout"], env)).toThrow("identity");
 });

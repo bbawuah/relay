@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { install } from "../src/install";
@@ -10,6 +10,17 @@ import { geenWekker, maakBus } from "../scripts/lead/peers/bus";
 let dir: string;
 beforeEach(() => { dir = realpathSync(mkdtempSync(join(tmpdir(), "relay-routing-"))); });
 afterEach(() => rmSync(dir, { recursive: true, force: true }));
+
+test("per-session MCP and hooks retain the stable Bun path instead of its versioned realpath", () => {
+  const bin = join(dir, "stable-bin");
+  mkdirSync(bin);
+  const stable = join(bin, "bun");
+  symlinkSync(process.execPath, stable);
+  const plan = launchPlan("claude", ["--name", "peer", "--cwd", dir], { HOME: dir, PATH: `${bin}:${process.env.PATH}` });
+  const server = JSON.parse(plan.argv[plan.argv.indexOf("--mcp-config") + 1]!).mcpServers.peers;
+  expect(server.command).toBe(stable);
+  expect(plan.env.LAB_LEAD_BUN).toBe(stable);
+});
 
 test.each(["flag", "environment"])("installed MCP distinguishes a %s name from workspace identity", async (mode) => {
   const state = join(dir, "state");
