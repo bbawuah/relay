@@ -547,7 +547,9 @@ export function zoekIdentiteit(staat: string, cwd: string, nu = Date.now()): { p
 }
 
 /** Behoud legacy/onbekende bestanden; alleen een aantoonbaar dode Relay-eigenaar blokkeert niet meer. */
-export function heeftIdentiteitsbestand(staat: string, cwd: string): boolean {
+// Dode Relay-eigenaars blokkeren standaard geen nieuwe launch. MCP kan fysieke
+// aanwezigheid blijven tellen om nooit op een geërfde omgevingsnaam terug te vallen.
+export function heeftIdentiteitsbestand(staat: string, cwd: string, ookDodeLaunchers = false): boolean {
   for (let d = cwd; d && d !== "/" && d !== "."; d = dirname(d)) {
     let echt = d;
     try {
@@ -557,7 +559,7 @@ export function heeftIdentiteitsbestand(staat: string, cwd: string): boolean {
       const pad = identiteitPad(staat, echt);
       lstatSync(pad);
       const owned = leesIdentiteitBestand(pad, Date.now(), false);
-      if (owned?.relay_owner && ownerStatus(owned.relay_owner) === "dead") continue;
+      if (!ookDodeLaunchers && owned?.relay_owner && ownerStatus(owned.relay_owner) === "dead") continue;
       return true;
     } catch (e) {
       // alleen "bestaat niet" is een nee; elke andere fout (rechten, I/O) telt als aanwezig (faalt dicht)

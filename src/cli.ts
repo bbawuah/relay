@@ -3,7 +3,7 @@ import { join, resolve } from "node:path";
 import { geldigeNaam } from "../scripts/lead/peers/bus";
 import { draai } from "../scripts/lead/peers/cli";
 import { standaardBus } from "../scripts/lead/peers/standaard";
-import { alleRecords, leesRecord, nieuwRecord, schrijfRecord, staatMap } from "../scripts/lead/hooks/register";
+import { alleRecords, heeftIdentiteitsbestand, leesRecord, nieuwRecord, schrijfRecord, staatMap } from "../scripts/lead/hooks/register";
 import { environment, type Environment } from "./environment";
 import { bunArgs } from "./runtime";
 
@@ -32,11 +32,12 @@ LAB_AGENT_NAAM / LAB_LEAD_NAAM / LAB_AGENT_ROL / LAB_LEAD_STAAT remain supported
 Default state: ~/.local/state/relay. No global hooks are installed by install.
 `;
 
-export type Invocation = { command: string; args: string[]; env: Environment };
+export type Invocation = { command: string; args: string[]; env: Environment; explicitName?: string };
 
 /** Global options are parsed only before the command, so message text is untouched. */
 export function parse(args: string[], input: Environment): Invocation {
   const env = { ...input };
+  let explicitName: string | undefined;
   let i = 0;
   const options: Record<string, string> = { "--name": "RELAY_NAME", "--lead": "RELAY_LEAD", "--role": "RELAY_ROLE", "--state": "RELAY_STATE_DIR" };
   while (options[args[i] ?? ""]) {
@@ -44,9 +45,10 @@ export function parse(args: string[], input: Environment): Invocation {
     const value = args[i + 1];
     if (!value || value.startsWith("--")) throw new Error(`${args[i]} needs a value`);
     env[key] = value;
+    if (key === "RELAY_NAME") explicitName = value;
     i += 2;
   }
-  return { command: args[i] || "--help", args: args.slice(i + 1), env: environment(env) };
+  return { command: args[i] || "--help", args: args.slice(i + 1), env: environment(env), ...(explicitName ? { explicitName } : {}) };
 }
 
 export function register(args: string[], env: Environment, now = Date.now()): string {
@@ -78,7 +80,7 @@ export function register(args: string[], env: Environment, now = Date.now()): st
 }
 
 export async function main(argv: string[], input: Environment = process.env): Promise<number> {
-  const { command, args, env } = parse(argv, input);
+  const { command, args, env, explicitName } = parse(argv, input);
   const child = async (script: string, extra: string[]): Promise<number> => {
     const p = Bun.spawn([process.execPath, ...bunArgs(join(ROOT, script), extra)], { env, stdin: "inherit", stdout: "inherit", stderr: "inherit" });
     return await p.exited;
@@ -90,9 +92,13 @@ export async function main(argv: string[], input: Environment = process.env): Pr
   if (command === "--version" || command === "-v") { console.log(VERSION); return 0; }
   if (command === "mcp") {
     if (args.length) throw new Error("mcp takes no arguments; use global --name and --state before mcp");
-    if (env.RELAY_NAME) {
-      if (!geldigeNaam(env.RELAY_NAME)) throw new Error("MCP --name / RELAY_NAME must be a valid session name");
-      env.RELAY_MCP_NAME = env.RELAY_NAME;
+    if (explicitName) {
+      if (!geldigeNaam(explicitName)) throw new Error("MCP --name must be a valid session name");
+      env.RELAY_MCP_NAME = explicitName;
+    } else if (!geldigeNaam(env.RELAY_MCP_NAME) && heeftIdentiteitsbestand(staatMap(env), process.cwd(), true)) {
+      // Environment defaults can belong to an older daemon/shell. A stale or
+      // unknown workspace identity must not fall back to that person's inbox.
+      for (const key of ["LAB_AGENT_NAAM", "LAB_LEAD_NAAM", "LAB_AGENT_ROL"]) env[key] = "";
     }
     return child("scripts/lead/peers/server.ts", []);
   }

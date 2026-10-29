@@ -9,6 +9,7 @@ import { blokIn } from "../scripts/lead/hooks/codex-installeer";
 import { startAppServer } from "../scripts/lead/hooks/codex-appserver";
 import { staatOmgeving, EVENTS, MERK } from "../scripts/lead/hooks/codex-installeer";
 import { environment, type Environment } from "./environment";
+import { bunArgs } from "./runtime";
 import { deleteLaunchLease, launcherOwner, launchLeases, ownerStatus, saveLaunchLease, withLaunchLock } from "./identity";
 
 const ROOT = resolve(import.meta.dir, "..");
@@ -45,11 +46,16 @@ export function launchPlan(vendor: "claude" | "codex", args: string[], input: En
   delete env.RELAY_NAME;
   delete env.RELAY_LEAD;
   delete env.RELAY_ROLE;
+  delete env.RELAY_MCP_NAME;
   const mcpEnv = Object.fromEntries(["LAB_AGENT_NAAM", "LAB_LEAD_NAAM", "LAB_AGENT_ROL", "LAB_LEAD_STAAT"].map((key) => [key, env[key]!]));
+  // Explicit values override stale aliases inherited from a shared daemon.
+  mcpEnv.RELAY_STATE_DIR = env.LAB_LEAD_STAAT!;
+  for (const key of ["RELAY_NAME", "RELAY_LEAD", "RELAY_ROLE", "RELAY_MCP_NAME"]) mcpEnv[key] = "";
   // Codex can restart MCP after its launcher dies. Resolve its identity from the
   // live checkout owner, rather than falling back to the inherited TUI identity.
   if (vendor === "codex") for (const key of ["LAB_AGENT_NAAM", "LAB_LEAD_NAAM", "LAB_AGENT_ROL"]) mcpEnv[key] = "";
-  const server = { command: process.execPath, args: [join(ROOT, "bin/relay.ts"), "mcp"], env: mcpEnv };
+  else mcpEnv.RELAY_MCP_NAME = name;
+  const server = { command: process.execPath, args: bunArgs(join(ROOT, "bin/relay.ts"), ["mcp"]), env: mcpEnv };
   const argv: string[] = [vendor];
   if (vendor === "claude") {
     const generated = genereer(beleid, "claude", { doel: join(ROOT, "scripts/lead/hooks"), bun: process.execPath, staat: env.LAB_LEAD_STAAT, metWekker: false, verwijder: false, settings: "", bestaand: {} });
