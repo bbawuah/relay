@@ -2,7 +2,7 @@
 
 29 October 2026, branch `feat/standalone-peerbus`.
 
-Completed locally:
+Initial verification on the original extraction (`32f6b79`):
 
 ```sh
 bun install --ignore-scripts
@@ -11,9 +11,21 @@ bun run typecheck
 git diff --check
 ```
 
-Result: **118 tests passed, zero failed**, TypeScript passed, whitespace check passed.
+Result at that checkpoint: **118 tests passed, zero failed**, TypeScript passed, whitespace check passed. Independent reviews then found additional issues; this initial result is not a release approval.
 
 The installed-copy checks use temporary HOME, state and installation prefixes, including paths with spaces and quotes. They cover CLI-to-MCP delivery/acknowledgement, held messages and operator restrictions, duplicate-name/path rejection, update/uninstall, refusal to overwrite unmanaged files, Claude per-session hooks, Codex hook setup/trust/state, session cleanup after a simulated CLI crash, and Git status in a consuming project. Vendor CLIs/app-server responses are fakes; no live agent or user configuration was exercised.
+
+## Review repairs and integration
+
+- E (`bde174f`): explicit MCP identity with protected lead-proef binding; 59 targeted server/identity tests passed.
+- C (`d4133bf`): startup isolation, path canonicalization, self-uninstall and Bun-executable handling; 39 targeted tests passed. The same tests produced 30 failures against its earlier basis.
+- D (`11e6478`): default agent roles, reserved flags, PID/start-time owners, crash/concurrency recovery and private SQLite reservations; 54 targeted compatibility/safety tests passed, plus typecheck. Unknown/symlink/hardlink database targets remain unchanged.
+- C4 (`3798761`): installation provenance for symlink-prefix self-uninstall; 49 runtime/install tests passed, including 10 regressions that failed against the C basis.
+- Lead integration: safe Bun arguments on the per-session MCP path; fixed Claude identity versus live Codex routing; explicit `--name` versus inherited `RELAY_NAME`; stale daemon aliases cannot select another state or inbox. Installed-process tests also cover hostile Bun/tsconfig startup and an owner that has died. Typecheck passed.
+
+An integrated run before C4 passed 96 tests across all six new test files. After the final routing and C4 repairs, the focused runtime/routing run passed 53 tests and the routing/lifecycle run passed 25. These overlap; they are not added together as one suite result. The final independent review and full inherited gate remain separate required checks.
+
+An independent Opus re-review accepted the startup isolation and classified Bun 1.4.2's visible `directory mismatch` stderr message as a known non-blocking runtime limitation. The guard remains enabled and stderr is not suppressed. Its other findings were assigned to the subsequent routing/provenance repairs above; they require final review of the combined commit.
 
 Still required before pushing:
 

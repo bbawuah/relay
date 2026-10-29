@@ -1,6 +1,6 @@
 # Relay
 
-Local peer messaging between Claude Code, Codex and T3 Code sessions. Relay combines a durable inbox, a stdio MCP server, session hooks and wake-up adapters. Messages stay on the machine; no hosted service, database or API key is needed by Relay itself.
+Local peer messaging between Claude Code, Codex and T3 Code sessions. Relay combines a durable inbox, a stdio MCP server, session hooks and wake-up adapters. Messages stay on the machine; Relay needs no hosted service or API key.
 
 ## Install
 
@@ -40,7 +40,7 @@ relay setup codex
 relay codex --name coder --lead lead --cwd /path/to/its/worktree
 ```
 
-Codex uses an identity per checkout because its daemon does not preserve each TUI's environment. Give simultaneous Codex sessions separate checkouts/worktrees. Relay does not select a sandbox, grant elevated roles or bypass hook trust. `--model MODEL` selects a model; arguments after `--` pass directly to the vendor CLI. Existing monorepo lead-proef/spawn policy is retained under `scripts/lead/`, separately from this launcher.
+Codex uses an identity per checkout because its daemon does not preserve each TUI's environment. Give simultaneous Codex sessions separate checkouts/worktrees. Both launchers use the `agent` role, including a session named `lead`; that name sets up communication, not merge or deployment permissions. Relay does not select a sandbox or bypass hook trust. `--model MODEL` selects a model. Arguments after `--` pass to the vendor, except flags that replace Relay's hooks, identity, directory, profile or approval policy. Existing monorepo lead-proef/spawn policy is retained under `scripts/lead/`, separately from this launcher.
 
 Each agent gets these MCP tools under server name `peers`: `send`, `inbox`, `list`, and `notify_when_idle`. A wake-up contains only an unread count. Message contents arrive when the agent calls `inbox`, surrounded by origin labels and message delimiters.
 
@@ -72,7 +72,7 @@ relay unregister "$reader_id"
 
 Lead/worker relationships accept messages in both directions by default. Unrelated sessions hold messages for operator review. `hold`, `refuse` and per-sender policies remain supported. Text limits, rate limits, duplicate suppression, queue bounds and hop limits are preserved. Messages are not user authorization; a message from a lead cannot grant permissions.
 
-State defaults to `~/.local/state/relay`, with private directory/file permissions. Set `RELAY_STATE_DIR` to select another bus. Relay stores message bodies in inbox files but does not collect transcripts or prompts. This is a same-user coordination tool, not an isolation boundary against processes with access to those files. Wake-up failures leave messages available for polling.
+State defaults to `~/.local/state/relay`, with private directory/file permissions. Set `RELAY_STATE_DIR` to select another bus. Relay stores message bodies in inbox files but does not collect transcripts or prompts. Launcher reservations use Bun's built-in SQLite storage locally; no database server is required. Codex identities are bound to a living launcher PID and OS start time. A later launch recovers only state belonging to an owner proven dead; unknown or legacy claims remain intact. This is a same-user coordination tool, not an isolation boundary against processes with access to those files. Wake-up failures leave messages available for polling.
 
 ## Update and remove
 
@@ -88,13 +88,17 @@ relay uninstall --dry-run
 relay uninstall
 ```
 
-Uninstall preserves message state, vendor settings backups and copied hook files. In a shared legacy installation, removal uses the existing `lab-lead-hooks` marker; review `--dry-run` first.
+Uninstall uses the installed command's recorded prefix and preserves other installations, message state, vendor settings backups and copied hook files. An explicit `--prefix DIR` overrides that choice. A checkout or an older marker without reliable installation provenance requires `--prefix`; Relay refuses to guess. In a shared legacy hook installation, removal uses the existing `lab-lead-hooks` marker; review `--dry-run` first.
+
+## Bun 1.4.2 diagnostic
+
+Startup isolation prevents a project's Bun config, preloads, environment files, macros and TypeScript path mappings from running code before Relay. With its required tsconfig guard, Bun 1.4.2 can print `Internal error: directory mismatch ... indicates a bug` on stderr. Tests confirm correct output, exit status and working directory while the hijack remains blocked. Relay keeps the guard enabled and does not hide stderr. `relay doctor` also identifies this known runtime limitation.
 
 ## Development
 
 ```sh
 bun install --frozen-lockfile
-bun test tests/relay.test.ts tests/codex-state.test.ts
+bun test ./tests
 bun run typecheck
 bun run poort
 ```

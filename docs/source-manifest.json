@@ -351,7 +351,7 @@
       "destination": "scripts/lead/hooks/codex-wrap.sh",
       "category": "hooks",
       "sourceSha256": "8fb3503d737ebd0788c2b2060bdb4966204c60c347048b04a3adadb43090862d",
-      "unchanged": true
+      "unchanged": false
     },
     {
       "source": "scripts/lead/hooks/codex-wrap.test.ts",
@@ -421,7 +421,7 @@
       "destination": "scripts/lead/hooks/hook.sh",
       "category": "hooks",
       "sourceSha256": "55044f860db1094ba4b80c6ebe4e0011286fea9d8976f5169e4934a15ae1ba28",
-      "unchanged": true
+      "unchanged": false
     },
     {
       "source": "scripts/lead/hooks/hook.test.ts",
@@ -456,7 +456,7 @@
       "destination": "scripts/lead/hooks/register.ts",
       "category": "hooks",
       "sourceSha256": "1a6a41fe904649dbce81b0c865c831291c4111bc870aa1739c813723bb41c74d",
-      "unchanged": true
+      "unchanged": false
     },
     {
       "source": "scripts/lead/hooks/status.test.ts",
@@ -652,14 +652,14 @@
       "destination": "scripts/lead/peers/server.test.ts",
       "category": "peerbus",
       "sourceSha256": "8bf7ea77541c5c982af71b2d16ceaf82ebc948475fd0fb1f809209f8476a1cfb",
-      "unchanged": true
+      "unchanged": false
     },
     {
       "source": "scripts/lead/peers/server.ts",
       "destination": "scripts/lead/peers/server.ts",
       "category": "peerbus",
       "sourceSha256": "15bc1120bd2d79d8136528bc02af5208231b65b0647f5bf3e07cac7eb77ba234",
-      "unchanged": true
+      "unchanged": false
     },
     {
       "source": "scripts/lead/peers/standaard.ts",

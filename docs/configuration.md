@@ -9,7 +9,7 @@ All peers on a bus must use the same state directory. Use a separate directory f
 | `RELAY_ROLE` / global `--role` | `LAB_AGENT_ROL` | Legacy CLI operator/worker checks |
 | `RELAY_STATE_DIR` / global `--state` | `LAB_LEAD_STAAT` | Shared state; default `~/.local/state/relay` |
 
-Relay variables take precedence. Global options go **before** the command; launch and register have their own `--name` options. Message arguments are never interpreted by the global parser. Names contain letters, digits, `.`, `_` and `-`, at most 100 characters, and cannot start with `.`. Case-only duplicate live names are refused.
+Relay variables take precedence. Global options go **before** the command; launch and register have their own `--name` options. For MCP, only an explicit global `--name` fixes the sender: a `RELAY_NAME` environment default keeps workspace identity routing. This prevents a shared daemon's inherited shell identity from overriding a thread. The launcher pins Claude's dedicated MCP identity; Codex keeps live workspace-owner routing. Message arguments are never interpreted by the global parser. Names contain letters, digits, `.`, `_` and `-`, at most 100 characters, and cannot start with `.`. Case-only duplicate live names are refused.
 
 The extracted files under `scripts/lead/` keep their original `LAB_*` interface and default `~/.local/state/lab-lead`. The `relay` command normalizes settings before calling them. To join the existing monorepo bus explicitly:
 
@@ -21,7 +21,7 @@ Do not point a demo at live state. Changing a global Codex home's state affects 
 
 ## Direct MCP configuration
 
-An MCP server must be called `peers` to preserve the extracted hook matchers and wake-up instructions. Use absolute executable paths:
+An MCP server must be called `peers` to preserve the extracted hook matchers and wake-up instructions. This example binds a dedicated single-session server to one explicit peer. Use absolute executable paths:
 
 ```json
 {
@@ -42,7 +42,7 @@ In Codex TOML, use the equivalent `mcp_servers.peers.command`, `args` and `env` 
 
 The extracted adapter recognizes `host: "t3"` records with `t3_thread` and wakes them through the `t3` CLI. It checks `pendingRequestCount` before sending a count-only notification, so a pending user question is not intentionally answered by a wake-up. Configure `LAB_T3` if the CLI is not on PATH. Without it, peers can still poll their inboxes.
 
-T3 threads do not inherit a per-thread shell environment. Configure the `peers` MCP server in the provider, use the existing workspace identity integration from `scripts/lead/hooks/`, and set the same state directory for hooks and MCP. The existing `spawn.sh --t3` implementation is preserved for reference, but app-owned orchestration should use T3's current thread/delegation APIs. Relay does not automatically alter T3 provider settings or create threads.
+T3 threads do not inherit a per-thread shell environment. In a shared Codex/T3 provider, configure `peers` with `args: ["mcp"]` and the correct state directory, without a fixed `--name` or `RELAY_MCP_NAME`. Use the existing workspace identity integration from `scripts/lead/hooks/`, ensure the server receives the intended workspace cwd, and set the same state directory for hooks and MCP. A fixed name in a shared server would route multiple threads into one inbox. The existing `spawn.sh --t3` implementation is preserved for reference, but app-owned orchestration should use T3's current thread/delegation APIs. Relay does not automatically alter T3 provider settings or create threads. Wake-up adapters and isolated fake-host tests do not establish compatibility with every live T3/provider configuration.
 
 ## Wake-up requirements
 

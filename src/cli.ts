@@ -140,6 +140,7 @@ export async function main(argv: string[], input: Environment = process.env): Pr
   if (command === "doctor") {
     if (args.length) throw new Error("doctor takes no arguments");
     console.log(`Relay ${VERSION}\nBun ${Bun.version}\nState: ${staatMap(env)}`);
+    if (Bun.version === "1.4.2") console.log("Bun 1.4.2 can print a 'directory mismatch' diagnostic even when Relay succeeds. Startup isolation remains enabled; see README.");
     for (const name of ["claude", "codex", "t3", "tmux", "git", "jq", "python3"]) console.log(`${name}: ${Bun.which(name) || "not installed (optional)"}`);
     const required = ["scripts/lead/peers/server.ts", "scripts/lead/hooks/register.ts", "scripts/lead/hooks/codex-wrap.ts"];
     if (required.some((file) => !existsSync(join(ROOT, file)))) throw new Error("incomplete Relay installation; reinstall from a complete checkout");
