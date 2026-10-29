@@ -10,6 +10,12 @@ from `src/migration/index.ts`. CLI wiring belongs to the integration stream.
 
 1. Stop **all old writers**: old bus processes, hooks and any consumers that ack
    or prune the legacy files. Keep them stopped. Run one importer at a time.
+   Isolate or stop only the mail-writer entries for the selected old bus. Shared
+   `~/.claude/hooks/lab-lead-hooks` may also contain project or harness guards:
+   never delete that directory wholesale or disable those guards. Review a
+   dry-run from the v1 tooling where available; the owner of those entries must
+   decide what is safe to retire. If the selected writers cannot be safely
+   quiesced, postpone cutover. This importer changes no live hook/config entry.
 2. Retain the original state directory and choose a separate, new or empty,
    private destination directory. Use absolute paths with no symlink components.
 3. Call the importer with an explicit namespace and `sourceQuiesced: true`.
@@ -20,6 +26,15 @@ from `src/migration/index.ts`. CLI wiring belongs to the integration stream.
 5. Start v2 clients only after successful completion. Bind clients to the reported
    stable peer IDs. Historical vendor/T3 endpoints become offline **manual polling**
    bindings; importing never contacts those hosts.
+
+Old and new MCP connections both use the server name `peers`; configure the
+intended version per session so an old connection cannot silently answer a v2
+client. Retire the selected old mail connection through its owner instead of
+globally replacing shared settings. Each v2 session needs its own explicit stable
+peer binding. A fixed global/shared `RELAY_PEER_ID` is unsuitable for several T3
+threads sharing a provider or environment. Per-thread CLI polling with an
+explicit `--peer ID` is allowed without changing global MCP configuration. Keep
+project/harness guards in force throughout this transition.
 
 Do not run old and new writers against one state directory. The importer opens
 only the known legacy data files, never the old executable bus, register module,
@@ -109,6 +124,45 @@ conflicting message IDs fail explicitly and are not replaced. Preserve the
 ledger, quarantine and message database together. SQLite sidecars belong with
 their databases during crash recovery.
 
+Cold ledger initialization happens in a private sibling
+`.relay-migration-init-*` directory outside the final destination. Its complete
+schema, application ID, header and entries commit with FULL synchronization;
+the database is checkpointed, closed and fsynced before publication. A native
+atomic **no-replace** move publishes the single-link `migration.sqlite` inode.
+An existing winner, including an empty or foreign file, is never overwritten.
+A kill before publication leaves the destination absent or empty, so the same
+import can restart without adopting the old staging data. Sibling staging
+directories are retained after a crash and are never scanned, reused or deleted
+by a later import. Preserve them as evidence; after confirming no importer is
+running, their owner may remove the exact staging directory following review.
+
+Quarantine uses a unique `.relay-quarantine-<uuid>.tmp` basename registered in a
+FULL ledger commit **before** file creation. Only that exact registered private,
+owned, single-link file may resume, and only when its bytes are an exact prefix
+of the expected quarantine, including an empty prefix. Recovery appends the
+missing suffix to the same inode, fsyncs it, then publishes it without replacing
+an existing target. Unknown/unregistered empty files, foreign bytes, hardlinks
+and symlinks are refused and preserved. The old unregistered
+`legacy-quarantine.json.tmp` is never adopted, even if empty or apparently
+complete. An old v1-of-this-importer empty/corrupt `migration.sqlite` is likewise
+not inferred to be ours. Have the owner review these exact artifacts; do not
+delete markers or unrelated state to force a resume.
+
+B3 message-store cold-init remnants use the exact `.relay-message-init-` prefix
+with a six-character suffix inside the destination. On resume their directories
+must be private and owned, with only private single-link regular message-database
+and sidecar files. Nonempty database files must identify the message application
+and schema 2; unknown nodes or foreign databases refuse the import. Validated
+remnants are left byte-for-byte intact, never opened as SQLite, adopted as the
+target or deleted. A fresh store initialization creates its own separate inode.
+
+Publication reuses B3's `assertPublishCapability` / `publishNoReplace` helper,
+not its message-schema-specific initializer. This helper depends on Bun's
+experimental FFI and the OS no-replace rename primitive. Unsupported platforms
+or unavailable capabilities fail closed; do not substitute an overwrite rename
+or a hardlink. The F2 tests verify macOS locally. Linux validation belongs to the
+lead; these results do not establish Linux or hardware power-loss behavior.
+
 The ledger uses SQLite FULL synchronization independently of message-store
 retention. Each envelope gets a stable import request key and a durable pending
 entry before enqueue. After the message transaction commits, the ledger records
@@ -133,6 +187,9 @@ source loses that new history. Preserve/export the v2 database and reconcile it
 explicitly; this importer has no reverse or dual-write mode.
 
 Focused tests use disposable local files and real SQLite stores, including
-SIGKILL immediately after message/ack commits and retries after retention. They
+SIGKILL during ledger initialization, immediately before/after atomic publication,
+after creating/writing registered quarantine partials, during B3 store creation,
+after message/ack commits, and retries after retention. Constructed partials and
+foreign-file controls supplement those real process kills. They
 exercise import semantics and local crash recovery; they provide no evidence of
 live host delivery or of an operator having stopped old writers.

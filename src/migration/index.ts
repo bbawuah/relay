@@ -33,7 +33,7 @@ export function migrateLegacy({ sourceDir, destinationDir, namespace, sourceQuie
   let importedThisRun = 0; let acknowledgedThisRun = 0;
   try {
     if (held !== "quarantine" && ledger.header.heldAction !== "quarantine" && held !== ledger.header.heldAction) fail("held decision is already recorded and cannot be reversed");
-    ensureQuarantine(destinationDir, data, namespace);
+    ensureQuarantine(destinationDir, data, namespace, ledger);
     store = createMessageStore({ path: join(destinationDir, "messages.sqlite"), now: () => time });
     // Preflight every target conflict before registering or enqueuing anything in this run.
     for (const entry of data.entries) {
