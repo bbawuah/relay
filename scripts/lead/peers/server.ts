@@ -6,10 +6,12 @@
 // <staat>/identiteit/<hash>.json van de checkout waarin de server draait (zie metIdentiteit). Zonder dat bestand, zonder naam en
 // zonder rol (Brians eigen Codex) volgt de naam uit _meta.threadId van de aanroep (afgeleide-naam.ts). De Codex-lead (lead-proef)
 // krijgt haar naam per aanroep, alleen voor de sessie waaraan de identiteit gebonden is (leadProefNaam).
+// RELAY_MCP_NAME kiest opt-in een expliciete Relay-naam; een beschermde lead-proef-naam blijft aan _meta/cwd gebonden.
 
 import { identiteitEnv } from "../hooks/codex-wrap";
-import { type Omgeving, staatMap } from "../hooks/register";
+import { alleRecords, type Omgeving, staatMap, zoekIdentiteit } from "../hooks/register";
 import { afgeleideNaam, botstMetLevendeSessie, magAfleiden } from "./afgeleide-naam";
+import { geldigeNaam } from "./bus";
 import { standaardBus } from "./standaard";
 import { type Bus, toon } from "./types";
 
@@ -130,6 +132,14 @@ export function leadProefNaam(meta: unknown, env: Omgeving, cwd: string, nu = Da
   return i.LAB_AGENT_ROL === "lead-proef" && i.LAB_AGENT_NAAM ? i.LAB_AGENT_NAAM : null;
 }
 
+/** Zuivere naamkeuze: een geldige opt-in wint exact, maar geeft geen beschermde naam zonder de bestaande sessiebinding. */
+export function kiesMcpNaam(expliciet: unknown, legacy: string, beschermd: readonly string[] = [], gebonden: string | null = null): string {
+  if (!geldigeNaam(expliciet)) return legacy;
+  const naam = expliciet.toLowerCase();
+  if (beschermd.some((n) => n.toLowerCase() === naam) && gebonden?.toLowerCase() !== naam) return "";
+  return expliciet;
+}
+
 const PROTOCOLLEN = ["2024-11-05", "2025-03-26", "2025-06-18"];
 /** Details van een fout gaan naar stderr (kort, zonder stack); het model krijgt altijd dezelfde tekst, zonder paden. */
 const logFout = (wat: string, e: unknown): void => void process.stderr.write(`peers-mcp: ${wat}: ${e instanceof Error ? e.message : String(e)}\n`);
@@ -160,7 +170,19 @@ export async function verwerk(m: Rpc, bus: Bus, env: Omgeving, afleiden = false,
       const a = args && typeof args === "object" && !Array.isArray(args) ? (args as Record<string, unknown>) : {};
       let r: Awaited<ReturnType<typeof roepAan>>;
       try {
-        r = await roepAan(bus, (leadProefCwd ? leadProefNaam(m.params?._meta, env, leadProefCwd, nu) : null) || env.LAB_AGENT_NAAM || (afleiden ? metaNaam(m.params?._meta, env) : "") || "", naam, a);
+        const gebonden = leadProefCwd ? leadProefNaam(m.params?._meta, env, leadProefCwd, nu) : null;
+        let ikzelf: string;
+        if (geldigeNaam(env.RELAY_MCP_NAME)) {
+          const staat = staatMap(env);
+          const identiteit = leadProefCwd ? zoekIdentiteit(staat, leadProefCwd, nu)?.identiteit : null;
+          // Ook vanuit een andere checkout mag een expliciete naam geen levende proeflead overnemen.
+          const beschermd = alleRecords(staat).filter((r) => r.rol === "lead-proef" && r.toestand !== "weg" && !r.einde).map((r) => r.naam);
+          if (identiteit?.rol === "lead-proef") beschermd.push(identiteit.naam);
+          ikzelf = kiesMcpNaam(env.RELAY_MCP_NAME, "", beschermd, gebonden);
+        } else {
+          ikzelf = gebonden || env.LAB_AGENT_NAAM || (afleiden ? metaNaam(m.params?._meta, env) : "") || "";
+        }
+        r = await roepAan(bus, ikzelf, naam, a);
       } catch (e) {
         logFout(`tool ${naam}`, e);
         return goed(tekst(VASTE_FOUT, true));
@@ -174,9 +196,10 @@ export async function verwerk(m: Rpc, bus: Bus, env: Omgeving, afleiden = false,
 
 if (import.meta.main) {
   const { createInterface } = await import("node:readline");
-  const omgeving = metIdentiteit(process.env, process.cwd());
+  const expliciet = geldigeNaam(process.env.RELAY_MCP_NAME);
+  const omgeving = expliciet ? process.env : metIdentiteit(process.env, process.cwd());
   const bus = standaardBus(omgeving);
-  const afleiden = magAfleiden(omgeving, staatMap(omgeving), process.cwd());
+  const afleiden = !expliciet && magAfleiden(omgeving, staatMap(omgeving), process.cwd());
   let keten: Promise<void> = Promise.resolve();
   // true alleen als de regel echt naar stdout is geschreven; een dichte lezer (EPIPE) geeft false.
   const schrijf = (o: unknown) => new Promise<boolean>((klaar) => process.stdout.write(`${JSON.stringify(o)}\n`, (err) => klaar(!err)));

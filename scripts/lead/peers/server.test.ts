@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { type Rec, identiteitPad, nieuwRecord, schrijfIdentiteit, schrijfRecord } from "../hooks/register";
 import { maakBus } from "./bus";
-import { leadProefNaam, metIdentiteit, verwerk } from "./server";
+import { kiesMcpNaam, leadProefNaam, metIdentiteit, verwerk } from "./server";
 import { toon } from "./types";
 
 // Echte serverprocessen op een tijdelijke staatmap; de echte ~/.local/state/lab-lead blijft ongemoeid.
@@ -21,11 +21,9 @@ function sessie(naam: string, lead = ""): void {
 
 /** Start een echt proces, stuurt de regels en wacht tot stdin dicht is; geeft de antwoorden als objecten. */
 async function draaiProces(naam: string | undefined, regels: unknown[], cwd?: string): Promise<any[]> {
-  const env: Record<string, string> = {};
-  for (const [k, v] of Object.entries(process.env)) if (v !== undefined && !k.startsWith("GIT_") && k !== "LAB_AGENT_NAAM" && k !== "LAB_AGENT_ROL") env[k] = v;
-  env.LAB_LEAD_STAAT = staat;
+  const env: Record<string, string> = { HOME: join(dir, "home"), LAB_LEAD_STAAT: staat };
   if (naam) env.LAB_AGENT_NAAM = naam;
-  const p = Bun.spawn(["bun", SERVER], { env, stdin: "pipe", stdout: "pipe", stderr: "pipe", ...(cwd ? { cwd } : {}) });
+  const p = Bun.spawn([process.execPath, SERVER], { env, stdin: "pipe", stdout: "pipe", stderr: "pipe", cwd: cwd ?? dir });
   p.stdin.write(regels.map((r) => (typeof r === "string" ? r : JSON.stringify(r))).join("\n") + "\n");
   await p.stdin.end();
   const uit = await new Response(p.stdout).text();
@@ -37,6 +35,7 @@ const tekstVan = (r: any) => r.result.content[0].text as string;
 
 beforeEach(() => {
   dir = mkdtempSync(join(tmpdir(), "lead-peers-mcp-"));
+  mkdirSync(join(dir, "home"));
   staat = join(dir, "staat");
   sessie("a");
   sessie("b");
@@ -124,15 +123,11 @@ describe("tools via een echt proces", () => {
 });
 
 describe("leeslus", () => {
-  const env = () => {
-    const e: Record<string, string> = {};
-    for (const [k, v] of Object.entries(process.env)) if (v !== undefined && !k.startsWith("GIT_")) e[k] = v;
-    return { ...e, LAB_LEAD_STAAT: staat, LAB_AGENT_NAAM: "b" };
-  };
+  const env = () => ({ HOME: join(dir, "home"), LAB_LEAD_STAAT: staat, LAB_AGENT_NAAM: "b" });
 
   test("stdout dicht: het bericht blijft ongelezen (geen ack zonder levering)", async () => {
     await bus().send("a", "b", "hoi");
-    const p = Bun.spawn(["bun", SERVER], { env: env(), stdin: "pipe", stdout: "pipe", stderr: "pipe" });
+    const p = Bun.spawn([process.execPath, SERVER], { env: env(), cwd: dir, stdin: "pipe", stdout: "pipe", stderr: "pipe" });
     await p.stdout.cancel(); // lezer weg vóór het antwoord
     p.stdin.write(JSON.stringify(roep(1, "inbox")) + "\n");
     await p.stdin.end();
@@ -144,7 +139,7 @@ describe("leeslus", () => {
     await bus().send("a", "b", "hoi");
     // een map op de plek van het gelezen-bestand laat ack falen (EISDIR)
     mkdirSync(join(staat, "peers", "inbox", "b.gelezen"), { recursive: true });
-    const p = Bun.spawn(["bun", SERVER], { env: env(), stdin: "pipe", stdout: "pipe", stderr: "pipe" });
+    const p = Bun.spawn([process.execPath, SERVER], { env: env(), cwd: dir, stdin: "pipe", stdout: "pipe", stderr: "pipe" });
     p.stdin.write(JSON.stringify(roep(1, "inbox")) + "\n");
     p.stdin.write(JSON.stringify({ jsonrpc: "2.0", id: 3, method: "ping" }) + "\n");
     await p.stdin.end();
@@ -197,6 +192,28 @@ describe("verwerk", () => {
 
 });
 
+describe("expliciete Relay MCP-naam (zuivere keuze)", () => {
+  test("een geldige naam wint exact van legacy en een andere gebonden lead", () => {
+    expect(kiesMcpNaam("Claude-Peer", "codex-peer", ["codex-lead"], "codex-lead")).toBe("Claude-Peer");
+    expect(kiesMcpNaam("x".repeat(100), "legacy")).toBe("x".repeat(100));
+  });
+
+  test("geen of ongeldige opt-in behoudt legacy, ook als legacy wegens ontbrekende binding leeg is", () => {
+    for (const naam of [undefined, null, "", ".", "..", "../peer", "peer naam", "x".repeat(101), 5, {}]) {
+      expect(kiesMcpNaam(naam, "legacy")).toBe("legacy");
+      expect(kiesMcpNaam(naam, "", ["codex-lead"])).toBe("");
+    }
+  });
+
+  test("beschermde namen zijn hoofdletterongevoelig en weigeren zonder fallback", () => {
+    for (const naam of ["codex-lead", "Codex-Lead", "CODEX-LEAD"]) {
+      expect(kiesMcpNaam(naam, "geerfde-lead", ["codex-lead"])).toBe("");
+      expect(kiesMcpNaam(naam, "geerfde-lead", ["CODEX-LEAD"], "ander")).toBe("");
+      expect(kiesMcpNaam(naam, "legacy", ["Codex-Lead"], "codex-lead")).toBe(naam);
+    }
+  });
+});
+
 describe("identiteit zonder LAB_AGENT_NAAM (Codex-thread in T3)", () => {
   const ident = (naam: string, ts = T0) => ({ naam, rol: "agent", lead: "lead-x", opdracht: "/o", spawn_id: "sp-1", ts });
   let wt: string;
@@ -210,6 +227,8 @@ describe("identiteit zonder LAB_AGENT_NAAM (Codex-thread in T3)", () => {
     const env = { LAB_LEAD_STAAT: staat };
     // een daemon uit een lead-shell: de geërfde naam is die van de lead, het bestand van de thread wint
     expect(metIdentiteit({ ...env, LAB_AGENT_NAAM: "lead-x", LAB_LEAD_NAAM: "lead-y" }, wt, T0)).toMatchObject({ LAB_AGENT_NAAM: "a", LAB_LEAD_NAAM: "lead-x" });
+    // De opt-in hoort bij de MCP-route; de legacy helper zelf blijft ongewijzigd.
+    expect(metIdentiteit({ ...env, RELAY_MCP_NAME: "expliciet", LAB_AGENT_NAAM: "lead-x" }, wt, T0).LAB_AGENT_NAAM).toBe("a");
     // zonder bestand voor deze cwd (andere checkout) blijft de omgeving gelden
     expect(metIdentiteit({ ...env, LAB_AGENT_NAAM: "x" }, dir, T0).LAB_AGENT_NAAM).toBe("x");
   });
