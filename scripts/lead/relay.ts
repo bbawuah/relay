@@ -79,7 +79,9 @@ export async function draai(args: string[], opties: Opties = {}): Promise<number
     if (vendorOfOpdracht === "codex" && vorm !== "-w") {
       const prompt = vorm === "-l" ? rest : args.slice(1);
       if (prompt.length > 1 || prompt[0]?.startsWith("-")) return fout("codex staat hoogstens één gewone prompt toe");
-      return voerUit(["bash", codexLead, ...prompt]);
+      // Buiten een project mag de korte route gewoon een Relay-lead openen.
+      // De helper gebruikt deze checkout dan als veilige terugval-worktree.
+      return voerUit(["bash", codexLead, ...prompt], { LAB_RELAY_ROOT: root });
     }
     if (vorm === "-w") {
       const werk = werkerArgs(vendorOfOpdracht, rest);

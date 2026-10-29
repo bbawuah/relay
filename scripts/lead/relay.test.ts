@@ -73,6 +73,13 @@ describe("relay", () => {
     expect(n.aanroepen[0]!.argv).toEqual(["bash", path.join(root, "scripts/lead/lead-codex-auto.sh")]);
     expect(await draai(["codex", "onderzoek dit"], { root, uitvoer: n.run })).toBe(0);
     expect(n.aanroepen[1]!.argv).toEqual(["bash", path.join(root, "scripts/lead/lead-codex-auto.sh"), "onderzoek dit"]);
+    expect(n.aanroepen[1]!.env?.LAB_RELAY_ROOT).toBe(root);
+  });
+
+  test("codex geeft zijn eigen checkout mee als de aanroeper buiten Git staat", async () => {
+    const n = opnemer(); const root = nepRoot();
+    expect(await draai(["codex"], { root, cwd: "/geen/git/map", uitvoer: n.run })).toBe(0);
+    expect(n.aanroepen[0]!.env?.LAB_RELAY_ROOT).toBe(root);
   });
 
   test("codex zonder -l houdt vlaggen en meerdere promptdelen tegen", async () => {

@@ -26,6 +26,8 @@ projectspecificieke checks en regels horen daar, niet in deze repository.
 De korte vorm opent een gecontroleerde Codex-lead; een taak is optioneel. Vanuit
 de hoofdcheckout maakt Relay een sibling-worktree `<repo>-codex-lead` op
 `lead/codex`; vanuit een linked worktree gebruikt hij die direct.
+Ook buiten een Git-map werkt `relay codex`: dan gebruikt Relay zijn eigen
+checkout als terugval.
 
 ```sh
 relay codex

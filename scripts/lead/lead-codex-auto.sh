@@ -13,7 +13,14 @@ git_hard() {
   git -c core.fsmonitor= -c core.hooksPath=/dev/null -c core.untrackedCache=false -c diff.ignoreSubmodules=all "$@"
 }
 
-MAP=$(git_hard -C "$PWD" rev-parse --show-toplevel 2>/dev/null) || fout "start binnen een git-worktree"
+MAP=$(git_hard -C "$PWD" rev-parse --show-toplevel 2>/dev/null || true)
+# `relay codex` moet ook vanuit een gewone shell-map werken. De dispatcher
+# geeft dan zijn eigen checkout mee; alleen als ook die geen worktree is,
+# stoppen we veilig.
+if [ -z "$MAP" ] && [ -n "${LAB_RELAY_ROOT:-}" ]; then
+  MAP=$(git_hard -C "$LAB_RELAY_ROOT" rev-parse --show-toplevel 2>/dev/null || true)
+fi
+[ -n "$MAP" ] || fout "geen git-worktree gevonden (ook niet voor Relay zelf)"
 MAP=$(cd "$MAP" && pwd -P)
 GIT_DIR=$(git_hard -C "$MAP" rev-parse --path-format=absolute --git-dir) || fout "geen git-worktree: $MAP"
 GIT_COMMON=$(git_hard -C "$MAP" rev-parse --path-format=absolute --git-common-dir) || fout "geen git-worktree: $MAP"
