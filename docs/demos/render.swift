@@ -92,7 +92,11 @@ func frame(_ path: String, label: String, lines: [Line], caption: String, host: 
   if let c = center {
     var y = 170.0
     for (i, t) in c.enumerated() {
-      draw(g, [Seg(t: t, c: i == 0 ? fg : gray, bold: i == 0)], x: Double(PAD + 20), yTop: y); y += 32
+      // Wrap each intro line to the width left of the indent so nothing is cut off.
+      for row in (t.isEmpty ? [""] : wrap(t, cols - 3)) {
+        draw(g, [Seg(t: row, c: i == 0 ? fg : gray, bold: i == 0)], x: Double(PAD + 20), yTop: y); y += 32
+      }
+      y += 8
     }
   } else {
     for (i, l) in lines.suffix(rows).enumerated() { draw(g, l, x: Double(PAD), yTop: Double(TOP + 10 + i * LH)) }
