@@ -5,6 +5,7 @@ import { draai } from "../scripts/lead/peers/cli";
 import { standaardBus } from "../scripts/lead/peers/standaard";
 import { alleRecords, heeftIdentiteitsbestand, leesRecord, nieuwRecord, schrijfRecord, staatMap } from "../scripts/lead/hooks/register";
 import { environment, type Environment } from "./environment";
+import { launchLeases, ownerStatus, withLaunchLock } from "./identity";
 import { bunArgs } from "./runtime";
 
 export const ROOT = resolve(import.meta.dir, "..");
@@ -69,14 +70,19 @@ export function register(args: string[], env: Environment, now = Date.now()): st
   }
   if (!geldigeNaam(name) || (lead && !geldigeNaam(lead))) throw new Error("register requires --name NAME (letters, digits, '.', '_' or '-'; at most 100 characters)");
   const state = staatMap(env);
-  if (alleRecords(state).some((r) => r.toestand !== "weg" && r.naam.toLowerCase() === name.toLowerCase())) throw new Error(`session name is already registered: ${name}`);
-  const id = `relay-${crypto.randomUUID()}`;
-  schrijfRecord(state, {
-    ...nieuwRecord(id, { ...env, LAB_AGENT_NAAM: name, LAB_LEAD_NAAM: lead }, process.cwd(), now),
-    host: "geen",
-    ...(inbound ? { inbound: { standaard: inbound } } : {}),
+  return withLaunchLock(state, (db) => {
+    const leases = launchLeases(db);
+    const key = name.toLowerCase();
+    if (leases.some((lease) => lease.name.toLowerCase() === key && ownerStatus(lease.owner) !== "dead") || alleRecords(state).some((r) => r.toestand !== "weg" && r.naam.toLowerCase() === key)) throw new Error(`session name is already registered: ${name}`);
+    const id = `relay-${crypto.randomUUID()}`;
+    // The record is the manual claim: publish it before releasing launch's lock.
+    schrijfRecord(state, {
+      ...nieuwRecord(id, { ...env, LAB_AGENT_NAAM: name, LAB_LEAD_NAAM: lead }, process.cwd(), now),
+      host: "geen",
+      ...(inbound ? { inbound: { standaard: inbound } } : {}),
+    });
+    return id;
   });
-  return id;
 }
 
 export async function main(argv: string[], input: Environment = process.env): Promise<number> {
