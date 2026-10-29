@@ -1,9 +1,10 @@
 import { expect, test } from "bun:test";
 import { Database } from "bun:sqlite";
-import { chmodSync, existsSync, linkSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, copyFileSync, existsSync, linkSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createMessageStore } from "../src/storage/store";
+import { publishNoReplace } from "../src/storage/publish";
 import type { EnqueueInput, Peer } from "../src/messages/contracts";
 
 const scratch = mkdtempSync(join(realpathSync(tmpdir()), "relay-message-storage-"));
@@ -207,9 +208,12 @@ test("foreign schema, unsafe sidecars and symlink ancestors are refused without 
   expect(() => createMessageStore({ path: f.path })).toThrow("schema");
   expect(readFileSync(f.path)).toEqual(before);
   const clean = fixture(); clean.store.close();
+  // SQLite may retain an empty private WAL after a clean read-only open. Use
+  // a closed, checkpointed copy so this fault setup never overwrites a sidecar.
+  const isolated = join(clean.dir, "isolated.sqlite"); copyFileSync(clean.path, isolated);
   const sentinel = join(clean.dir, "sentinel"); writeFileSync(sentinel, "untouched", { mode: 0o600 });
-  symlinkSync(sentinel, clean.path + "-wal");
-  expect(() => createMessageStore({ path: clean.path })).toThrow();
+  symlinkSync(sentinel, isolated + "-wal");
+  expect(() => createMessageStore({ path: isolated })).toThrow();
   expect(readFileSync(sentinel, "utf8")).toBe("untouched");
   const ancestor = join(scratch, `ancestor-${++seq}`); symlinkSync(clean.dir, ancestor);
   expect(() => createMessageStore({ path: join(ancestor, "child", "messages.sqlite") })).toThrow();
@@ -390,4 +394,163 @@ test("R2 SIGKILL after host acceptance preserves frozen batch ID and next queued
   expect(recovered.completeNotification(originalId,"restarted")).toBe(true);
   const next=recovered.claimNotifications({now:30101,workerId:"restarted",leaseMs:1000,limit:10});
   expect(next).toHaveLength(1); expect(next[0].id).not.toBe(originalId); recovered.close();
+});
+
+test("B3 simultaneous first store/register processes all succeed with missing parents", async () => {
+  for (let round=0;round<3;round++) {
+    const dir=join(scratch,`cold-${++seq}`); mkdirSync(dir,{mode:0o700});
+    const path=join(dir,"new-parent","nested","messages.sqlite"); const start=join(dir,"start");
+    const writers=Array.from({length:4},(_,i)=>child(`
+      import { existsSync, writeSync } from 'node:fs';
+      import { createMessageStore } from ${JSON.stringify(storeModule)};
+      writeSync(1,'ready\\n'); while(!existsSync(${JSON.stringify(start)})) await Bun.sleep(1);
+      const store=createMessageStore({path:${JSON.stringify(path)}});
+      store.register(${JSON.stringify(peer(`fresh-${i}`))}); store.close();`,dir));
+    await Promise.all(writers.map(async proc=>{
+      const reader=proc.stdout.getReader(); const first=await reader.read(); reader.releaseLock();
+      expect(new TextDecoder().decode(first.value)).toContain("ready");
+    }));
+    writeFileSync(start,"go",{mode:0o600});
+    const results=await Promise.all(writers.map(async proc=>({code:await proc.exited,error:await new Response(proc.stderr).text()})));
+    expect(results).toEqual(Array.from({length:4},()=>({code:0,error:""})));
+    const store=createMessageStore({path}); expect(store.listPeers("n")).toHaveLength(4); store.close();
+  }
+});
+
+test("B3 existing zero-byte and foreign files are refused byte-for-byte unchanged",()=>{
+  const dir=join(scratch,`unknown-${++seq}`); mkdirSync(dir,{mode:0o700});
+  for(const bytes of [Buffer.alloc(0),Buffer.from("foreign bytes")]){
+    const path=join(dir,`unknown-${bytes.length}.sqlite`); writeFileSync(path,bytes,{mode:0o600});
+    const before=statSync(path);
+    expect(()=>createMessageStore({path})).toThrow();
+    expect(readFileSync(path)).toEqual(bytes); expect(statSync(path).ino).toBe(before.ino);
+  }
+});
+
+test("B3 no-replace syscall preserves existing files and never creates a second link",()=>{
+  const dir=join(scratch,`publish-${++seq}`); mkdirSync(dir,{mode:0o700});
+  const source=join(dir,"private-初期.sqlite"), target=join(dir,"public-📨.sqlite");
+  writeFileSync(source,"complete source",{mode:0o600}); const before=statSync(source);
+  writeFileSync(target,"foreign winner",{mode:0o600}); const winner=statSync(target);
+  expect(publishNoReplace(source,target)).toBe(false);
+  expect(readFileSync(source,"utf8")).toBe("complete source");
+  expect(readFileSync(target,"utf8")).toBe("foreign winner"); expect(statSync(target).ino).toBe(winner.ino);
+  const fresh=join(dir,"fresh-📨.sqlite"); expect(publishNoReplace(source,fresh)).toBe(true);
+  expect(statSync(fresh).ino).toBe(before.ino); expect(statSync(fresh).nlink).toBe(1); expect(existsSync(source)).toBe(false);
+  expect(()=>publishNoReplace(fresh,join(dir,"bad\0path"))).toThrow("Invalid atomic publication path");
+  expect(readFileSync(fresh,"utf8")).toBe("complete source");
+});
+
+for(const after of [false,true]) test(`B3 SIGKILL ${after?"after":"before"} atomic publication leaves recoverable final state`,async()=>{
+  const dir=join(scratch,`publish-crash-${++seq}`); mkdirSync(dir,{mode:0o700});
+  const path=join(dir,"new-state","messages.sqlite");
+  const publisherModule=join(import.meta.dir,"../src/storage/publish.ts");
+  const proc=child(`
+    import { mock } from 'bun:test'; import { writeSync } from 'node:fs';
+    const actual=await import(${JSON.stringify(publisherModule)});
+    const publish=actual.publishNoReplace, capability=actual.assertPublishCapability;
+    mock.module(${JSON.stringify(publisherModule)},()=>({assertPublishCapability:capability,publishNoReplace:(source,target)=>{
+      ${after?"if(!publish(source,target)) throw new Error('unexpected publication loss');":""}
+      writeSync(1,JSON.stringify({source,target})+'\\n'); Atomics.wait(new Int32Array(new SharedArrayBuffer(4)),0,0,30000);
+      throw new Error('parent did not kill process');
+    }}));
+    const {createMessageStore}=await import(${JSON.stringify(storeModule)});
+    createMessageStore({path:${JSON.stringify(path)}});`,dir);
+  const reader=proc.stdout.getReader(); const first=await reader.read(); reader.releaseLock();
+  const boundary=JSON.parse(new TextDecoder().decode(first.value));
+  expect(boundary.target).toBe(path);
+  expect(existsSync(path)).toBe(after);
+  if(!after){
+    const built=new Database(boundary.source,{readonly:true,create:false});
+    expect(built.query("PRAGMA user_version").get()).toEqual({user_version:2});
+    expect(built.query("SELECT name FROM sqlite_master WHERE name='peers'").get()).toEqual({name:"peers"}); built.close();
+  }else expect(statSync(path).nlink).toBe(1);
+  proc.kill("SIGKILL"); await proc.exited;
+  expect(existsSync(path)).toBe(after);
+  const recovered=createMessageStore({path}); recovered.register(peer("after-kill"));
+  expect(recovered.listPeers("n").map(p=>p.id)).toEqual(["after-kill"]); recovered.close();
+});
+
+test("B3 capability failure leaves absent final path and parents untouched",async()=>{
+  const dir=join(scratch,`no-capability-${++seq}`); mkdirSync(dir,{mode:0o700});
+  const path=join(dir,"never-created","messages.sqlite");
+  const publisherModule=join(import.meta.dir,"../src/storage/publish.ts");
+  const proc=child(`
+    import {mock} from 'bun:test';
+    mock.module(${JSON.stringify(publisherModule)},()=>({assertPublishCapability(){throw new Error('capability unavailable');},publishNoReplace(){throw new Error('must not publish');}}));
+    const {createMessageStore}=await import(${JSON.stringify(storeModule)});
+    try{createMessageStore({path:${JSON.stringify(path)}});process.exit(2);}catch{console.log('refused');}`,dir);
+  expect(await proc.exited).toBe(0); expect(await new Response(proc.stdout).text()).toContain("refused");
+  expect(existsSync(path)).toBe(false); expect(existsSync(join(dir,"never-created"))).toBe(false);
+});
+
+test("B3 EEXIST publication loser reopens the initialized winner without replacing its inode/data",async()=>{
+  const dir=join(scratch,`winner-${++seq}`); mkdirSync(dir,{mode:0o700});
+  const path=join(dir,"messages.sqlite"), winnerPath=join(dir,"winner.sqlite");
+  const publisherModule=join(import.meta.dir,"../src/storage/publish.ts");
+  const proc=child(`
+    import {mock} from 'bun:test'; import {statSync} from 'node:fs';
+    const actual=await import(${JSON.stringify(publisherModule)}); const publish=actual.publishNoReplace, capability=actual.assertPublishCapability;
+    let factory, winnerInode, lost=false;
+    mock.module(${JSON.stringify(publisherModule)},()=>({assertPublishCapability:capability,publishNoReplace:(source,target)=>{
+      if(target!==${JSON.stringify(path)}) return publish(source,target);
+      const winner=factory({path:${JSON.stringify(winnerPath)}}); winner.register(${JSON.stringify(peer("winner"))}); winner.close();
+      winnerInode=statSync(${JSON.stringify(winnerPath)}).ino;
+      if(!publish(${JSON.stringify(winnerPath)},target)) throw new Error('winner did not publish');
+      lost=!publish(source,target); return !lost;
+    }}));
+    factory=(await import(${JSON.stringify(storeModule)})).createMessageStore;
+    const loser=factory({path:${JSON.stringify(path)}}); loser.register(${JSON.stringify(peer("loser"))});
+    console.log(JSON.stringify({lost,winnerInode,finalInode:statSync(${JSON.stringify(path)}).ino,ids:loser.listPeers('n').map(p=>p.id).sort()})); loser.close();`,dir);
+  expect(await proc.exited).toBe(0); expect(await new Response(proc.stderr).text()).toBe("");
+  const result=JSON.parse(await new Response(proc.stdout).text());
+  expect(result.lost).toBe(true); expect(result.finalInode).toBe(result.winnerInode); expect(result.ids).toEqual(["loser","winner"]);
+  expect(statSync(path).nlink).toBe(1);
+});
+
+for(const bytes of ["","foreign winner"]) test(`B3 unknown ${bytes?"foreign":"zero-byte"} EEXIST winner is refused unchanged`,async()=>{
+  const dir=join(scratch,`foreign-winner-${++seq}`); mkdirSync(dir,{mode:0o700});
+  const path=join(dir,"messages.sqlite"), publisherModule=join(import.meta.dir,"../src/storage/publish.ts");
+  const proc=child(`
+    import {mock} from 'bun:test'; import {writeFileSync,statSync} from 'node:fs';
+    const actual=await import(${JSON.stringify(publisherModule)}); const publish=actual.publishNoReplace, capability=actual.assertPublishCapability;
+    let winnerInode;
+    mock.module(${JSON.stringify(publisherModule)},()=>({assertPublishCapability:capability,publishNoReplace:(source,target)=>{
+      writeFileSync(target,${JSON.stringify(bytes)},{flag:'wx',mode:0o600}); winnerInode=statSync(target).ino;
+      return publish(source,target);
+    }}));
+    const {createMessageStore}=await import(${JSON.stringify(storeModule)});
+    try{createMessageStore({path:${JSON.stringify(path)}});process.exit(2);}catch{console.log(JSON.stringify({winnerInode}));}`,dir);
+  expect(await proc.exited).toBe(0); expect(await new Response(proc.stderr).text()).toBe("");
+  const result=JSON.parse(await new Response(proc.stdout).text());
+  expect(statSync(path).ino).toBe(result.winnerInode); expect(readFileSync(path,"utf8")).toBe(bytes);
+});
+
+for(const kind of ["symlink","public"]) test(`B3 mkdir EEXIST ${kind} winner is revalidated and refused`,async()=>{
+  const dir=join(scratch,`mkdir-race-${++seq}`); mkdirSync(dir,{mode:0o700});
+  const foreign=join(dir,"foreign"); mkdirSync(foreign,{mode:0o700}); writeFileSync(join(foreign,"sentinel"),"untouched");
+  const parent=join(dir,"raced"), path=join(parent,"messages.sqlite");
+  const proc=child(`
+    import {mock} from 'bun:test'; import * as fs from 'node:fs';
+    const original={...fs};
+    mock.module('node:fs',()=>({...original,mkdirSync:(path,options)=>{
+      if(path!==${JSON.stringify(parent)}) return original.mkdirSync(path,options);
+      ${kind==="symlink"?`original.symlinkSync(${JSON.stringify(foreign)},path);`:`original.mkdirSync(path,{mode:0o755});original.chmodSync(path,0o755);`}
+      throw Object.assign(new Error('racing creator won'),{code:'EEXIST'});
+    }}));
+    const {createMessageStore}=await import(${JSON.stringify(storeModule)});
+    try{createMessageStore({path:${JSON.stringify(path)}});process.exit(2);}catch{console.log('refused');}`,dir);
+  expect(await proc.exited).toBe(0); expect(await new Response(proc.stdout).text()).toContain("refused");
+  expect(existsSync(path)).toBe(false); expect(readFileSync(join(foreign,"sentinel"),"utf8")).toBe("untouched");
+});
+
+test("B3 loader redirection is refused before any database path is created",async()=>{
+  const dir=join(scratch,`loader-${++seq}`); mkdirSync(dir,{mode:0o700});
+  const path=join(dir,"absent","messages.sqlite");
+  const proc=child(`
+    import {createMessageStore} from ${JSON.stringify(storeModule)};
+    process.env.DYLD_LIBRARY_PATH='/unused-project-library';
+    try{createMessageStore({path:${JSON.stringify(path)}});process.exit(2);}catch{console.log('refused');}`,dir);
+  expect(await proc.exited).toBe(0); expect(await new Response(proc.stdout).text()).toContain("refused");
+  expect(existsSync(join(dir,"absent"))).toBe(false);
 });

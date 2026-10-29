@@ -1,7 +1,8 @@
 import { Database } from "bun:sqlite";
 import { randomUUID } from "node:crypto";
 import { DEFAULT_IDEMPOTENCY_MS, DEFAULT_REFERENCE_MS, MessageError, PROTOCOL_VERSION, type EnqueueInput, type Endpoint, type Envelope, type MessageReference, type MessageStore, type NotificationJob, type NotificationStatus, type Peer, type Receipt } from "../messages/contracts";
-import { APPLICATION_ID, preparePath, SCHEMA_VERSION } from "./paths";
+import { APPLICATION_ID, SCHEMA_VERSION } from "./paths";
+import { ensureMessageDatabase } from "./initialize";
 import { DIAG, safeDiagnosis } from "./diagnostics";
 
 const SCHEMA = [
@@ -78,26 +79,29 @@ export function createMessageStore({ path, now = Date.now, idempotencyMs = DEFAU
       integer(horizon, "metadata lifetime", 1);
       if (horizon > 365 * 24 * 60 * 60 * 1000) error("invalid", "Metadata lifetime exceeds one year");
     }
-    const prepared = preparePath(path);
-    const db = new Database(prepared.path, { create: false, strict: true });
+    const readyPath = ensureMessageDatabase(path, temporaryPath => {
+      const initial = new Database(temporaryPath, { create: false, strict: true });
+      try {
+        initial.exec("PRAGMA busy_timeout=1000; PRAGMA synchronous=FULL");
+        initial.transaction(() => {
+          initial.exec(`PRAGMA application_id=${APPLICATION_ID}; PRAGMA user_version=${SCHEMA_VERSION}`);
+          for (const sql of SCHEMA) initial.exec(sql);
+        }).immediate();
+        initial.exec("PRAGMA journal_mode=WAL; PRAGMA wal_checkpoint(TRUNCATE)");
+      } finally { initial.close(true); } // Finalize before moving this inode to its public name.
+    });
+    const db = new Database(readyPath, { create: false, strict: true });
     try {
       db.exec("PRAGMA busy_timeout=1000; PRAGMA foreign_keys=ON; PRAGMA synchronous=FULL");
-      if (prepared.fresh) {
-        db.transaction(() => {
-          db.exec(`PRAGMA application_id=${APPLICATION_ID}; PRAGMA user_version=${SCHEMA_VERSION}`);
-          for (const sql of SCHEMA) db.exec(sql);
-        }).immediate();
-      } else {
-        const app = db.query("PRAGMA application_id").get() as Row;
-        const version = db.query("PRAGMA user_version").get() as Row;
-        const actual = db.query("SELECT sql FROM sqlite_master WHERE sql IS NOT NULL AND name NOT LIKE 'sqlite_%' ORDER BY name").all() as Row[];
-        const expected = [...SCHEMA].sort((a,b) => a.match(/(?:TABLE|INDEX) (\w+)/)![1].localeCompare(b.match(/(?:TABLE|INDEX) (\w+)/)![1]));
-        if (app.application_id !== APPLICATION_ID || version.user_version !== SCHEMA_VERSION || actual.length !== expected.length
-          || actual.some((row, index) => row.sql !== expected[index])) error("storage", "Unknown message database schema");
-      }
+      const app = db.query("PRAGMA application_id").get() as Row;
+      const version = db.query("PRAGMA user_version").get() as Row;
+      const actual = db.query("SELECT sql FROM sqlite_master WHERE sql IS NOT NULL AND name NOT LIKE 'sqlite_%' ORDER BY name").all() as Row[];
+      const expected = [...SCHEMA].sort((a,b) => a.match(/(?:TABLE|INDEX) (\w+)/)![1].localeCompare(b.match(/(?:TABLE|INDEX) (\w+)/)![1]));
+      if (app.application_id !== APPLICATION_ID || version.user_version !== SCHEMA_VERSION || actual.length !== expected.length
+        || actual.some((row, index) => row.sql !== expected[index])) error("storage", "Unknown message database schema");
       const mode = db.query("PRAGMA journal_mode=WAL").get() as Row;
       if (mode.journal_mode !== "wal") error("storage", "Message database requires local WAL");
-    } catch (cause) { db.close(); throw cause; }
+    } catch (cause) { db.close(true); throw cause; }
 
     const tx = <T>(fn: () => T): T => guarded(() => db.transaction(fn).immediate());
     const peerRow = (namespace: string, id: string) => db.query("SELECT * FROM peers WHERE namespace=? AND id=?").get(namespace, id) as Row | null;
@@ -250,7 +254,7 @@ export function createMessageStore({ path, now = Date.now, idempotencyMs = DEFAU
         db.query("DELETE FROM notification_jobs WHERE status<>'pending' AND terminal_at<?").run(before);
         return db.query("DELETE FROM messages WHERE acknowledged_at IS NOT NULL AND acknowledged_at<?").run(before).changes;
       }); },
-      close() { db.close(); }
+      close() { db.close(true); }
     };
     return store;
   });

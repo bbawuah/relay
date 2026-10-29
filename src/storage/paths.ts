@@ -25,7 +25,9 @@ export function preparePath(path: string): { path: string; fresh: boolean } {
     try { st = lstatSync(current); }
     catch (error) {
       if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
-      mkdirSync(current, { mode: 0o700 }); st = lstatSync(current);
+      try { mkdirSync(current, { mode: 0o700 }); }
+      catch (race) { if ((race as NodeJS.ErrnoException).code !== "EEXIST") throw race; }
+      st = lstatSync(current); // A concurrent mkdir winner must pass the same guards.
     }
     if (!st.isDirectory() || st.isSymbolicLink()) fail(`directory link or non-directory: ${current}`);
     // Shared sticky temporary roots are safe ancestors; the immediate parent must be private.
@@ -39,12 +41,20 @@ export function preparePath(path: string): { path: string; fresh: boolean } {
   try { privateFile(path); existing = true; }
   catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
   for (const suffix of ["-wal", "-shm", "-journal"]) {
-    try { privateFile(path + suffix); if (!existing) fail(`orphan ${suffix} file`); }
+    try {
+      privateFile(path + suffix);
+      if (!existing) {
+        // A fully initialized database can be published between the first lstat
+        // and its first writer creating a WAL. Revalidate instead of mislabelling it.
+        try { privateFile(path); existing = true; }
+        catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") fail(`orphan ${suffix} file`); throw error; }
+      }
+    }
     catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
   }
   if (!existing) {
-    const fd = openSync(path, constants.O_CREAT | constants.O_EXCL | constants.O_WRONLY | constants.O_NOFOLLOW, 0o600);
-    closeSync(fd);
+    // Absence is an observation, not a reservation. A private, fully initialized
+    // file will be published with a kernel-enforced no-replace operation.
     return { path, fresh: true };
   }
   const fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW);
