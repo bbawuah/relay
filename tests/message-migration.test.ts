@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
 import { Database } from "bun:sqlite";
-import { chmodSync, existsSync, linkSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, linkSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { migrateLegacy, type MigrationOptions } from "../src/migration/index";
@@ -249,4 +249,152 @@ test("a writer changing a file while it is read is detected before target writes
   finally { child.kill(); await child.exited; }
   expect(await new Response(child.stderr).text()).toBe("");
   expect(existsSync(f.destinationDir)).toBe(false);
+});
+
+const publisherModule = join(import.meta.dir, "../src/storage/publish.ts");
+const migrationModule = join(import.meta.dir, "../src/migration/index.ts");
+function migrationChild(f: ReturnType<typeof fixture>, setup: string, catchFailure = false) {
+  const home = join(f.dir, `home-${++sequence}`); mkdirSync(home, { mode: 0o700 });
+  const script = `${setup}
+    const { migrateLegacy } = await import(${JSON.stringify(migrationModule)});
+    ${catchFailure ? "try {" : ""}
+    migrateLegacy({...${JSON.stringify({ ...f.options, now: undefined })},now:()=>100});
+    ${catchFailure ? "process.exit(2); } catch(error) { console.log(error.message); }" : ""}
+  `;
+  return Bun.spawn([process.execPath, "--config=/dev/null", "--no-env-file", "-e", script], { cwd: f.dir, env: { PATH: process.env.PATH ?? "", HOME: home, RELAY_STATE_DIR: join(home, "state") }, stdout: "pipe", stderr: "pipe", timeout: 10_000 });
+}
+function registration(f: ReturnType<typeof fixture>): string {
+  const db = new Database(join(f.destinationDir, "migration.sqlite"), { readonly: true });
+  try { return JSON.parse((db.query("SELECT value FROM metadata WHERE id=1").get() as { value: string }).value).quarantineTemp; }
+  finally { db.close(); }
+}
+
+for (const point of ["transaction", "before-publication", "after-publication"]) test(`F2 SIGKILL ledger ${point} never publishes a partial marker and resumes`, async () => {
+  const f = fixture(); const source = bytes(f.sourceDir);
+  const setup = point === "transaction" ? `
+    import { Database } from 'bun:sqlite';
+    const original=Database.prototype.exec;
+    Database.prototype.exec=function(sql){const result=original.call(this,sql);if(sql.includes('application_id=${0x524c4d31}'))process.kill(process.pid,'SIGKILL');return result;};
+  ` : `
+    import { mock } from 'bun:test';
+    const actual=await import(${JSON.stringify(publisherModule)}); const publish=actual.publishNoReplace, capability=actual.assertPublishCapability;
+    mock.module(${JSON.stringify(publisherModule)},()=>({assertPublishCapability:capability,publishNoReplace:(source,target)=>{
+      if(target.endsWith('/migration.sqlite')) { ${point === "after-publication" ? "if(!publish(source,target))throw new Error('unexpected winner');" : ""} process.kill(process.pid,'SIGKILL'); }
+      return publish(source,target);
+    }}));
+  `;
+  const child = migrationChild(f, setup); await child.exited;
+  expect(await new Response(child.stderr).text()).toBe(""); expect(child.signalCode).toBe("SIGKILL");
+  const marker = join(f.destinationDir, "migration.sqlite");
+  expect(existsSync(marker)).toBe(point === "after-publication");
+  const remnants = readdirSync(f.dir).filter(name => name.startsWith(".relay-migration-init-")); expect(remnants).toHaveLength(1);
+  const preserved = bytes(join(f.dir, remnants[0]));
+  if (point === "before-publication") {
+    const db = new Database(join(f.dir, remnants[0], "migration.sqlite"), { readonly: true });
+    expect(db.query("PRAGMA application_id").get()).toEqual({ application_id: 0x524c4d31 });
+    expect(db.query("SELECT count(*) AS n FROM entries").get()).toEqual({ n: 2 }); db.close();
+  }
+  const result = migrateLegacy(f.options); expect(result.completed).toBe(true); expect(result.resumed).toBe(point === "after-publication");
+  expect(statSync(marker).nlink).toBe(1); expect(bytes(f.sourceDir)).toEqual(source);
+  expect(bytes(join(f.dir, remnants[0]))).toEqual(preserved);
+});
+
+for (const size of [0, 40]) test(`F2 SIGKILL after creating/writing ${size}-byte registered quarantine resumes`, async () => {
+  const f = fixture([], [legacy("held")]);
+  const child = migrationChild(f, `
+    import { mock } from 'bun:test'; import * as fs from 'node:fs';
+    const original={...fs};
+    mock.module('node:fs',()=>({...original,writeFileSync:(file,data,...options)=>{
+      if(typeof file==='number' && Buffer.isBuffer(data) && data.includes(Buffer.from('relay-legacy-quarantine-v1'))) {
+        ${size ? `original.writeFileSync(file,data.subarray(0,${size}),...options);` : ""}
+        process.kill(process.pid,'SIGKILL');
+      }
+      return original.writeFileSync(file,data,...options);
+    }}));
+  `);
+  await child.exited; expect(await new Response(child.stderr).text()).toBe(""); expect(child.signalCode).toBe("SIGKILL");
+  const name = registration(f); expect(name).toMatch(/^\.relay-quarantine-/);
+  const temporary = join(f.destinationDir, name); expect(statSync(temporary).size).toBe(size);
+  const inode = statSync(temporary).ino;
+  const report = migrateLegacy(f.options); expect(report.held.quarantined).toBe(1); expect(report.messages).toBe(0);
+  expect(statSync(join(f.destinationDir, "legacy-quarantine.json")).ino).toBe(inode);
+  expect(existsSync(temporary)).toBe(false);
+  expect(migrateLegacy(f.options).importedThisRun).toBe(0);
+});
+
+for (const length of [0, 40, Infinity]) test(`F2 constructed registered quarantine prefix ${length} resumes without truncating`, () => {
+  const f = fixture([], [legacy("held")]); migrateLegacy(f.options);
+  const target = join(f.destinationDir, "legacy-quarantine.json"); const content = readFileSync(target); rmSync(target);
+  const temporary = join(f.destinationDir, registration(f)); writeFileSync(temporary, content.subarray(0, length), { mode: 0o600 });
+  const inode = statSync(temporary).ino;
+  expect(migrateLegacy(f.options).held.quarantined).toBe(1);
+  expect(readFileSync(target)).toEqual(content); expect(statSync(target).ino).toBe(inode);
+});
+
+for (const kind of ["unregistered-empty", "unregistered-prefix", "registered-foreign", "old-empty", "registered-symlink", "registered-hardlink"]) test(`F2 preserves ${kind} quarantine artifacts`, () => {
+  const f = fixture([], [legacy("held")]); migrateLegacy(f.options);
+  const target = join(f.destinationDir, "legacy-quarantine.json"); const content = readFileSync(target); rmSync(target);
+  const registered = registration(f);
+  const name = kind.startsWith("unregistered") ? ".relay-quarantine-00000000-0000-4000-8000-000000000000.tmp" : kind === "old-empty" ? "legacy-quarantine.json.tmp" : registered;
+  const path = join(f.destinationDir, name); const external = join(f.dir, "foreign"); writeFileSync(external, "keep", { mode: 0o600 });
+  if (kind === "registered-symlink") symlinkSync(external, path);
+  else if (kind === "registered-hardlink") linkSync(external, path);
+  else writeFileSync(path, kind === "unregistered-prefix" ? content.subarray(0, 40) : kind === "registered-foreign" ? Buffer.from("foreign") : Buffer.alloc(0), { mode: 0o600 });
+  const before = readFileSync(path); const inode = statSync(path).ino;
+  expect(() => migrateLegacy(f.options)).toThrow(); expect(readFileSync(path)).toEqual(before); expect(statSync(path).ino).toBe(inode);
+  expect(readFileSync(external, "utf8")).toBe("keep"); expect(existsSync(target)).toBe(false);
+});
+
+for (const targetName of ["migration.sqlite", "legacy-quarantine.json"]) for (const winner of ["", "foreign winner"]) test(`F2 ${targetName} publication preserves ${winner ? "foreign" : "empty"} EEXIST winner`, async () => {
+  const f = fixture(); const child = migrationChild(f, `
+    import { mock } from 'bun:test'; import { writeFileSync, statSync } from 'node:fs';
+    const actual=await import(${JSON.stringify(publisherModule)}); const publish=actual.publishNoReplace, capability=actual.assertPublishCapability;
+    mock.module(${JSON.stringify(publisherModule)},()=>({assertPublishCapability:capability,publishNoReplace:(source,target)=>{
+      if(target.endsWith('/'+${JSON.stringify(targetName)})) { writeFileSync(target,${JSON.stringify(winner)},{flag:'wx',mode:0o600}); console.log('winner:'+statSync(target).ino); }
+      return publish(source,target);
+    }}));
+  `, true);
+  expect(await child.exited).toBe(0); expect(await new Response(child.stderr).text()).toBe("");
+  const output = await new Response(child.stdout).text(); const inode = Number(output.match(/winner:(\d+)/)?.[1]);
+  const target = join(f.destinationDir, targetName); expect(readFileSync(target, "utf8")).toBe(winner); expect(statSync(target).ino).toBe(inode);
+});
+
+test("F2 resumes past actual B3 message-init crash remnants without adopting or deleting them", async () => {
+  const f = fixture(); const child = migrationChild(f, `
+    import { Database } from 'bun:sqlite';
+    const original=Database.prototype.exec;
+    Database.prototype.exec=function(sql){const result=original.call(this,sql);if(sql.includes('application_id=${0x524c5932}'))process.kill(process.pid,'SIGKILL');return result;};
+  `);
+  await child.exited; expect(await new Response(child.stderr).text()).toBe(""); expect(child.signalCode).toBe("SIGKILL");
+  const remnants = readdirSync(f.destinationDir).filter(name => name.startsWith(".relay-message-init-")); expect(remnants).toHaveLength(1);
+  const path = join(f.destinationDir, remnants[0]); const before = bytes(path);
+  expect(existsSync(join(f.destinationDir, "messages.sqlite"))).toBe(false);
+  expect(migrateLegacy(f.options).messages).toBe(2); expect(bytes(path)).toEqual(before);
+  expect(migrateLegacy(f.options).importedThisRun).toBe(0); expect(bytes(path)).toEqual(before);
+});
+
+for (const kind of ["unknown-node", "symlink", "hardlink", "public-directory", "foreign-database", "orphan-sidecar"]) test(`F2 refuses ${kind} under B3 remnant prefix without cleanup`, () => {
+  const f = fixture(); migrateLegacy(f.options);
+  const path = join(f.destinationDir, ".relay-message-init-ABC123"); mkdirSync(path, { mode: 0o700 });
+  const foreign = join(f.dir, "foreign"); writeFileSync(foreign, "keep", { mode: 0o600 });
+  if (kind === "unknown-node") writeFileSync(join(path, "foreign"), "keep", { mode: 0o600 });
+  else if (kind === "symlink") symlinkSync(foreign, join(path, "messages.sqlite"));
+  else if (kind === "hardlink") linkSync(foreign, join(path, "messages.sqlite"));
+  else if (kind === "public-directory") chmodSync(path, 0o755);
+  else if (kind === "orphan-sidecar") writeFileSync(join(path, "messages.sqlite-journal"), "foreign", { mode: 0o600 });
+  else writeFileSync(join(path, "messages.sqlite"), "foreign", { mode: 0o600 });
+  const before = bytes(path);
+  expect(() => migrateLegacy(f.options)).toThrow(); expect(bytes(path)).toEqual(before); expect(readFileSync(foreign, "utf8")).toBe("keep");
+});
+
+test("F2 unavailable atomic publication leaves absent destination and parent untouched", async () => {
+  const f = fixture(); const destinationDir = join(f.dir, "never-created", "new");
+  const child = migrationChild({ ...f, options: { ...f.options, destinationDir } }, `
+    import { mock } from 'bun:test';
+    mock.module(${JSON.stringify(publisherModule)},()=>({assertPublishCapability(){throw new Error('no publication capability');},publishNoReplace(){throw new Error('must not publish');}}));
+  `, true);
+  expect(await child.exited).toBe(0); expect(await new Response(child.stderr).text()).toBe("");
+  expect(await new Response(child.stdout).text()).toContain("no publication capability");
+  expect(existsSync(join(f.dir, "never-created"))).toBe(false);
+  expect(readdirSync(f.dir).some(name => name.startsWith(".relay-migration-init-"))).toBe(false);
 });

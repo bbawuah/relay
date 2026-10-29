@@ -1,0 +1,14 @@
+{
+  "title": "Parent and subagents across Claude and Codex",
+  "intro": ["Parents and subagents on two runtimes", "Hosts start the subagents. Relay only carries the messages."],
+  "outro": "Four registered peers, four mailboxes. Hosts created the subagents; Relay stored and handed out every message, and all of them polled.",
+  "captions": [
+    {"match": "register --name claude-parent", "caption": "Every agent AND subagent needs its own explicit peer binding."},
+    {"match": "send codex-parent", "caption": "Claude parent sends the task across runtimes through Relay."},
+    {"match": "send codex-sub", "caption": "Codex parent delegates to its own subagent, again through Relay."},
+    {"match": "--peer codex-sub send", "caption": "Subagent result returns to its parent as a durable message."},
+    {"match": "send claude-parent", "caption": "The parent answers the Claude parent in the original conversation."},
+    {"match": "send claude-sub", "caption": "Claude parent fans work out to its own subagent."},
+    {"match": "--peer claude-sub ack msg-4", "caption": "Isolation: a subagent cannot acknowledge its parent's mail (0)."}
+  ]
+}

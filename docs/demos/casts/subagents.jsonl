@@ -1,0 +1,23 @@
+{"kind":"meta","scenario":"subagents","relay":"0.2.0","source":"7f3a63d","label":"replay-real-cli","note":"Real relay CLI run, disposable state, roles scripted, no model involved"}
+{"kind":"cmd","text":"relay register --name claude-parent --host claude --session-id demo-claude-parent","out":"claude-parent","rc":0,"ms":23}
+{"kind":"cmd","text":"relay register --name claude-sub --host claude --session-id demo-claude-sub","out":"claude-sub","rc":0,"ms":20}
+{"kind":"cmd","text":"relay register --name codex-parent --host codex --session-id demo-codex-parent","out":"codex-parent","rc":0,"ms":18}
+{"kind":"cmd","text":"relay register --name codex-sub --host codex --session-id demo-codex-sub","out":"codex-sub","rc":0,"ms":17}
+{"kind":"cmd","text":"relay --peer claude-parent send codex-parent 'Plan the cache fix' --request-key plan-1","out":"{\"id\":\"msg-1\",\"state\":\"stored\",\"duplicate\":false,\"requestKey\":\"plan-1\"}","rc":0,"ms":17}
+{"kind":"host","text":"Codex runtime starts its own subagent codex-sub"}
+{"kind":"cmd","text":"relay --peer codex-parent inbox","out":"[{\"id\":\"msg-1\",\"from\":\"claude-parent\",\"to\":\"codex-parent\",\"body\":\"Plan the cache fix\",\"conversationId\":\"conv-1\"}]","rc":0,"ms":15}
+{"kind":"cmd","text":"relay --peer codex-parent ack msg-1","out":"{\"acknowledged\":1}","rc":0,"ms":17}
+{"kind":"cmd","text":"relay --peer codex-parent send codex-sub 'Check cache invalidation' --request-key sub-1","out":"{\"id\":\"msg-2\",\"state\":\"stored\",\"duplicate\":false,\"requestKey\":\"sub-1\"}","rc":0,"ms":18}
+{"kind":"cmd","text":"relay --peer codex-sub inbox","out":"[{\"id\":\"msg-2\",\"from\":\"codex-parent\",\"to\":\"codex-sub\",\"body\":\"Check cache invalidation\",\"conversationId\":\"conv-2\"}]","rc":0,"ms":16}
+{"kind":"cmd","text":"relay --peer codex-sub ack msg-2","out":"{\"acknowledged\":1}","rc":0,"ms":17}
+{"kind":"cmd","text":"relay --peer codex-sub send codex-parent 'Bug in invalidate()' --request-key sub-2 --conversation conv-2 --reply-to msg-2","out":"{\"id\":\"msg-3\",\"state\":\"stored\",\"duplicate\":false,\"requestKey\":\"sub-2\"}","rc":0,"ms":17}
+{"kind":"cmd","text":"relay --peer codex-parent inbox","out":"[{\"id\":\"msg-3\",\"from\":\"codex-sub\",\"to\":\"codex-parent\",\"body\":\"Bug in invalidate()\",\"conversationId\":\"conv-2\",\"replyTo\":\"msg-2\"}]","rc":0,"ms":15}
+{"kind":"cmd","text":"relay --peer codex-parent ack msg-3","out":"{\"acknowledged\":1}","rc":0,"ms":17}
+{"kind":"cmd","text":"relay --peer codex-parent send claude-parent 'Plan ready: fix invalidate()' --request-key plan-2 --conversation conv-1 --reply-to msg-1","out":"{\"id\":\"msg-4\",\"state\":\"stored\",\"duplicate\":false,\"requestKey\":\"plan-2\"}","rc":0,"ms":17}
+{"kind":"host","text":"Claude runtime starts its own subagent claude-sub"}
+{"kind":"cmd","text":"relay --peer claude-parent inbox","out":"[{\"id\":\"msg-4\",\"from\":\"codex-parent\",\"to\":\"claude-parent\",\"body\":\"Plan ready: fix invalidate()\",\"conversationId\":\"conv-1\",\"replyTo\":\"msg-1\"}]","rc":0,"ms":15}
+{"kind":"cmd","text":"relay --peer claude-parent ack msg-4","out":"{\"acknowledged\":1}","rc":0,"ms":17}
+{"kind":"cmd","text":"relay --peer claude-parent send claude-sub 'Apply the plan' --request-key apply-1","out":"{\"id\":\"msg-5\",\"state\":\"stored\",\"duplicate\":false,\"requestKey\":\"apply-1\"}","rc":0,"ms":18}
+{"kind":"cmd","text":"relay --peer claude-sub inbox","out":"[{\"id\":\"msg-5\",\"from\":\"claude-parent\",\"to\":\"claude-sub\",\"body\":\"Apply the plan\",\"conversationId\":\"conv-3\"}]","rc":0,"ms":15}
+{"kind":"cmd","text":"relay --peer claude-sub ack msg-5","out":"{\"acknowledged\":1}","rc":0,"ms":17}
+{"kind":"cmd","text":"relay --peer claude-sub ack msg-4","out":"{\"acknowledged\":0}","rc":0,"ms":15}

@@ -1,0 +1,14 @@
+{
+  "title": "Cross-agent handoff: Claude peer to Codex peer",
+  "intro": ["Relay handoff between two agents", "A claude-host peer sends a task to a codex-host peer."],
+  "outro": "Relay stored, handed out on read, and acknowledged on request. Nobody was woken: every host polls.",
+  "captions": [
+    {"match": "register --name claude-lead", "caption": "Each agent registers its own peer. Registering starts nothing."},
+    {"match": "send codex-reviewer", "caption": "Send returns a stored receipt (durable), not a delivery notification."},
+    {"match": "inbox", "caption": "Reading never acknowledges: the same message is still unread."},
+    {"match": "--peer observer inbox", "caption": "A different registered peer sees nothing of this mailbox."},
+    {"match": "--peer observer ack", "caption": "Acknowledging someone else's message counts zero."},
+    {"match": "--peer codex-reviewer ack", "caption": "Only the recipient can acknowledge (acknowledged: 1)."},
+    {"match": "--reply-to", "caption": "The answer joins the same conversation as a new, durable message."}
+  ]
+}

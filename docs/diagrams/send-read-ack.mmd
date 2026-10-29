@@ -1,0 +1,17 @@
+sequenceDiagram
+  participant A as Sender (peer A)
+  participant R as Relay store
+  participant B as Recipient (peer B)
+  A->>R: send to B, request-key k1
+  R-->>A: stored, id m1, duplicate false
+  A->>R: send again (retry), same key k1
+  R-->>A: stored, id m1, duplicate true
+  Note over B: B polls when it chooses
+  B->>R: inbox
+  R-->>B: m1 (still unread)
+  B->>R: inbox again
+  R-->>B: m1 (reading does not acknowledge)
+  B->>R: ack m1
+  R-->>B: acknowledged 1
+  B->>R: inbox
+  R-->>B: empty

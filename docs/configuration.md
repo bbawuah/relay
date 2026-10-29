@@ -11,6 +11,8 @@ Global CLI options come before the command. Message bodies are literal data; opt
 
 The state directory contains `messages.sqlite` (schema 2) with WAL and FULL synchronous writes. Use private, owned local-disk paths. Do not copy, open or repurpose the old launch-reservation database. A legacy root containing `peers/` or `register/` requires explicit migration to a new directory. Installation and help/version do not create or change message state.
 
+Atomic database and migration-file publication uses Bun's **experimental FFI** and an OS no-replace rename primitive. The supported platform set is macOS and glibc Linux on x64/ARM64; musl, other architectures and loader overrides are refused. Available validation covers macOS ARM64 and lead-reported glibc Linux ARM64 storage/dispatcher tests; x64 and the full Linux CI gate remain unverified. This is experimental release evidence, with no production-readiness or hardware power-loss claim. State paths must have no symlink components; on macOS use the canonical `/private/tmp` path rather than `/tmp` for disposable state.
+
 ## Addresses, reconnect and acknowledgements
 
 `relay register --name NAME` creates a manual connection and prints its stable peer ID; `--json` prints the peer. `--host t3 --session-id THREAD_ID` records an explicit T3 thread target. Claude/Codex bindings similarly require an explicit host session; registration does not launch or configure a vendor. Peer names are aliases, unique ignoring case within the selected namespace. Namespace plus peer ID addresses a mailbox; directory bindings are routing data, not authorization policy.

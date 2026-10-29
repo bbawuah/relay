@@ -1,0 +1,15 @@
+{"kind":"meta","scenario":"handoff","relay":"0.2.0","source":"7f3a63d","label":"replay-real-cli","note":"Real relay CLI run, disposable state, roles scripted, no model involved"}
+{"kind":"cmd","text":"relay register --name claude-lead --host claude --session-id demo-claude-1","out":"claude-lead","rc":0,"ms":27}
+{"kind":"cmd","text":"relay register --name codex-reviewer --host codex --session-id demo-codex-1","out":"codex-reviewer","rc":0,"ms":20}
+{"kind":"cmd","text":"relay register --name observer","out":"observer","rc":0,"ms":18}
+{"kind":"cmd","text":"relay --peer claude-lead send codex-reviewer 'Review parse.ts for edge cases' --request-key handoff-1","out":"{\"id\":\"msg-1\",\"state\":\"stored\",\"duplicate\":false,\"requestKey\":\"handoff-1\"}","rc":0,"ms":17}
+{"kind":"cmd","text":"relay --peer claude-lead send codex-reviewer 'Review parse.ts for edge cases' --request-key handoff-1","out":"{\"id\":\"msg-1\",\"state\":\"stored\",\"duplicate\":true,\"requestKey\":\"handoff-1\"}","rc":0,"ms":15}
+{"kind":"cmd","text":"relay --peer codex-reviewer inbox","out":"[{\"id\":\"msg-1\",\"from\":\"claude-lead\",\"to\":\"codex-reviewer\",\"body\":\"Review parse.ts for edge cases\",\"conversationId\":\"conv-1\"}]","rc":0,"ms":15}
+{"kind":"cmd","text":"relay --peer codex-reviewer inbox","out":"[{\"id\":\"msg-1\",\"from\":\"claude-lead\",\"to\":\"codex-reviewer\",\"body\":\"Review parse.ts for edge cases\",\"conversationId\":\"conv-1\"}]","rc":0,"ms":16}
+{"kind":"cmd","text":"relay --peer observer inbox","out":"[]","rc":0,"ms":15}
+{"kind":"cmd","text":"relay --peer observer ack msg-1","out":"{\"acknowledged\":0}","rc":0,"ms":15}
+{"kind":"cmd","text":"relay --peer codex-reviewer ack msg-1","out":"{\"acknowledged\":1}","rc":0,"ms":17}
+{"kind":"cmd","text":"relay --peer codex-reviewer send claude-lead 'Found 2 edge cases' --request-key handoff-2 --conversation conv-1 --reply-to msg-1","out":"{\"id\":\"msg-2\",\"state\":\"stored\",\"duplicate\":false,\"requestKey\":\"handoff-2\"}","rc":0,"ms":18}
+{"kind":"cmd","text":"relay --peer claude-lead inbox","out":"[{\"id\":\"msg-2\",\"from\":\"codex-reviewer\",\"to\":\"claude-lead\",\"body\":\"Found 2 edge cases\",\"conversationId\":\"conv-1\",\"replyTo\":\"msg-1\"}]","rc":0,"ms":15}
+{"kind":"cmd","text":"relay --peer claude-lead ack msg-2","out":"{\"acknowledged\":1}","rc":0,"ms":16}
+{"kind":"cmd","text":"relay --peer claude-lead inbox","out":"[]","rc":0,"ms":15}

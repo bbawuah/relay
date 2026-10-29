@@ -1,0 +1,10 @@
+flowchart TD
+  start["Agents run in their own host runtimes"] --> bind["Each agent or subagent gets its own registered peer"]
+  bind --> handoff["Handoff: Claude sends a task, Codex reads and acks it"]
+  bind --> review["Review loop: reviewer replies in the same conversation"]
+  bind --> fan["Fan-out and fan-in: a parent messages several subagents, then collects results"]
+  bind --> offline["Offline mailbox: send now, the recipient polls later"]
+  handoff --> poll["All hosts poll inbox; Relay does not wake anyone"]
+  review --> poll
+  fan --> poll
+  offline --> poll

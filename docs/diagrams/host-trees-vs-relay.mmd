@@ -1,0 +1,12 @@
+flowchart TB
+  subgraph claude["Claude runtime (host)"]
+    cp["claude-parent"] -->|"host spawns"| cs["claude-sub"]
+  end
+  subgraph codex["Codex runtime (host)"]
+    xp["codex-parent"] -->|"host spawns"| xs["codex-sub"]
+  end
+  relay[("Relay store: one mailbox per registered peer")]
+  cp <-.->|"send, inbox, ack"| relay
+  cs <-.->|"send, inbox, ack"| relay
+  xp <-.->|"send, inbox, ack"| relay
+  xs <-.->|"send, inbox, ack"| relay
