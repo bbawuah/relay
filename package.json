@@ -4,6 +4,7 @@
   "scripts": {
     "test": "bun test",
     "typecheck": "tsc -p tsconfig.json",
+    "check": "bun run test && bun run typecheck",
     "poort": "bun run test && bun run typecheck && bash tests/hook-canaries.sh"
   },
   "devDependencies": {

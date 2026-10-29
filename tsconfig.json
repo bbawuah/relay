@@ -19,6 +19,7 @@
     "scripts/lead/relay.ts",
     "scripts/lead/spawn-crash.ts",
     "scripts/lead/installeer-hooks.ts",
+    "scripts/stiltevenster.ts",
     "scripts/test-integriteit.ts"
   ],
   "exclude": [

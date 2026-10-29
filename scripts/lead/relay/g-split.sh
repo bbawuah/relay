@@ -21,9 +21,6 @@ case "${1:-}" in
   *) gebruik ;;
 esac
 
-[ -d "$BRON/.git" ] || "$GIT_BIN" -C "$BRON" rev-parse --git-dir >/dev/null 2>&1 || fout "bron is geen git-repository: $BRON"
-"$GIT_BIN" -C "$BRON" remote get-url origin >/dev/null 2>&1 || fout "bron heeft geen origin; origin/main is vereist"
-
 if [ -e "$DOEL" ] && [ ! -f "$DOEL/$MARKER" ]; then
   fout "$DOEL bestaat zonder $MARKER; niets overschreven"
 fi
@@ -37,6 +34,8 @@ fi
 [ "${CONCEPT_UITVOEREN:-}" = JA ] || fout 'zet CONCEPT_UITVOEREN=JA om te schrijven'
 command -v "$GIT_BIN" >/dev/null 2>&1 || fout "git ontbreekt: $GIT_BIN"
 "$GIT_BIN" filter-repo --help >/dev/null 2>&1 || fout 'git filter-repo ontbreekt; installeer het eerst (geen fallback die historie verliest)'
+[ -d "$BRON/.git" ] || "$GIT_BIN" -C "$BRON" rev-parse --git-dir >/dev/null 2>&1 || fout "bron is geen git-repository: $BRON"
+"$GIT_BIN" -C "$BRON" remote get-url origin >/dev/null 2>&1 || fout "bron heeft geen origin; origin/main is vereist"
 
 tmpbasis="${TMPDIR:-/tmp}"
 tmp="$(mktemp -d "$tmpbasis/relay-split.XXXXXX")"

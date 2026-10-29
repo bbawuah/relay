@@ -1,0 +1,58 @@
+#!/bin/sh
+set -eu
+
+if [ "${POORT_OVERSLAAN:-}" = 1 ]; then
+  if [ -n "${LAB_AGENT_ROL:-}" ]; then
+    echo "Alleen Brian mag de poort overslaan." >&2
+    exit 1
+  fi
+  echo "poort overgeslagen" >&2
+  exit 0
+fi
+
+alleen_verwijderen=ja
+zag_verwijder=nee
+while IFS=' ' read -r lokale_ref lokale_sha remote_ref remote_sha || [ -n "${lokale_ref:-}" ]; do
+  [ -n "${lokale_ref:-}" ] || { alleen_verwijderen=nee; continue; }
+  if [ "$lokale_ref" = "(delete)" ]; then
+    zag_verwijder=ja
+    case "$remote_ref" in
+      refs/heads/main|refs/heads/master) echo "verwijderen mag niet: $remote_ref" >&2; exit 1 ;;
+    esac
+  else
+    alleen_verwijderen=nee
+  fi
+done
+
+if [ "$alleen_verwijderen" = ja ] && [ "$zag_verwijder" = ja ]; then
+  echo "alleen verwijderen: poort niet nodig" >&2
+  exit 0
+fi
+
+in_stiltevenster() {
+  python3 -c 'import datetime, os
+from zoneinfo import ZoneInfo
+s = os.environ.get("STILTEVENSTER_NU")
+d = datetime.datetime.fromisoformat(s.replace("Z", "+00:00")) if s else datetime.datetime.now(datetime.timezone.utc)
+t = d.astimezone(ZoneInfo("Europe/Amsterdam")).time()
+raise SystemExit(0 if (5, 0) <= (t.hour, t.minute) < (7, 15) else 1)'
+}
+if [ -n "${LAB_AGENT_ROL:-}" ] && in_stiltevenster; then
+  echo "stiltevenster 05:00–07:15, geen push vanuit een agentsessie" >&2
+  exit 1
+fi
+
+gitdir=$(cd "$(git rev-parse --git-dir)" && pwd -P)
+logmap="$gitdir/lab-poort"
+mkdir -p "$logmap"
+chmod 700 "$logmap"
+logpad="$logmap/pre-push-$(date +%s)-$$.log"
+if POORT_LOGPAD="$logpad" bun run check; then
+  exit 0
+fi
+if [ -s "$logpad" ]; then
+  echo "de poort is rood. Volledige uitvoer: $logpad" >&2
+else
+  echo "de poort is rood; geen logbestand gevonden" >&2
+fi
+exit 1
