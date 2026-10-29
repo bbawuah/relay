@@ -60,8 +60,8 @@ for (const committed of [false, true]) test(`SIGKILL ${committed ? "after" : "be
       const db=new Database(${JSON.stringify(f.path)});
       db.exec('BEGIN IMMEDIATE');
       db.query('INSERT INTO messages(namespace,id,sender,recipient,created_at,envelope) VALUES (?,?,?,?,?,?)').run('n','crash','alice','bob',10,${JSON.stringify(JSON.stringify(input("crash").message))});
-      db.query('INSERT INTO receipts VALUES (?,?,?,?,?,?)').run('n','alice','crash-key','fingerprint','crash',10);
-      db.query('INSERT INTO notification_jobs(id,namespace,peer_id,endpoint,message_id,available_at) VALUES (?,?,?,?,?,?)').run('crash-job','n','bob','{}','crash',10);`}
+      db.query('INSERT INTO receipts VALUES (?,?,?,?,?,?,?)').run('n','alice','crash-key','fingerprint','crash',10,9999999999999);
+      db.query('INSERT INTO notification_jobs(id,namespace,peer_id,endpoint,generation,message_id,available_at) VALUES (?,?,?,?,?,?,?)').run('crash-job','n','bob','{}',1,'crash',10);`}
     console.log('ready'); setInterval(()=>{},1000);`, f.dir);
   const reader = process.stdout.getReader();
   const first = await reader.read(); expect(new TextDecoder().decode(first.value)).toContain("ready");
@@ -235,4 +235,159 @@ test("expired lease cannot complete even before another worker reclaims it", () 
   expect(f.store.retryNotification({ id: job.id, workerId: "w", availableAt: 200, error: "late", maxAttempts: 5 })).toBe(false);
   expect(f.store.claimNotifications({ now: 110, workerId: "replacement", leaseMs: 10, limit: 1 })).toHaveLength(1);
   f.store.close();
+});
+
+test("R2 burst coalesces, claimed batch freezes and later arrivals survive lost completion", () => {
+  const f = setup();
+  for (let i=0; i<20; i++) f.store.enqueue(input(`burst-${i}`));
+  const [first] = f.store.claimNotifications({ now: 100, workerId: "old", leaseMs: 10, limit: 100 });
+  expect(f.store.notificationStatus("n", "bob")).toHaveLength(1);
+  f.store.enqueue(input("during-host"));
+  expect(f.store.claimNotifications({ now: 100, workerId: "other", leaseMs: 10, limit: 100 })).toHaveLength(0);
+  f.now(111);
+  const [recovered] = f.store.claimNotifications({ now: 111, workerId: "new", leaseMs: 10, limit: 100 });
+  expect(recovered.id).toBe(first.id);
+  expect(f.store.completeNotification(first.id, "old")).toBe(false);
+  expect(f.store.completeNotification(first.id, "new")).toBe(true);
+  const next = f.store.claimNotifications({ now: 111, workerId: "new", leaseMs: 10, limit: 100 });
+  expect(next).toHaveLength(1); expect(next[0].id).not.toBe(first.id);
+  f.store.close();
+});
+
+test("R2 persisted receipt and minimal reply horizons survive restart and expire independently", () => {
+  const f = setup(); f.store.close(); let clock = 100;
+  let store = createMessageStore({ path: f.path, now: () => clock, idempotencyMs: 20, referenceMs: 40 });
+  const first = store.enqueue(input("root", "key")); expect(first.expiresAt).toBe(120);
+  store.ack("n", "bob", ["root"], 101); store.prune(102);
+  expect(store.getMessageReference("n", "root")).toMatchObject({ id: "root", from: "alice", to: "bob" });
+  expect(store.getMessageReference("n", "root")).not.toHaveProperty("body");
+  store.close(); clock=119;
+  store = createMessageStore({ path: f.path, now: () => clock, idempotencyMs: 1, referenceMs: 1 });
+  expect(store.lookupReceipt("n", "alice", "key", "a".repeat(64))?.expiresAt).toBe(120);
+  clock=120; expect(store.lookupReceipt("n", "alice", "key", "changed")).toBeNull();
+  expect(store.enqueue(input("new", "key")).duplicate).toBe(false);
+  clock=140; expect(store.getMessageReference("n", "root")).toBeNull();
+  store.prune(200); expect(store.read("n", "bob").map(m=>m.id)).toEqual(["new"]);
+  store.close();
+});
+
+test("R2 CAS rebind is atomic, preserves identity and supersedes queued/claimed old endpoints", () => {
+  const f = setup(); f.store.enqueue(input("before"));
+  const [old] = f.store.claimNotifications({ now: 100, workerId: "old", leaseMs: 50, limit: 1 });
+  f.store.enqueue(input("during"));
+  const original = f.store.getPeer("n", "bob")!;
+  const endpoint = { ...original.endpoint, generation: 2, sessionId: "reconnected", target: { thread: "reconnected" } };
+  expect(() => f.store.rebindPeer("n", "bob", 0, endpoint, 100)).toThrow("generation");
+  expect(() => f.store.rebindPeer("n", "bob", 1, { ...endpoint, sessionId: "alice" }, 100)).toThrow("conflict");
+  expect(f.store.notificationStatus("n", "bob").map(j=>j.state)).toEqual(["pending", "pending"]);
+  const rebound = f.store.rebindPeer("n", "bob", 1, endpoint, 100);
+  expect(rebound).toMatchObject({ id: original.id, name: original.name, registeredAt: original.registeredAt, endpoint });
+  expect(() => f.store.rebindPeer("n", "bob", 1, endpoint, 100)).toThrow("generation");
+  expect(f.store.completeNotification(old.id, "old")).toBe(false);
+  expect(f.store.notificationStatus("n", "bob").map(j=>j.state)).toEqual(["superseded", "superseded", "pending"]);
+  const [next] = f.store.claimNotifications({ now: 100, workerId: "new", leaseMs: 50, limit: 10 });
+  expect(next.endpoint).toEqual(endpoint); expect(f.store.read("n", "bob")).toHaveLength(2);
+  f.store.close();
+});
+
+test("R2 rebind failure rolls back binding, supersession and replacement notification", () => {
+  const f = setup(); f.store.enqueue(input("mail"));
+  const before = f.store.getPeer("n", "bob")!; const jobs = f.store.notificationStatus("n", "bob");
+  const db = new Database(f.path);
+  db.exec("CREATE TRIGGER fail_rebind BEFORE INSERT ON notification_jobs BEGIN SELECT RAISE(ABORT, 'injected rebind failure'); END");
+  expect(() => f.store.rebindPeer("n", "bob", 1, { ...before.endpoint, generation: 2 }, 100)).toThrow();
+  expect(f.store.getPeer("n", "bob")).toEqual(before);
+  expect(f.store.notificationStatus("n", "bob")).toEqual(jobs);
+  db.exec("DROP TRIGGER fail_rebind"); db.close(); f.store.close();
+});
+
+test("R2 T3 registration and reconnect require matching explicit thread target", () => {
+  const f = fixture(); const p = peer("t3");
+  expect(() => f.store.register({ ...p, endpoint: { host: "t3", generation: 1, sessionId: "s", target: { threadId: "other" } } })).toThrow();
+  const valid = { ...p, endpoint: { host: "t3", generation: 1, sessionId: "s", target: { threadId: "s" } } };
+  f.store.register(valid);
+  expect(() => f.store.rebindPeer("n", "t3", 1, { ...valid.endpoint, generation: 2, sessionId: "new" }, 100)).toThrow();
+  expect(f.store.getPeer("n", "t3")?.endpoint).toEqual(valid.endpoint); f.store.close();
+});
+
+test("R2 metadata GC preserves pending jobs/unread bodies and status is read-only and scoped", () => {
+  const f = setup(); f.store.enqueue(input("acked"));
+  const [job] = f.store.claimNotifications({ now: 100, workerId: "w", leaseMs: 100, limit: 1 });
+  expect(f.store.failNotification(job.id, "foreign", "secret")).toBe(false);
+  expect(f.store.failNotification(job.id, "w", "secret credentials and endpoint")).toBe(true);
+  f.store.enqueue(input("unread"));
+  const before = f.store.notificationStatus("n", "bob");
+  expect(JSON.stringify(before)).not.toContain("secret");
+  expect(f.store.notificationStatus("other")).toEqual([]);
+  expect(f.store.notificationStatus("n", "alice")).toEqual([]);
+  expect(f.store.notificationStatus("n", "bob")).toEqual(before);
+  f.store.ack("n", "bob", ["acked"], 101); f.now(10_000_000_000);
+  expect(f.store.prune(102)).toBe(1);
+  expect(f.store.read("n", "bob").map(m=>m.id)).toEqual(["unread"]);
+  expect(f.store.getMessageReference("n", "acked")).toBeNull();
+  expect(f.store.getMessageReference("n", "unread")?.id).toBe("unread");
+  expect(f.store.notificationStatus("n", "bob").map(j=>j.state)).toEqual(["pending"]);
+  f.store.close();
+});
+
+test("R2 expired-key replacement rolls back on persistence failure and retries atomically", () => {
+  const f=setup(); f.store.close(); let clock=100;
+  const store=createMessageStore({ path:f.path, now:()=>clock, idempotencyMs:20 });
+  const original=store.enqueue(input("old", "reuse"));
+  expect(store.enqueue({ ...input("ignored", "reuse"), maxBodyBytes:0, maxPending:0 })).toEqual({ ...original, duplicate:true });
+  clock=120; const db=new Database(f.path);
+  db.exec("CREATE TRIGGER fail_receipt BEFORE INSERT ON receipts BEGIN SELECT RAISE(ABORT, 'injected replacement failure'); END");
+  expect(()=>store.enqueue({ ...input("new", "reuse"), fingerprint:"b".repeat(64) })).toThrow();
+  expect(store.getMessage("n", "new")).toBeNull();
+  expect(db.query("SELECT message_id,expires_at FROM receipts WHERE request_key='reuse'").get()).toEqual({ message_id:"old", expires_at:120 });
+  db.exec("DROP TRIGGER fail_receipt");
+  const replacement=store.enqueue({ ...input("new", "reuse"), fingerprint:"b".repeat(64) });
+  expect(replacement).toMatchObject({ id:"new", duplicate:false, expiresAt:140 });
+  expect(store.lookupReceipt("n", "alice", "reuse", "b".repeat(64))?.id).toBe("new");
+  db.close(); store.close();
+});
+
+test("R2 parallel expired-key retries replace the key only once", async () => {
+  const f=setup(); f.store.close();
+  const initial=createMessageStore({ path:f.path, now:()=>100, idempotencyMs:20 });
+  initial.enqueue(input("old", "reuse")); initial.close();
+  const writers=Array.from({ length:4 },(_,i)=>child(`
+    import { createMessageStore } from ${JSON.stringify(storeModule)};
+    const store=createMessageStore({path:${JSON.stringify(f.path)},now:()=>120,idempotencyMs:20});
+    console.log(JSON.stringify(store.enqueue(${JSON.stringify({ ...input(`replacement-${i}`, "reuse"), fingerprint:"b".repeat(64) })})));
+    store.close();`, f.dir));
+  const receipts=await Promise.all(writers.map(async proc=> {
+    expect(await proc.exited).toBe(0); expect(await new Response(proc.stderr).text()).toBe("");
+    return JSON.parse(await new Response(proc.stdout).text());
+  }));
+  expect(receipts.filter(r=>!r.duplicate)).toHaveLength(1);
+  expect(new Set(receipts.map(r=>r.id)).size).toBe(1);
+  const store=createMessageStore({path:f.path,now:()=>120});
+  expect(store.read("n","bob")).toHaveLength(2);
+  expect(store.notificationStatus("n","bob")).toHaveLength(1); store.close();
+});
+
+test("R2 SIGKILL after host acceptance preserves frozen batch ID and next queued batch", async () => {
+  const f=setup(); f.store.enqueue(input("original"));
+  const originalId=f.store.notificationStatus("n","bob")[0].id; f.store.close();
+  const dispatcherModule=join(import.meta.dir,"../src/dispatch/dispatcher.ts");
+  const proc=child(`
+    import { createMessageStore } from ${JSON.stringify(storeModule)};
+    import { dispatchOnce } from ${JSON.stringify(dispatcherModule)};
+    const store=createMessageStore({path:${JSON.stringify(f.path)},now:()=>100});
+    await dispatchOnce({store,now:()=>100,adapters:[{host:'fake',async notify(){
+      store.enqueue(${JSON.stringify(input("during-host"))});
+      console.log('accepted'); return new Promise(()=>{});
+    }}]});`, f.dir);
+  const reader=proc.stdout.getReader(); const first=await reader.read();
+  expect(new TextDecoder().decode(first.value)).toContain("accepted");
+  proc.kill("SIGKILL"); await proc.exited; reader.releaseLock();
+  const recovered=createMessageStore({path:f.path,now:()=>30101});
+  expect(recovered.read("n","bob")).toHaveLength(2);
+  expect(recovered.notificationStatus("n","bob").filter(j=>j.state==="pending")).toHaveLength(2);
+  const jobs=recovered.claimNotifications({now:30101,workerId:"restarted",leaseMs:1000,limit:10});
+  expect(jobs).toHaveLength(1); expect(jobs[0].id).toBe(originalId);
+  expect(recovered.completeNotification(originalId,"restarted")).toBe(true);
+  const next=recovered.claimNotifications({now:30101,workerId:"restarted",leaseMs:1000,limit:10});
+  expect(next).toHaveLength(1); expect(next[0].id).not.toBe(originalId); recovered.close();
 });

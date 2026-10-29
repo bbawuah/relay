@@ -3,7 +3,7 @@ import { dirname, isAbsolute, join, parse, resolve } from "node:path";
 import { MessageError } from "../messages/contracts";
 
 export const APPLICATION_ID = 0x524c5932; // RLY2; separate from launch reservations.
-export const SCHEMA_VERSION = 1;
+export const SCHEMA_VERSION = 2;
 const fail = (detail: string): never => { throw new MessageError("storage", `Unsafe message database: ${detail}`); };
 
 function privateFile(path: string) {

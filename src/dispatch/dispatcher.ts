@@ -1,44 +1,89 @@
 import { randomUUID } from "node:crypto";
 import { MessageError, type MessageAdapter, type MessageStore } from "../messages/contracts";
+import { DIAG } from "../storage/diagnostics";
 
-export async function dispatchOnce({ store, adapters, now = Date.now, workerId = randomUUID(), limit = 25, leaseMs = 30_000, maxAttempts = 5 }: {
+const MARGIN_MS = 1000;
+type Outcome = { status: "sent" | "deferred" | "unsupported"; delay?: number } | { status: "error"; detail: string };
+async function notify(adapter: MessageAdapter, payload: Parameters<MessageAdapter["notify"]>[0], timeoutMs: number): Promise<Outcome> {
+  const controller = new AbortController(); let timer: ReturnType<typeof setTimeout> | undefined;
+  const deadline = new Promise<Outcome>(resolve => {
+    timer = setTimeout(() => {
+      resolve({ status: "error", detail: DIAG.timeout });
+      try { controller.abort(); } catch { /* Never inspect a host callback's thrown value. */ }
+    }, timeoutMs);
+  });
+  const operation = (async (): Promise<Outcome> => {
+    let result: unknown;
+    try { result = await adapter.notify(payload, controller.signal); }
+    catch { return { status: "error", detail: DIAG.failed }; }
+    try {
+      if (!result || typeof result !== "object") return { status: "error", detail: DIAG.invalid };
+      const { status, retryAfterMs } = result as { status?: unknown; retryAfterMs?: unknown };
+      if (status !== "sent" && status !== "deferred" && status !== "unsupported") return { status: "error", detail: DIAG.invalid };
+      if (retryAfterMs !== undefined && (typeof retryAfterMs !== "number" || !Number.isFinite(retryAfterMs))) return { status: "error", detail: DIAG.invalid };
+      const delay = retryAfterMs === undefined ? undefined : Math.ceil(Math.max(1000, Math.min(retryAfterMs as number, 86_400_000)));
+      return { status, delay };
+    } catch { return { status: "error", detail: DIAG.invalid }; }
+  })();
+  try { return await Promise.race([deadline, operation]); }
+  finally { clearTimeout(timer); }
+}
+
+export async function dispatchOnce({ store, adapters, now = Date.now, workerId = randomUUID(), limit = 25, leaseMs = 30_000, maxAttempts = 5, timeoutMs = 10_000 }: {
   store: MessageStore; adapters: readonly MessageAdapter[]; now?: () => number; workerId?: string;
-  limit?: number; leaseMs?: number; maxAttempts?: number;
-}): Promise<{ claimed: number; sent: number; deferred: number; failed: number }> {
-  if (!Number.isSafeInteger(maxAttempts) || maxAttempts < 1) throw new MessageError("invalid", "Invalid notification attempt limit");
-  const hosts = new Map<string, MessageAdapter>();
-  for (const adapter of adapters) {
-    if (hosts.has(adapter.host)) throw new MessageError("conflict", `Ambiguous notification host: ${adapter.host}`);
-    hosts.set(adapter.host, adapter);
+  limit?: number; leaseMs?: number; maxAttempts?: number; timeoutMs?: number;
+}): Promise<{ claimed: number; sent: number; deferred: number; failed: number; empty: number }> {
+  for (const [value, min, max] of [[limit, 0, 1000], [leaseMs, 1, 86_400_000], [maxAttempts, 1, 1000], [timeoutMs, 1, 60_000]]) {
+    if (!Number.isSafeInteger(value) || value < min || value > max) throw new MessageError("invalid", "Invalid dispatcher options");
   }
-  const jobs = store.claimNotifications({ now: now(), workerId, limit, leaseMs });
-  const summary = { claimed: jobs.length, sent: 0, deferred: 0, failed: 0 };
-  for (const job of jobs) {
-    const retry = (detail: string, permanent: boolean, delay?: number, deferred = false) => {
-      const backoff = delay !== undefined && Number.isFinite(delay) && delay >= 0
-        ? Math.min(delay, 86_400_000) : Math.min(1000 * 2 ** Math.min(job.attempts - 1, 12), 3_600_000);
-      const attempts = permanent ? 1 : deferred ? Number.MAX_SAFE_INTEGER : maxAttempts;
-      const changed = store.retryNotification({ id: job.id, workerId, availableAt: now() + Math.ceil(backoff), error: detail, maxAttempts: attempts });
-      if (!changed || permanent || (!deferred && job.attempts >= maxAttempts)) summary.failed++;
-      else summary.deferred++;
-    };
+  if (leaseMs <= timeoutMs + MARGIN_MS || typeof workerId !== "string" || !workerId.trim() || workerId.includes("\0")) throw new MessageError("invalid", "Invalid dispatcher lease or worker ID");
+  const hosts = new Map<string, MessageAdapter>();
+  try {
+    if (!Array.isArray(adapters)) throw new Error();
+    for (const adapter of adapters) {
+      const host = adapter.host;
+      if (typeof host !== "string" || !host.trim() || typeof adapter.notify !== "function") throw new Error();
+      if (hosts.has(host)) throw new Error();
+      hosts.set(host, adapter);
+    }
+  } catch { throw new MessageError("invalid", "Invalid or duplicate notification adapters"); }
+  const clock = () => {
+    const value = now();
+    if (!Number.isSafeInteger(value) || value < 0) throw new MessageError("invalid", "Invalid dispatcher time");
+    return value;
+  };
+  const summary = { claimed: 0, sent: 0, deferred: 0, failed: 0, empty: 0 };
+  for (let index = 0; index < limit; index++) {
+    // Each lease starts immediately before its own bounded host operation.
+    const [job] = store.claimNotifications({ now: clock(), workerId, limit: 1, leaseMs });
+    if (!job) break;
+    summary.claimed++;
     const peer = store.getPeer(job.namespace, job.peerId);
-    if (!peer || JSON.stringify(peer.endpoint) !== JSON.stringify(job.endpoint)) { retry("Notification endpoint binding changed or disappeared", true); continue; }
+    if (!peer || peer.endpoint.generation !== job.endpoint.generation) {
+      store.failNotification(job.id, workerId, DIAG.superseded, "superseded"); summary.failed++; continue;
+    }
     const unread = store.unread(job.namespace, job.peerId);
     if (unread === 0) {
-      if (store.completeNotification(job.id, workerId)) summary.sent++; else summary.failed++;
+      if (store.completeNotification(job.id, workerId, "empty")) summary.empty++; else summary.failed++;
       continue;
     }
     const adapter = hosts.get(job.endpoint.host);
-    if (!adapter) { retry(`No notification adapter for ${job.endpoint.host}; polling remains available`, false, undefined, true); continue; }
-    // claimNotifications committed before any external host work starts.
-    let result;
-    try { result = await adapter.notify({ notificationId: job.id, namespace: job.namespace, peerId: job.peerId, endpoint: job.endpoint, unread }); }
-    catch (cause) { retry(`Notification failed: ${cause instanceof Error ? cause.message : String(cause)}`, false); continue; }
+    const result: Outcome = adapter ? await notify(adapter, { notificationId: job.id, namespace: job.namespace, peerId: job.peerId, endpoint: job.endpoint, unread }, timeoutMs)
+      : { status: "deferred" };
     if (result.status === "sent") {
       if (store.completeNotification(job.id, workerId)) summary.sent++; else summary.failed++;
-    } else if (result.status === "deferred") retry(result.detail ?? "Host deferred notification", false, result.retryAfterMs, true);
-    else retry(result.detail ?? "Host does not support notifications", true);
+    } else if (result.status === "unsupported") {
+      store.failNotification(job.id, workerId, DIAG.unsupported, "unsupported"); summary.failed++;
+    } else if (result.status === "error" && job.failures + 1 >= maxAttempts) {
+      store.failNotification(job.id, workerId, result.detail, "failed"); summary.failed++;
+    } else {
+      const failed = result.status === "error";
+      const backoff = Math.min(1000 * 2 ** Math.min(failed ? job.failures : job.attempts - 1, 12), 3_600_000);
+      const delay = result.status === "deferred" && result.delay !== undefined ? result.delay : backoff;
+      const changed = store.retryNotification({ id: job.id, workerId, availableAt: clock() + delay, maxAttempts, countFailure: failed,
+        error: result.status === "error" ? result.detail : adapter ? DIAG.deferred : DIAG.missing });
+      if (failed || !changed) summary.failed++; else summary.deferred++;
+    }
   }
   return summary;
 }
