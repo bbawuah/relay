@@ -1,0 +1,14 @@
+{
+  "beforeSourceSha": "003773bfda5b913e2698562cb9805c1a31720374",
+  "afterSourceSha": "9550c094af8db00cb8b2518c3f09cd3a30e75af8",
+  "captureType": "actual disposable-fixture stdout rendered as terminal PNG; not a live session screenshot",
+  "renderer": "T3 html_preview, width 1250, dark appearance",
+  "sha256": {
+    "before.txt": "e5344fba4ef9f5ec12c993eb00621c12e19434863d7097cb3b8fe658d9adae62",
+    "before.html": "8d6607e19157804c6dbbee95495f2c6761f4e97996f6ff4a3cf2565f2fdcdc8a",
+    "before.png": "728ccdc29efa604c9cf07f3ba5f125a507fa4256e59b30f86417214df687b946",
+    "after.txt": "3e49345d41992f83a1023455fbb21416944d1798b3c5f3c397be1f9fb9756354",
+    "after.html": "6d8ca3947e4901e80fed2931adc4beadcc30c0f49c36e7597fa9564004e4bf62",
+    "after.png": "b307faeb1e49c30df950840a5247f4c6444ed4d85cedb2d3fdb9bc82c2d9ba43"
+  }
+}

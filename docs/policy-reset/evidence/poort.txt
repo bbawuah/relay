@@ -1,0 +1,10 @@
+source SHA: 9550c094af8db00cb8b2518c3f09cd3a30e75af8
+command: bun run poort
+exit: 0
+actual captured suite/typecheck summary:
+ 785 pass
+ 0 fail
+ 8727 expect() calls
+Ran 785 tests across 37 files. [101.11s]
+$ tsc -p tsconfig.json
+hookcanaries: completed by the same successful poort command (no stdout)
