@@ -1,6 +1,6 @@
-# Four-pane terminal demo (no T3)
+# Four-pane terminal demo (no T3 dependency)
 
-Sources for the four-pane replay: four terminal panes in one tmux window, driven by the directly installed native `claude` and `codex` CLIs. No T3 thread, task or message API takes part in the recording; the host only creates processes, Relay carries every task body and result.
+Sources for the four-pane replay: four terminal panes in one tmux window, driven by the directly installed native `claude` and `codex` CLIs. The recorded agents run as independent native CLI processes in tmux; no T3 thread, delegation or messaging API takes part, and the demo has no T3 dependency; the host only creates processes, Relay carries every task body and result.
 
 | File | Role |
 | --- | --- |
