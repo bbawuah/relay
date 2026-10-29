@@ -26,6 +26,8 @@ export const T3_DIAGNOSTICS = {
   noRequestId: "T3 route has no stable request ID; a lost reply could duplicate the notice, polling instead",
   notPendingSafe: "T3 route cannot refuse a notice for a pending user question atomically; polling instead",
   pendingQuestion: "thread has a pending user question; not notified",
+  cancelledBeforeSend: "dispatcher cancelled before the T3 request; nothing was sent",
+  cancelled: "dispatcher cancelled while waiting for T3; outcome unknown, retry is idempotent",
   timeout: "no T3 answer within the time budget; outcome unknown, retry is idempotent",
   unknownOutcome: "T3 route returned an unrecognized outcome; will retry",
   unavailable: "T3 host unavailable; will retry",
@@ -142,6 +144,7 @@ function failureKind(error: unknown): T3FailureKind | null {
 }
 
 const TIMED_OUT = Symbol("t3-timeout");
+const CANCELLED = Symbol("t3-cancelled");
 
 export function createT3Adapter(options: T3AdapterOptions = {}): MessageAdapter {
   const transport = options.transport;
@@ -153,7 +156,7 @@ export function createT3Adapter(options: T3AdapterOptions = {}): MessageAdapter 
 
   return {
     host: T3_HOST,
-    async notify(notification: Notification): Promise<NotifyResult> {
+    async notify(notification: Notification, external?: AbortSignal): Promise<NotifyResult> {
       try {
         if (!Number.isSafeInteger(notification.unread) || notification.unread < 1) return unsupported(T3_DIAGNOSTICS.nothingUnread);
         const notificationId = notification.notificationId;
@@ -167,14 +170,25 @@ export function createT3Adapter(options: T3AdapterOptions = {}): MessageAdapter 
         if (capabilities.stableRequestId !== true) return unsupported(T3_DIAGNOSTICS.noRequestId);
         if (capabilities.pendingSafeSend !== true) return unsupported(T3_DIAGNOSTICS.notPendingSafe);
 
+        // Last gate before the host: an already-cancelled dispatcher never reaches it.
+        if (external?.aborted === true) return deferred(T3_DIAGNOSTICS.cancelledBeforeSend);
+
         const controller = new AbortController();
         let timer: ReturnType<typeof setTimeout> | undefined;
+        let onAbort: (() => void) | undefined;
         try {
-          const expired = new Promise<typeof TIMED_OUT>((resolve) => {
+          const interrupted = new Promise<typeof TIMED_OUT | typeof CANCELLED>((resolve) => {
             timer = setTimeout(() => {
               controller.abort();
               resolve(TIMED_OUT);
             }, timeoutMs);
+            if (external) {
+              onAbort = () => {
+                controller.abort();
+                resolve(CANCELLED);
+              };
+              external.addEventListener("abort", onAbort, { once: true });
+            }
           });
           const outcome: unknown = await Promise.race([
             transport.send({
@@ -183,8 +197,9 @@ export function createT3Adapter(options: T3AdapterOptions = {}): MessageAdapter 
               requestId: t3RequestId(notificationId),
               signal: controller.signal,
             }),
-            expired,
+            interrupted,
           ]);
+          if (outcome === CANCELLED) return deferred(T3_DIAGNOSTICS.cancelled);
           if (outcome === TIMED_OUT) return deferred(T3_DIAGNOSTICS.timeout);
           const status = typeof outcome === "object" && outcome !== null ? (outcome as { status?: unknown }).status : undefined;
           if (status === "accepted") return { status: "sent" };
@@ -192,6 +207,13 @@ export function createT3Adapter(options: T3AdapterOptions = {}): MessageAdapter 
           return deferred(T3_DIAGNOSTICS.unknownOutcome);
         } finally {
           clearTimeout(timer);
+          if (onAbort) {
+            try {
+              external?.removeEventListener("abort", onAbort);
+            } catch {
+              // a hostile signal must not turn cleanup into a rejection
+            }
+          }
         }
       } catch (error) {
         switch (failureKind(error)) {

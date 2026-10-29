@@ -321,3 +321,134 @@ test("nothing unread means nothing to send", async () => {
   }
   expect(host.calls).toHaveLength(0);
 });
+
+/** Counts live timers and abort listeners so cleanup is observable. */
+function leakProbe() {
+  const timers = new Set<unknown>();
+  const realSet = globalThis.setTimeout;
+  const realClear = globalThis.clearTimeout;
+  globalThis.setTimeout = ((fn: () => void, ms?: number) => {
+    const id: unknown = realSet(() => {
+      timers.delete(id);
+      fn();
+    }, ms);
+    timers.add(id);
+    return id;
+  }) as unknown as typeof setTimeout;
+  globalThis.clearTimeout = ((id: unknown) => {
+    timers.delete(id);
+    realClear(id as ReturnType<typeof setTimeout>);
+  }) as unknown as typeof clearTimeout;
+  return { timers, restore: () => ((globalThis.setTimeout = realSet), (globalThis.clearTimeout = realClear)) };
+}
+
+function countingSignal(controller = new AbortController()) {
+  let live = 0;
+  let added = 0;
+  const signal = controller.signal;
+  const add = signal.addEventListener.bind(signal);
+  const remove = signal.removeEventListener.bind(signal);
+  signal.addEventListener = ((...args: Parameters<typeof add>) => (live++, added++, add(...args))) as typeof add;
+  signal.removeEventListener = ((...args: Parameters<typeof remove>) => (live--, remove(...args))) as typeof remove;
+  return { controller, signal, live: () => live, added: () => added };
+}
+
+test("C3: an already-aborted dispatcher signal defers without any host call", async () => {
+  const host = fakeHost();
+  const adapter = createT3Adapter({ transport: host.transport });
+  const probe = leakProbe();
+  try {
+    const c = new AbortController();
+    c.abort();
+    const sig = countingSignal(c);
+    expect(await adapter.notify(note(), sig.signal)).toMatchObject({ status: "deferred", detail: T3_DIAGNOSTICS.cancelledBeforeSend });
+    expect(host.calls).toHaveLength(0);
+    expect(sig.added()).toBe(0);
+    expect(probe.timers.size).toBe(0);
+    // Permanent defects keep their own diagnosis even when cancelled.
+    expect((await adapter.notify(note({ notificationId: "" }), c.signal)).detail).toBe(T3_DIAGNOSTICS.badNotificationId);
+  } finally {
+    probe.restore();
+  }
+});
+
+test("C3: abort during a pending transport call cancels the request, cleans up and the retry reuses the request ID", async () => {
+  const host = fakeHost();
+  const adapter = createT3Adapter({ transport: host.transport, timeoutMs: 60_000 });
+  const probe = leakProbe();
+  try {
+    const sig = countingSignal();
+    let rejectLater: (e: unknown) => void = () => {};
+    host.set(
+      () =>
+        new Promise<T3SendOutcome>((_, reject) => {
+          rejectLater = reject;
+        }),
+    );
+    const pending = adapter.notify(note(), sig.signal);
+    await Promise.resolve();
+    expect(host.calls).toHaveLength(1);
+    expect(sig.live()).toBe(1);
+    expect(probe.timers.size).toBe(1);
+    sig.controller.abort();
+    const result = await pending;
+    expect(result).toMatchObject({ status: "deferred", detail: T3_DIAGNOSTICS.cancelled });
+    expect(host.calls[0]!.signal.aborted).toBe(true); // the transport's own controller was aborted
+    expect(sig.live()).toBe(0);
+    expect(probe.timers.size).toBe(0);
+    // A late rejection with secret text is swallowed and never surfaces.
+    rejectLater(new Error("Authorization: Bearer SEKRET"));
+    await new Promise((r) => setTimeout(r, 5));
+    expect(JSON.stringify(result)).not.toContain("SEKRET");
+
+    // Recovery: new signal, same job -> same request ID, one host delivery.
+    host.set(() => ({ status: "accepted" }));
+    const retrySig = countingSignal();
+    expect(await adapter.notify(note(), retrySig.signal)).toEqual({ status: "sent" });
+    expect(host.calls[1]!.requestId).toBe(host.calls[0]!.requestId);
+    expect(host.delivered.size).toBe(1);
+    expect(retrySig.live()).toBe(0);
+    expect(probe.timers.size).toBe(0);
+  } finally {
+    probe.restore();
+  }
+});
+
+test("C3: normal completion, failure and timeout all release timers and listeners; abort afterwards is inert", async () => {
+  const host = fakeHost();
+  const probe = leakProbe();
+  try {
+    const adapter = createT3Adapter({ transport: host.transport, timeoutMs: 15 });
+    const sig = countingSignal();
+    expect((await adapter.notify(note(), sig.signal)).status).toBe("sent");
+    host.set(() => {
+      throw new T3TransportError("unavailable", "x");
+    });
+    expect((await adapter.notify(note({ notificationId: "j2" }), sig.signal)).status).toBe("deferred");
+    host.set(() => new Promise<T3SendOutcome>(() => {}));
+    expect(await adapter.notify(note({ notificationId: "j3" }), sig.signal)).toMatchObject({ detail: T3_DIAGNOSTICS.timeout }); // own deadline still applies
+    expect(sig.added()).toBe(3);
+    expect(sig.live()).toBe(0);
+    expect(probe.timers.size).toBe(0);
+    sig.controller.abort(); // after the fact: nothing to cancel, no throw
+    expect(host.calls).toHaveLength(3);
+  } finally {
+    probe.restore();
+  }
+});
+
+test("C3: a hostile dispatcher signal cannot make notify reject", async () => {
+  const host = fakeHost();
+  const adapter = createT3Adapter({ transport: host.transport });
+  const hostileGetter = Object.defineProperty({}, "aborted", { get() { throw new Error("aborted getter"); } }) as unknown as AbortSignal;
+  const noRemove = {
+    aborted: false,
+    addEventListener() {},
+    removeEventListener() {
+      throw new Error("remove");
+    },
+  } as unknown as AbortSignal;
+  const r1 = await adapter.notify(note(), hostileGetter);
+  expect(r1).toMatchObject({ status: "deferred", detail: T3_DIAGNOSTICS.routeFailed });
+  expect(await adapter.notify(note(), noRemove)).toEqual({ status: "sent" });
+});
