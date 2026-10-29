@@ -31,12 +31,14 @@ The final reviews of `b720099` found three additional medium issues: the vendor 
 
 A new independent Opus review of combined candidate `e23a5bd` found no new medium or high issue and accepted the preceding repairs. Its own archived-copy run passed **71 tests with zero failures**. SQLite recovery after a crash during commit page writes remains unproven and was classified as a low, non-blocking uncertainty. D3's bounded pre-commit crash fixture reopened successfully, but did not produce the suspected hot-journal/raw-database failure. This is not a recovery-fix claim. Real vendors, interactive PTYs and Linux remain separate verification limits.
 
-Still required before pushing:
+## Complete local gate
 
 ```sh
 bun run poort
 ```
 
-The full inherited suite includes tmux/end-to-end checks and was deferred because the source repository's 05:00–07:15 Europe/Amsterdam quiet window was active. Run it after 07:15 on 29 October 2026. This handoff does not claim a green full gate or real-vendor end-to-end verification.
+The full inherited gate ran on `caf62d5b31ccf14b9c45fc5a6b79bd0809f1b343` at 07:15 on 29 October 2026, after the Amsterdam quiet window, with isolated HOME/TMPDIR and no inherited session identity. Result: **1,521 passed, 1 skipped, zero failed**, 11,263 assertions across 46 files, followed by a successful TypeScript check and hook-file checks. The tests took approximately 260 seconds. The complete output is retained locally in a private log and is not published.
 
-GitHub `bbawuah/relay` was empty when inspected. No remote refs, repository settings, PRs, global hooks, live state or source-monorepo files were changed. Its initial default branch must be established before a normal PR can be opened; no direct push to `main` was performed.
+The skipped test requires a real Codex CLI and the opt-in `RELAY_E2E_CODEX=1`; it was intentionally not enabled. The default suite includes disposable tmux/end-to-end checks and fake vendors. It does not establish real Claude/Codex/T3 or interactive PTY compatibility. Linux is covered separately by the included GitHub Actions workflow.
+
+GitHub `bbawuah/relay` was empty when inspected, with no base branch for a normal PR. The initial reviewed import targets `feat/standalone-peerbus`; no direct push to `main`, global hook installation, live-state change or source-monorepo migration is part of this extraction.
