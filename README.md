@@ -1,6 +1,8 @@
 # Relay
 
-Relay lets agents on one machine send each other messages that survive restarts. A Claude session can hand a task to a Codex session, a parent can collect results from its subagents, and nobody has to be online at the same moment. Each agent has its own mailbox and decides when to read it and when to acknowledge what it read.
+Relay lets agents on one machine send each other messages that survive restarts. A Claude session can hand a task to a Codex session, a parent can collect results from its subagents, and nobody has to be online at the same moment. Each agent has its own mailbox and decides when to read it and when to acknowledge what it read. An acknowledgement marks receipt, not task completion.
+
+[Install](#install-from-a-public-https-clone) · [Try two peers](#two-manual-mailboxes) · [Live demos](#see-it-work) · [How it works](#how-it-fits-together)
 
 Relay is the mailbox, nothing more. It does not start agents, create subagents, wake sessions, assign roles or enforce permissions. Your agent runtime (Claude, Codex, T3, ...) creates the agents and subagents; Relay only stores and hands out the messages between peers you registered explicitly. Everything is local: one SQLite file, no hosted service.
 
@@ -10,7 +12,7 @@ Bun **>= 1.4.2** is the only runtime prerequisite on macOS or Linux. Relay uses 
 
 ## See it work
 
-Both recordings replay what real agents did: a Codex agent and a Claude agent, started as T3 delegated tasks, ran the `relay` commands themselves, each through its own fixed peer binding in a private, disposable namespace. The animation shows short summaries; the full sanitised command transcript sits under each one. Provenance, models and limits: [docs/demos](docs/demos/README.md).
+Both recordings replay what real agents did: a Codex agent and a Claude agent, started as T3 delegated tasks, ran the `relay` commands themselves, each through its own fixed peer binding in a private, disposable namespace. The animation shows short summaries; the full sanitised command transcript sits under each one. Acknowledgements in the demos mark receipt only; they say nothing about whether the task was done. Provenance, models and limits: [docs/demos](docs/demos/README.md).
 
 **Cross-provider handoff.** A Codex agent sends a task to a Claude peer and retries it safely. The Claude agent starts later, finds the mail waiting, reads it twice, acknowledges it and answers in the same conversation; a later Codex session of the first peer reads the answer.
 
@@ -76,7 +78,7 @@ $ relay --peer codex-parent inbox
 
 </details>
 
-**Parents and subagents across providers.** Each runtime starts its own subagent through the T3 task API (host side, not Relay). Parents and subagents have separate peers and mailboxes; a subagent that tries to acknowledge another peer's message gets 0.
+**Parents and subagents across providers.** Each runtime starts its own subagent through the T3 task API (host side, not Relay). Parents and subagents have separate peers and mailboxes; a subagent that tries to acknowledge another peer's message with its own binding gets 0 (mailbox scoping, not user authentication).
 
 ![Replay of captured live agent output: a Codex parent messages a Claude parent, delegates through its own mailbox to a Codex subagent and receives the result; the Claude parent delegates to its own Claude subagent and answers the Codex parent in the original conversation; each subagent's attempt to acknowledge a foreign message returns zero.](docs/media/relay-live-subagents.gif)
 
@@ -237,8 +239,8 @@ Lines starting with `> HOST` are T3 task-API events recorded from returned task 
 - **Review loops.** A reviewer replies to the author's message; both sides keep a durable record of what was sent and acknowledged.
 - **Fan out to subagents and fan in.** A parent agent messages each of its subagents and collects their results, even when the runtimes are different products.
 - **Send now, read later.** An offline registered mailbox accepts mail; the owner polls when it comes back.
-- **Retry safely.** Send again with the same request key after a crash or a lost reply and you get the original message back, not a duplicate.
-- **Keep sessions apart.** Every agent or subagent that takes part needs its own explicit peer binding; one agent cannot read or acknowledge another's mail.
+- **Retry safely.** Send again with the same request key after a crash or a lost reply and you get the original message back, not a duplicate, within the request-key retention window (default 30 days).
+- **Keep sessions apart.** Every agent or subagent that takes part needs its own explicit peer binding. A fixed MCP connection reads and acknowledges only its bound mailbox; foreign acknowledgements with that binding count zero. This is mailbox scoping, not OS/user authentication: the CLI coordinates agents of one user, and an operator can always choose another peer ID explicitly.
 
 ## How it fits together
 
@@ -365,7 +367,7 @@ relay --state /absolute/path/to/new-state --namespace local migrate --source /ab
 
 ## Status and platform limits
 
-Experimental. Atomic database publication uses Bun's experimental FFI; supported are macOS and glibc Linux on x64 and ARM64, while musl and other architectures are refused. The full gate (255 tests, typecheck and package checks) passed on macOS ARM64, and the storage and dispatcher tests passed on Linux ARM64; a full Linux or x64 CI run is not claimed. Native host notification transport is unproven, so every host polls.
+Experimental. Atomic database publication uses Bun's experimental FFI; supported are macOS and glibc Linux on x64 and ARM64, while musl and other architectures are refused. The full gate (255 tests, typecheck and package checks) passed on macOS ARM64, and 124 store, dispatcher, migration, CLI and MCP tests passed on Linux ARM64 for the final candidate; a full Linux or x64 CI run is not claimed. Native host notification transport is unproven, so every host polls.
 
 ## Breaking changes and verification
 
