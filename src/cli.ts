@@ -10,6 +10,7 @@ export const ROOT = resolve(import.meta.dir, "..");
 export const VERSION = (JSON.parse(readFileSync(join(ROOT, "package.json"), "utf8")) as { version: string }).version;
 const MIGRATION = "Relay v2 is message-only. Roles, policy, launch and idle subscriptions were retired. Use register, explicit --peer ID, send, inbox and ack; import legacy mail into a separate v2 state directory.";
 const RETIRED = new Set(["--role", "--lead", "--name", "--accept", "--hold", "--refuse", "hold", "release", "vasthouden", "vrijgeven", "setup", "claude", "codex", "launch", "policy", "notify-when-idle", "notify_when_idle"]);
+const NOTIFICATIONS = "No notification adapters are shipped. All hosts (manual, t3, claude, codex) must poll inbox. serve records only deferrals/diagnoses and never wakes sessions.";
 const HELP = `Relay ${VERSION} — local message mailboxes (v2)
 
 Global options precede commands: --state DIR --namespace NAME --peer ID
@@ -21,7 +22,8 @@ Global options precede commands: --state DIR --namespace NAME --peer ID
   unregister ID               mark offline, preserve the mailbox
   rebind --peer ID --expected-generation N --host HOST --session-id ID
   status [--json]
-  serve [--once]               resume notification dispatch; Ctrl-C to stop
+  serve [--once]               record notification deferrals/diagnoses; never wakes sessions
+  migrate --source DIR --source-quiesced [--held quarantine|import|skip]
   mcp                         stdio server peers; explicit global --peer ID required
   install|uninstall [--prefix DIR] [--dry-run]
   doctor | help | --version
@@ -29,7 +31,8 @@ Global options precede commands: --state DIR --namespace NAME --peer ID
 State: RELAY_STATE_DIR (default ~/.local/state/relay/v2).
 Namespace: RELAY_NAMESPACE (default local). CLI binding: --peer or RELAY_PEER_ID.
 MCP requires a stable peer ID on its command line; environment identity is ignored.
-Polling is available; T3 notifications are unsupported until an external transport is proven.
+${NOTIFICATIONS}
+Migration destination is --state; namespace is --namespace. Held mail defaults to quarantine.
 Inbox never acknowledges automatically. Send returns a stored receipt and request key.
 `;
 
@@ -95,7 +98,21 @@ export async function main(argv: string[], input: Environment = process.env): Pr
   if (command === "doctor") {
     options(args, [], []);
     const config = settings(env);
-    console.log(`Relay ${VERSION}\nBun ${Bun.version}; SQLite: built-in bun:sqlite\nState: ${config.state}\nNamespace: ${config.namespace}\nDispatcher: run relay serve explicitly; timeout 10000ms, lease > timeout + 1000ms. Without serve, notification retries are paused.\nT3 notifications: unsupported / polling (no proven safe external transport).\nMailbox send/read/ack work independently of host notifications.`);
+    console.log(`Relay ${VERSION}\nBun ${Bun.version}; SQLite: built-in bun:sqlite\nState: ${config.state}\nNamespace: ${config.namespace}\nDispatcher limits: timeout 10000ms, lease > timeout + 1000ms.\n${NOTIFICATIONS}\nT3 notifications: unsupported / polling (no proven safe external transport).\nMailbox send/read/ack work independently of host notifications.`);
+    return 0;
+  }
+  if (command === "migrate") {
+    const opts = options(args, ["--source-quiesced"], ["--source", "--held"]);
+    const source = opts["--source"];
+    if (typeof source !== "string" || !source.trim()) throw new Error("migrate requires --source DIR");
+    if (opts["--source-quiesced"] !== true) throw new Error("Stop old writers, then explicitly assert --source-quiesced before migration.");
+    const held = opts["--held"] ?? "quarantine";
+    if (held !== "quarantine" && held !== "import" && held !== "skip") throw new Error("--held must be quarantine, import or skip");
+    const { state: destinationDir, namespace } = settings(env);
+    // F owns validation, database/ledger lifetime and recovery. Other commands
+    // never load or execute the source migration module.
+    const { migrateLegacy } = await import("./migration/index");
+    output(migrateLegacy({ sourceDir: resolve(source), destinationDir, namespace, sourceQuiesced: true, held }), true);
     return 0;
   }
   if (command === "install" || command === "uninstall") {
@@ -174,14 +191,14 @@ export async function main(argv: string[], input: Environment = process.env): Pr
         endpoint: endpoint(String(opts["--host"]), String(opts["--session-id"]), expectedGeneration + 1) }), true);
     } else if (command === "status") {
       output({ namespace, state: runtime.state, peers: service.list(namespace).map((peer) => ({ ...peer, unread: store.unread(namespace, peer.id) })),
-        notifications: store.notificationStatus(namespace), dispatcher: "Run relay serve explicitly; retries pause while stopped", t3: "unsupported/polling" }, !!opts["--json"]);
+        notifications: store.notificationStatus(namespace), dispatcher: NOTIFICATIONS, t3: "unsupported/polling" }, !!opts["--json"]);
     } else if (command === "serve") {
       let stopped = false;
       const stop = () => { stopped = true; };
       process.on("SIGINT", stop); process.on("SIGTERM", stop);
       try {
         do {
-          output(await dispatchOnce({ store, adapters: [], leaseMs: 30_000 }), true);
+          output({ ...await dispatchOnce({ store, adapters: [], leaseMs: 30_000 }), delivery: "unsupported/polling", detail: NOTIFICATIONS }, true);
           if (!opts["--once"] && !stopped) await new Promise((done) => setTimeout(done, 1000));
         } while (!opts["--once"] && !stopped);
       } finally { process.off("SIGINT", stop); process.off("SIGTERM", stop); }

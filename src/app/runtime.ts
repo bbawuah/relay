@@ -22,7 +22,7 @@ export function assertMessageState(state: string) {
       if ((error as NodeJS.ErrnoException).code === "ENOENT") continue;
       throw error;
     }
-    throw new MessageError("storage", "Legacy Relay state detected. Stop old writers and explicitly import into a separate v2 state directory; select it with --state.");
+    throw new MessageError("storage", "Legacy Relay state detected. Stop old writers and explicitly import with relay --state NEW_DIR migrate --source OLD_DIR --source-quiesced; keep the destination separate from the legacy root.");
   }
 }
 

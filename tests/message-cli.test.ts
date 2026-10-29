@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { bunArgs } from "../src/runtime";
@@ -32,6 +32,12 @@ test("help/version/doctor do not create state, and missing state is actionable",
   const doctor = f.run(["doctor"]);
   expect(doctor.out).toContain("built-in bun:sqlite"); expect(doctor.out).toContain("unsupported / polling");
   expect(doctor.out).toContain("10000ms");
+  for (const command of ["help", "doctor"]) {
+    const out = f.run([command]).out;
+    expect(out).toContain("No notification adapters are shipped");
+    expect(out).toContain("All hosts (manual, t3, claude, codex) must poll inbox");
+    expect(out).toContain("serve records only deferrals/diagnoses and never wakes sessions");
+  }
   expect(existsSync(f.state)).toBe(false);
   for (const command of [["list", "--json"], ["--peer", "unknown", "inbox"], ["status"], ["serve", "--once"]]) {
     const p = f.run(command); expect(p.code).toBe(1); expect(p.out).toBe(""); expect(p.err).toContain("register --name");
@@ -106,8 +112,11 @@ test("status uses persisted diagnoses, serve once defers safely, and offline mai
   const f = fixture(), a = f.register("a"), b = f.register("b");
   f.json(["--peer", a.id, "send", b.id, "still readable", "--json"]);
   const before = f.json(["status", "--json"]);
+  expect(before.dispatcher).toContain("All hosts (manual, t3, claude, codex) must poll inbox");
+  expect(before.dispatcher).toContain("never wakes sessions");
   expect(before.peers.find((p: any) => p.id === b.id).unread).toBe(1); expect(before.notifications).toHaveLength(1);
   const summary = f.json(["serve", "--once"]); expect(summary.sent).toBe(0); expect(summary.deferred).toBe(1);
+  expect(summary.delivery).toBe("unsupported/polling"); expect(summary.detail).toContain("No notification adapters are shipped");
   expect(f.json(["status", "--json"]).notifications[0].detail).toBeTruthy();
   f.json(["unregister", b.id]);
   expect(f.json(["--peer", b.id, "inbox", "--json"])[0].body).toBe("still readable");
@@ -140,4 +149,78 @@ test("explicit global bus and namespace override environment without sharing mai
   expect(f.json(["--state", otherState, "--namespace", "team", "--peer", other.id, "inbox", "--json"])).toEqual([]);
   expect(f.json(["--peer", b.id, "inbox", "--json"])[0].body).toBe("first bus");
   expect(f.run(["--peer", "a", "--peer", "b", "inbox"]).code).toBe(1);
+});
+
+function legacyFixture(root: string) {
+  const source = join(root, "legacy");
+  for (const part of ["register", "peers/inbox", "peers/vastgehouden"]) mkdirSync(join(source, part), { recursive: true, mode: 0o700 });
+  for (const name of ["Alice", "Bob"]) writeFileSync(join(source, "register", `${name}.json`), JSON.stringify({ id: `old-${name}`, naam: name }), { mode: 0o600 });
+  const envelope = (id: string, extra: Record<string, unknown> = {}) => ({ id, van: "Alice", naar: "Bob", draad: "legacy-conversation", ts: "2026-10-01T12:00:00.000Z", tekst: "literal legacy $(no-shell) `data`", hop: 1, herkomst: "schoon", soort: "bericht", ...extra });
+  const inbox = join(source, "peers/inbox/bob.jsonl");
+  writeFileSync(inbox, [envelope("old-acked"), envelope("old-unread", { antwoord_op: "old-acked" })].map((m) => JSON.stringify(m)).join("\n") + "\n", { mode: 0o600 });
+  writeFileSync(join(source, "peers/inbox/bob.gelezen"), "old-acked\n", { mode: 0o600 });
+  writeFileSync(join(source, "peers/vastgehouden/bob.jsonl"), JSON.stringify(envelope("old-held", { tekst: "held peer data" })) + "\n", { mode: 0o600 });
+  return { source, inbox };
+}
+
+function sourceBytes(root: string): Record<string, string> {
+  const result: Record<string, string> = {};
+  const walk = (relative: string) => {
+    for (const entry of readdirSync(join(root, relative), { withFileTypes: true })) {
+      const name = join(relative, entry.name);
+      if (entry.isDirectory()) walk(name);
+      else result[name] = readFileSync(join(root, name)).toString("base64");
+    }
+  };
+  walk(""); return result;
+}
+
+test("real CLI migration preserves source, inbox IDs/replies and ack state through idempotent rerun", () => {
+  const f = fixture(), old = legacyFixture(f.root), before = sourceBytes(old.source);
+  const args = ["--state", f.state, "--namespace", "migrated", "migrate", "--source", old.source, "--source-quiesced"];
+  const report = f.json(args);
+  expect(report.completed).toBe(true); expect(report.resumed).toBe(false); expect(report.importedThisRun).toBe(2);
+  expect(report.acknowledgements).toBe(1); expect(report.held.action).toBe("quarantine"); expect(report.held.quarantined).toBe(1);
+  const prefix = ["--namespace", "migrated", "--peer", report.peerMapping.Bob];
+  const unread = f.json([...prefix, "inbox", "--json"]);
+  expect(unread.map((m: any) => m.id)).toEqual(["old-unread"]);
+  expect(unread[0].replyTo).toBe("old-acked"); expect(unread[0].conversationId).toBe("legacy-conversation");
+  expect(unread[0].body).toBe("literal legacy $(no-shell) `data`");
+  expect(f.json([...prefix, "ack", "old-unread", "--json"])).toEqual({ acknowledged: 1 });
+  const again = f.json(args);
+  expect(again.resumed).toBe(true); expect(again.importedThisRun).toBe(0); expect(again.peerMapping).toEqual(report.peerMapping);
+  expect(f.json([...prefix, "inbox", "--json"])).toEqual([]);
+  expect(f.json(["list", "--json"])).toEqual([]);
+  expect(sourceBytes(old.source)).toEqual(before);
+});
+
+test("CLI migrate rejects missing assertions, invalid held actions and unknown flags without writes", () => {
+  for (const tail of [[], ["--held", "import"], ["--source-quiesced", "--held", "invalid"], ["--source-quiesced", "--unknown"], ["--source-quiesced", "false"], ["--source-quiesced", "--held"]]) {
+    const f = fixture(), old = legacyFixture(f.root), before = sourceBytes(old.source);
+    const p = f.run(["migrate", "--source", old.source, ...tail]);
+    expect(p.code).toBe(1); expect(p.out).toBe(""); expect(existsSync(f.state)).toBe(false);
+    expect(existsSync(join(f.home, ".local"))).toBe(false); expect(sourceBytes(old.source)).toEqual(before);
+  }
+  const f = fixture();
+  expect(f.run(["migrate", "--source-quiesced"]).code).toBe(1); expect(existsSync(f.state)).toBe(false);
+});
+
+test("CLI migration refuses malformed legacy data before creating destination", () => {
+  const f = fixture(), old = legacyFixture(f.root);
+  writeFileSync(old.inbox, "{malformed legacy JSON\n");
+  const before = sourceBytes(old.source);
+  const p = f.run(["migrate", "--source", old.source, "--source-quiesced"]);
+  expect(p.code).toBe(1); expect(p.out).toBe(""); expect(p.err).toContain("malformed legacy JSON");
+  expect(existsSync(f.state)).toBe(false); expect(sourceBytes(old.source)).toEqual(before);
+});
+
+test("CLI --held import and skip are explicit and leave legacy files intact", () => {
+  for (const held of ["import", "skip"]) {
+    const f = fixture(), old = legacyFixture(f.root), before = sourceBytes(old.source);
+    const report = f.json(["migrate", "--source", old.source, "--source-quiesced", "--held", held]);
+    expect(report.held.action).toBe(held);
+    const unread = f.json(["--peer", report.peerMapping.Bob, "inbox", "--json"]);
+    expect(unread.map((m: any) => m.id)).toEqual(held === "import" ? ["old-unread", "old-held"] : ["old-unread"]);
+    expect(sourceBytes(old.source)).toEqual(before);
+  }
 });
