@@ -47,13 +47,27 @@ function outsideSource(prefix: string, target: string, launcher: string, uninsta
   return source;
 }
 
-function ownPrefix(): string | undefined {
-  if (basename(ROOT) !== "relay" || basename(dirname(ROOT)) !== "lib" || !isPresent(join(ROOT, MARKER))) return;
-  const marker = join(ROOT, MARKER);
-  if (lstatSync(marker).isSymbolicLink() || JSON.parse(readFileSync(marker, "utf8")).application !== "relay") {
-    throw new Error(`invalid installation marker: ${ROOT}`);
+function ownPrefix(): string {
+  const failure = () => new Error(`cannot verify the original installation prefix for ${ROOT}; use relay uninstall --prefix DIR to choose a managed installation explicitly`);
+  const absolute = (value: unknown): value is string => typeof value === "string" && isAbsolute(value) && resolve(value) === value;
+  try {
+    const marker = join(ROOT, MARKER);
+    if (!lstatSync(marker).isFile() || lstatSync(marker).isSymbolicLink()) throw failure();
+    const origin = JSON.parse(readFileSync(marker, "utf8"));
+    if (!origin || origin.application !== "relay" || !absolute(origin.prefix) || !absolute(origin.target) || !absolute(origin.launcher)
+      || typeof origin.installationId !== "string" || !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(origin.installationId)) throw failure();
+    // A changed alias must never select another runtime or launcher. Bind the
+    // command as well, so replacing it with another managed command fails safe.
+    const target = realpathSync(join(origin.prefix, "lib", "relay"));
+    const launcher = join(origin.prefix, "bin", "relay");
+    if (target !== realpathSync(ROOT) || target !== origin.target || canonicalDestination(launcher) !== origin.launcher
+      || lstatSync(launcher).isSymbolicLink() || !lstatSync(launcher).isFile()
+      || !readFileSync(launcher, "utf8").includes(`\n# Relay installation: ${origin.installationId}\n`)) throw failure();
+    return origin.prefix;
+  } catch {
+    // Includes missing/legacy markers and broken routes: never guess a default.
+    throw failure();
   }
-  return dirname(dirname(ROOT));
 }
 
 function owned(target: string, launcher: string): void {
@@ -70,6 +84,7 @@ export function install(args: string[], env: Environment = process.env): string 
   const source = outsideSource(prefix, target, launcher);
   owned(target, launcher);
   if (dryRun) return `Would install Relay into ${target}\nWould write ${launcher}\nNo hooks, shell profiles or state would be changed.`;
+  const origin = { prefix, target: canonicalDestination(target), launcher: canonicalDestination(launcher), installationId: crypto.randomUUID() };
   mkdirSync(dirname(target), { recursive: true });
   mkdirSync(dirname(launcher), { recursive: true });
   const stage = mkdtempSync(join(dirname(target), ".relay-stage-"));
@@ -79,7 +94,7 @@ export function install(args: string[], env: Environment = process.env): string 
     for (const entry of ["bin", "src", "scripts", "agents", "README.md", "docs", "package.json", "relay.toml"]) {
       cpSync(join(source, entry), join(stage, entry), { recursive: true, filter: (path) => !path.endsWith(".test.ts") && !path.includes("/node_modules/") });
     }
-    writeFileSync(join(stage, MARKER), `${JSON.stringify({ application: "relay", version: JSON.parse(readFileSync(join(source, "package.json"), "utf8")).version })}\n`, { mode: 0o600 });
+    writeFileSync(join(stage, MARKER), `${JSON.stringify({ application: "relay", version: JSON.parse(readFileSync(join(source, "package.json"), "utf8")).version, ...origin })}\n`, { mode: 0o600 });
     if (existsSync(target)) {
       backup = `${stage}.previous`;
       renameSync(target, backup);
@@ -91,8 +106,10 @@ export function install(args: string[], env: Environment = process.env): string 
       // realpath. If that executable disappears, discover the replacement at use.
       const stableBun = Bun.which("bun", { PATH: env.PATH ?? process.env.PATH ?? "" });
       const bun = stableBun && isAbsolute(stableBun) ? stableBun : process.execPath;
-      const argv = bunArgs(join(target, "bin", "relay.ts")).map(shellQuote).join(" ");
-      writeFileSync(temporaryLauncher, `#!/bin/sh\n${SIGNATURE}\nunset BUN_OPTIONS NODE_OPTIONS\nBUN=${shellQuote(bun)}\nif [ ! -x "$BUN" ]; then BUN=$(command -v bun 2>/dev/null); fi\nif [ -z "$BUN" ] || [ ! -x "$BUN" ]; then echo 'Relay needs Bun >= 1.4.2 on PATH.' >&2; exit 127; fi\nexec "$BUN" ${argv} "$@"\n`, { mode: 0o755 });
+      // Start the recorded runtime even if prefix/lib is later redirected; its
+      // origin check can then refuse instead of running another installation.
+      const argv = bunArgs(join(origin.target, "bin", "relay.ts")).map(shellQuote).join(" ");
+      writeFileSync(temporaryLauncher, `#!/bin/sh\n${SIGNATURE}\n# Relay installation: ${origin.installationId}\nunset BUN_OPTIONS NODE_OPTIONS\nBUN=${shellQuote(bun)}\nif [ ! -x "$BUN" ]; then BUN=$(command -v bun 2>/dev/null); fi\nif [ -z "$BUN" ] || [ ! -x "$BUN" ]; then echo 'Relay needs Bun >= 1.4.2 on PATH.' >&2; exit 127; fi\nexec "$BUN" ${argv} "$@"\n`, { mode: 0o755 });
       chmodSync(temporaryLauncher, 0o755);
       renameSync(temporaryLauncher, launcher);
     } finally { rmSync(temporaryLauncher, { force: true }); }
