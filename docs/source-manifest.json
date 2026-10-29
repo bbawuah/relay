@@ -414,7 +414,7 @@
       "destination": "scripts/lead/hooks/hook-bus.test.ts",
       "category": "hooks",
       "sourceSha256": "0f89d78fc15d75d904f53572c422dd5edd9caa0982fc14cc49a8db209fd3bb0f",
-      "unchanged": true
+      "unchanged": false
     },
     {
       "source": "scripts/lead/hooks/hook.sh",
@@ -435,7 +435,7 @@
       "destination": "scripts/lead/hooks/hook.ts",
       "category": "hooks",
       "sourceSha256": "e1d7d00ddb0ca405e59c9d51bf194189e4c8b980f2017e18c40baea0d12e8e42",
-      "unchanged": true
+      "unchanged": false
     },
     {
       "source": "scripts/lead/hooks/installatie.test.ts",

@@ -27,6 +27,10 @@ An integrated run before C4 passed 96 tests across all six new test files. After
 
 An independent Opus re-review accepted the startup isolation and classified Bun 1.4.2's visible `directory mismatch` stderr message as a known non-blocking runtime limitation. The guard remains enabled and stderr is not suppressed. Its other findings were assigned to the subsequent routing/provenance repairs above; they require final review of the combined commit.
 
+The final reviews of `b720099` found three additional medium issues: the vendor could outlive its launcher and lose its identity, reservation maintenance could abort core hooks, and manual registration could race a launch before SessionStart. D3 (`161441d`, integrated as `e23a5bd`) binds ownership through a trusted, PID-preserving execve bootstrap and separates optional upkeep from core hooks. F (`38cb1a9`, integrated as `dc5ed77`) serializes manual registration with launch reservations. Both reproduced their regressions against the earlier code. The lead's combined installation/routing/lifecycle/hook run passed **86 tests with zero failures**. D3 also verifies one compatible Bun for hooks/MCP/bootstrap and explicitly clears host-forwarded runtime options.
+
+A new independent Opus review of combined candidate `e23a5bd` is in progress. SQLite recovery after a crash during commit page writes remains unproven. D3's bounded pre-commit crash fixture reopened successfully, but did not produce the suspected hot-journal/raw-database failure. This is not a recovery-fix claim. Real vendors, interactive PTYs and Linux remain separate verification limits.
+
 Still required before pushing:
 
 ```sh

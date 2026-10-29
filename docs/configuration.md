@@ -36,6 +36,8 @@ An MCP server must be called `peers` to preserve the extracted hook matchers and
 
 The server does not register a session itself. Use Relay's launcher/session hooks or `relay register` first. Manual peers have `host: "geen"`, so messages are delivered without wake-ups. They remain registered until `unregister` is called.
 
+Manual registration and vendor launch reserve names under the same lock, including the period before a vendor's SessionStart hook. A live or unknown owner blocks a duplicate name. Vendor ownership is claimed before vendor code starts and survives the Relay parent exiting. Optional identity upkeep uses non-waiting locks; a maintenance failure preserves core hook behavior and can leave the first private diagnostic for that spawn under `identiteit/maintenance-<hash>.error` in the selected state directory. An unsafe diagnostic destination is left untouched.
+
 In Codex TOML, use the equivalent `mcp_servers.peers.command`, `args` and `env` fields. Prefer Relay's launcher for a TUI: it supplies a fresh identity and MCP environment per session rather than storing a worker's name globally.
 
 ## T3 Code
