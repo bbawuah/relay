@@ -1,0 +1,20 @@
+flowchart LR
+  subgraph claude["Claude runtime (host)"]
+    cp["claude-parent"] -->|"host spawns subagent"| cs["claude-sub"]
+  end
+  subgraph codex["Codex runtime (host)"]
+    xp["codex-parent"] -->|"host spawns subagent"| xs["codex-sub"]
+  end
+  subgraph relay["Relay (local SQLite mailboxes, namespace showcase)"]
+    mcp["claude-parent mailbox"]
+    mcs["claude-sub mailbox"]
+    mxp["codex-parent mailbox"]
+    mxs["codex-sub mailbox"]
+  end
+  cp -. "send / inbox / ack" .-> mcp
+  cs -. "send / inbox / ack" .-> mcs
+  xp -. "send / inbox / ack" .-> mxp
+  xs -. "send / inbox / ack" .-> mxs
+  mcp <-. "message" .-> mxp
+  mcs <-. "message" .-> mcp
+  mxp <-. "message" .-> mxs

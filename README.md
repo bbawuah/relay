@@ -1,8 +1,99 @@
 # Relay
 
+Relay lets agents on one machine send each other messages that survive restarts. A Claude session can hand a task to a Codex session, a parent can collect results from its subagents, and nobody has to be online at the same moment. Each agent has its own mailbox and decides when to read it and when to acknowledge what it read.
+
+Relay is the mailbox, nothing more. It does not start agents, create subagents, wake sessions, assign roles or enforce permissions. Your agent runtime (Claude, Codex, T3, ...) creates the agents and subagents; Relay only stores and hands out the messages between peers you registered explicitly. Everything is local: one SQLite file, no hosted service.
+
 Relay 0.2.0 provides durable local mailboxes between explicitly registered peers. CLI and the `peers` MCP server share one SQLite message store. Reading never acknowledges a message; acknowledgement is an explicit operation.
 
 Bun **>= 1.4.2** is the only runtime prerequisite on macOS or Linux. Relay uses Bun's built-in SQLite and has no third-party runtime dependencies. The package remains private; no registry publication is part of this release.
+
+## See it work
+
+Replays of real Relay CLI runs with scripted roles (no AI model; labelled in every frame). Provenance and how to reproduce them: [docs/demos](docs/demos/README.md).
+
+**Cross-agent handoff.** A Claude-host peer sends a task, retries it safely, a Codex-host peer reads it twice, acknowledges it and answers in the same conversation; a third peer sees nothing.
+
+![Replay of a real Relay CLI run: a claude-host peer sends a task to a codex-host peer, a retry with the same request key returns duplicate true, the recipient reads twice, acknowledges once and replies in the same conversation, while an unrelated peer sees an empty inbox and acknowledges zero messages.](docs/media/relay-handoff.gif)
+
+**Parent and subagents across runtimes.** Peers for a Claude parent and subagent and a Codex parent and subagent exchange tasks and results through Relay. The runtimes start the subagents; Relay carries the messages.
+
+![Replay of a real Relay CLI run: a Claude parent sends a plan request to a Codex parent, which delegates to its own subagent and gets the result back, replies to the Claude parent, which then hands work to its own subagent; a subagent trying to acknowledge its parent's message gets zero.](docs/media/relay-subagents.gif)
+
+## What you can do with it
+
+- **Hand a task across agents.** One agent sends a task, another reads it later, acknowledges it and sends the answer back in the same conversation.
+- **Review loops.** A reviewer replies to the author's message; both sides keep a durable record of what was sent and acknowledged.
+- **Fan out to subagents and fan in.** A parent agent messages each of its subagents and collects their results, even when the runtimes are different products.
+- **Send now, read later.** An offline registered mailbox accepts mail; the owner polls when it comes back.
+- **Retry safely.** Send again with the same request key after a crash or a lost reply and you get the original message back, not a duplicate.
+- **Keep sessions apart.** Every agent or subagent that takes part needs its own explicit peer binding; one agent cannot read or acknowledge another's mail.
+
+## How it fits together
+
+The runtimes own the agent tree. Relay owns only the mailboxes. Solid arrows below are your host runtime spawning subagents; dotted arrows are Relay messages.
+
+```mermaid
+flowchart LR
+  subgraph claude["Claude runtime (host)"]
+    cp["claude-parent"] -->|"host spawns subagent"| cs["claude-sub"]
+  end
+  subgraph codex["Codex runtime (host)"]
+    xp["codex-parent"] -->|"host spawns subagent"| xs["codex-sub"]
+  end
+  subgraph relay["Relay (local SQLite mailboxes, namespace showcase)"]
+    mcp["claude-parent mailbox"]
+    mcs["claude-sub mailbox"]
+    mxp["codex-parent mailbox"]
+    mxs["codex-sub mailbox"]
+  end
+  cp -. "send / inbox / ack" .-> mcp
+  cs -. "send / inbox / ack" .-> mcs
+  xp -. "send / inbox / ack" .-> mxp
+  xs -. "send / inbox / ack" .-> mxs
+  mcp <-. "message" .-> mxp
+  mcs <-. "message" .-> mcp
+  mxp <-. "message" .-> mxs
+```
+
+A message is stored first, read any number of times and acknowledged only when the recipient says so. A retry with the same request key returns the original message.
+
+```mermaid
+sequenceDiagram
+  participant A as Sender (peer A)
+  participant R as Relay store
+  participant B as Recipient (peer B)
+  A->>R: send to B, request-key k1
+  R-->>A: stored, id m1, duplicate false
+  A->>R: send again (retry), same key k1
+  R-->>A: stored, id m1, duplicate true
+  Note over B: B polls when it chooses
+  B->>R: inbox
+  R-->>B: m1 (still unread)
+  B->>R: inbox again
+  R-->>B: m1 (reading does not acknowledge)
+  B->>R: ack m1
+  R-->>B: acknowledged 1
+  B->>R: inbox
+  R-->>B: empty
+```
+
+Typical workflows:
+
+```mermaid
+flowchart TD
+  start["Agents run in their own host runtimes"] --> bind["Each agent or subagent gets its own registered peer"]
+  bind --> handoff["Handoff: Claude sends a task, Codex reads and acks it"]
+  bind --> review["Review loop: reviewer replies in the same conversation"]
+  bind --> fan["Fan-out and fan-in: a parent messages several subagents, then collects results"]
+  bind --> offline["Offline mailbox: send now, the recipient polls later"]
+  handoff --> poll["All hosts poll inbox; Relay does not wake anyone"]
+  review --> poll
+  fan --> poll
+  offline --> poll
+```
+
+The diagram sources are kept as editable files in [docs/diagrams](docs/diagrams).
 
 ## Install from a public HTTPS clone
 
@@ -68,6 +159,10 @@ relay --state /absolute/path/to/new-state --namespace local migrate --source /ab
 ```
 
 `--source-quiesced` asserts that you stopped the writers; it cannot prove that they stopped. Held messages default to `quarantine`, outside active inboxes. Use `--held import` or `--held skip` only for an explicit irreversible held-message decision. Inspect the completion report before starting v2 clients. Resume a partial import with the same source, destination and namespace, preserving the destination database, migration ledger and quarantine artifact together. Imported host endpoints become offline manual polling bindings; import never contacts a host. See the [migration guide](docs/message-migration.md) for validation, retention and rollback limits.
+
+## Status and platform limits
+
+Experimental. Atomic database publication uses Bun's experimental FFI; supported are macOS and glibc Linux on x64 and ARM64, while musl and other architectures are refused. The full gate (255 tests, typecheck and package checks) passed on macOS ARM64, and the storage and dispatcher tests passed on Linux ARM64; a full Linux or x64 CI run is not claimed. Native host notification transport is unproven, so every host polls.
 
 ## Breaking changes and verification
 
