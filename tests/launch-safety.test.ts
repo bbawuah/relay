@@ -479,13 +479,18 @@ test("symlink and hardlink database/journal targets and unknown sidecars stay by
       const target = join(dir, `external-${suffix || "db"}-${kind}`);
       writeFileSync(target, "external bytes stay intact", { mode: 0o600 });
       const candidate = join(directory, `leases.sqlite${suffix}`);
+      const replacement = join(directory, "replacement");
+      if (kind === "unknown-file") {
+        // Allocate while the registered inode is still in use: Linux may reuse
+        // it immediately after unlink, which would not test an unknown inode.
+        writeFileSync(replacement, "", { mode: 0o600 });
+        if (existsSync(candidate)) expect(lstatSync(replacement).ino).not.toBe(lstatSync(candidate).ino);
+      }
       rmSync(candidate, { force: true });
       if (kind === "symlink") symlinkSync(target, candidate);
       else if (kind === "hardlink") linkSync(target, candidate);
       else {
         // A replaced empty journal also has no ownership proof, even though SQLite accepts it.
-        const replacement = join(directory, "replacement");
-        writeFileSync(replacement, "", { mode: 0o600 });
         linkSync(replacement, candidate);
         rmSync(replacement);
       }
