@@ -2,7 +2,7 @@
 
 Relay lets agents on one machine send each other messages that survive restarts. A Claude session can hand a task to a Codex session, a parent can collect results from its subagents, and nobody has to be online at the same moment. Each agent has its own mailbox and decides when to read it and when to acknowledge what it read. An acknowledgement marks receipt, not task completion.
 
-[Install](#install-from-a-public-https-clone) · [Try two peers](#two-manual-mailboxes) · [Live demos](#see-it-work) · [How it works](#how-it-fits-together)
+[Install](#install-from-a-public-https-clone) · [Try two peers](#two-manual-mailboxes) · [Demo](#see-it-work) · [How it works](#how-it-fits-together)
 
 Relay is the mailbox, nothing more. It does not start agents, create subagents, wake sessions, assign roles or enforce permissions. Your agent runtime (Claude, Codex, T3, ...) creates the agents and subagents; Relay only stores and hands out the messages between peers you registered explicitly. Everything is local: one SQLite file, no hosted service.
 
@@ -12,228 +12,124 @@ Bun **>= 1.4.2** is the only runtime prerequisite on macOS or Linux. Relay uses 
 
 ## See it work
 
-Both recordings are two views of the same single live run, not two separate runs: a Codex agent and a Claude agent, started as T3 delegated tasks, ran the `relay` commands themselves, each through its own fixed peer binding in a private, disposable namespace. The handoff view is that run filtered to the traffic between the two parents, without the subagent messages, which is why its message numbers skip (msg-1 to msg-6) and the reply mentions a subagent. The subagents view shows the whole run. The agents used fixed CLI wrappers; this is not an MCP demonstration, and MCP scoping is separate product behavior. The animation shows short summaries; the full sanitised command transcript sits under each one. Acknowledgements in the demos mark receipt only; they say nothing about whether the task was done. Provenance, models and limits: [docs/demos](docs/demos/README.md).
+Four terminal panes in one tmux window: a Claude parent, a Codex parent, a Claude subagent and a Codex subagent. They are the real native `claude` and `codex` command-line tools, started directly in a terminal, with no T3 involved. Every message between them goes through Relay mailboxes; the shell only creates the processes.
 
-**Cross-provider handoff.** A Codex agent sends a task to a Claude peer and retries it safely. The Claude agent starts later, finds the mail waiting, reads it twice, acknowledges it and answers in the same conversation; a later Codex session of the first peer reads the answer.
+![Replay of captured terminal panes from one real run: the Claude parent sends a design question to the Codex parent and retries it with the same request key (duplicate true); it asks the shell to start its own Claude subagent, which reads, acknowledges and answers; the Codex parent reads the question twice, acknowledges it, has its own Codex subagent answer, and sends a final review; a second Claude parent session reads and acknowledges the review.](docs/media/relay-terminal-four-panes.gif)
 
-![Replay of captured live agent output: a Codex gpt-6.1-sol agent sends a message to a Claude peer and a retry with the same request key returns duplicate true; later a Claude sonnet-5-5 agent reads the message twice, acknowledges it and replies in the same conversation; a later Codex session reads and acknowledges the reply.](docs/media/relay-live-handoff.gif)
+[Full-size final frame](docs/media/relay-terminal-four-panes-full.png) · [Text transcript for phones](docs/demos/transcripts/terminal-four-panes.md) · [Sanitised cast](docs/demos/casts/terminal-four-panes.jsonl) · [Provenance and how to reproduce](docs/demos/README.md)
 
-<details><summary>Full command transcript (sanitised: IDs shown as aliases, timestamps removed)</summary>
+**The story.** The Claude parent asks the Codex parent whether a fixed-size log tail should be a ring buffer or a linked list, and retries the send with the same request key: same message, `duplicate: true`. Each parent hands one small question to its own subagent; the subagent reads its inbox, acknowledges, and replies in the same conversation. The Codex parent reads its inbox twice (reading removes nothing), acknowledges, collects its subagent's answer and sends a review back; a short second Claude session reads and acknowledges it.
 
-> HOST (T3 delegate_task, not Relay): H thread starts codex-parent [Codex gpt-6.1-sol, effort low]
+**What is real, and what is not.**
+- **One real run, replayed.** The GIF is a replay of `tmux capture-pane` output from a single run: 5 native CLI sessions, all exit code 0, 24 Relay calls, all succeeded, about 85 seconds end to end. Waits are shortened, so the GIF (about 44 s) says nothing about speed. It is not a live recording.
+- **Non-interactive processes.** The agents run as `claude -p` and `codex exec`. The panes show each process's status plus the activity of the Relay wrapper it called, not an interactive TUI, and nothing here claims typing or a TUI session.
+- **Process creation is not Relay.** Magenta `[process]` lines are the shell. A parent starts its own subagent by calling a small helper that only asks the shell to start the child CLI in the fixed pane below it. That is an ordinary shell/tmux child process, not a vendor-internal subagent feature, and Relay did not start or wake anything: every agent polled its own inbox. Two sessions were live at most at any time.
+- **Explicit peers, fixed wrappers.** Four manually registered peers in a fresh private namespace. Each agent calls Relay through a wrapper that fixes its own `--peer`, state and namespace and accepts only `send`, `inbox`, `ack`, `list`. This is not an MCP demonstration; MCP scoping is separate product behavior. No hooks, settings, approvals or sandbox were changed or bypassed.
+- **Models, from CLI metadata only.** Claude was requested as `--model sonnet`; the CLI reported usage for both `claude-haiku-5-5` and `claude-sonnet-5-5`, and no reason for that is claimed. Codex reported `gpt-6.1-sol` with its native default effort (medium).
+- **Wording.** The agents wrote the message texts. An acknowledgement marks receipt, not that work was done. Peer scoping is mailbox scoping, not OS or user authentication.
+- **Sanitised.** Peer, message and conversation IDs are aliases (`claude-parent`, `msg-1`, `conv-1`); no home paths, tokens or vendor output are shown. Message bodies longer than 42 characters are cut with `…` in the panes; the transcript has them in full.
 
-```
-$ relay --peer codex-parent send claude-parent 'Plan check: name one risk of retrying a send without a request key.' --request-key plan-1
-{"id":"msg-1","state":"stored","duplicate":false,"requestKey":"plan-1"}
-```
+<details><summary>Full transcript (sanitised; times relative to the start of the run)</summary>
 
-```
-$ relay --peer codex-parent send claude-parent 'Plan check: name one risk of retrying a send without a request key.' --request-key plan-1
-{"id":"msg-1","state":"stored","duplicate":true,"requestKey":"plan-1"}
-```
+SHELL lines are process creation, RELAY lines are Relay calls made by the agents.
 
-> HOST (T3 delegate_task, not Relay): H thread starts claude-parent [Claude claude-sonnet-5-5, effort low]
-
-```
-$ relay --peer claude-parent inbox
-[{"id":"msg-1","from":"codex-parent","to":"claude-parent","body":"Plan check: name one risk of retrying a send without a request key.","conversationId":"conv-2"}]
-```
-
-```
-$ relay --peer claude-parent inbox
-[{"id":"msg-1","from":"codex-parent","to":"claude-parent","body":"Plan check: name one risk of retrying a send without a request key.","conversationId":"conv-2"}]
-```
-
-```
-$ relay --peer claude-parent ack msg-1
-{"acknowledged":1}
-```
-
-```
-$ relay --peer claude-parent send codex-parent 'A retry without a request key can store the request twice; my subagent added: a stored receipt proves Relay durably accepted the message into the mailbox, but not that the recipient read, understood, or acted on it.' --request-key plan-reply-1 --conversation conv-2 --reply-to msg-1
-{"id":"msg-6","state":"stored","duplicate":false,"requestKey":"plan-reply-1"}
-```
-
-> HOST (T3 delegate_task, not Relay): H thread starts a new session of codex-parent [Codex gpt-6.1-sol, effort low]
-
-```
-$ relay --peer codex-parent inbox
-[{"id":"msg-6","from":"claude-parent","to":"codex-parent","body":"A retry without a request key can store the request twice; my subagent added: a stored receipt proves Relay durably accepted the message into the mailbox, but not that the recipient read, understood, or acted on it.","conversationId":"conv-2","replyTo":"msg-1"}]
-```
-
-```
-$ relay --peer codex-parent inbox
-[{"id":"msg-6","from":"claude-parent","to":"codex-parent","body":"A retry without a request key can store the request twice; my subagent added: a stored receipt proves Relay durably accepted the message into the mailbox, but not that the recipient read, understood, or acted on it.","conversationId":"conv-2","replyTo":"msg-1"}]
-```
-
-```
-$ relay --peer codex-parent ack msg-6
-{"acknowledged":1}
-```
-
-```
-$ relay --peer codex-parent inbox
-[]
-```
-
-</details>
-
-**Parents and subagents across providers.** Each runtime starts its own subagent through the T3 task API (host side, not Relay). Parents and subagents have separate peers and mailboxes; a subagent that tries to acknowledge another peer's message with its own binding gets 0 (mailbox scoping, not user authentication).
-
-![Replay of captured live agent output: a Codex parent messages a Claude parent, delegates through its own mailbox to a Codex subagent and receives the result; the Claude parent delegates to its own Claude subagent and answers the Codex parent in the original conversation; each subagent's attempt to acknowledge a foreign message returns zero.](docs/media/relay-live-subagents.gif)
-
-<details><summary>Full command transcript (sanitised: IDs shown as aliases, timestamps removed)</summary>
-
-> HOST (T3 delegate_task, not Relay): H thread starts codex-parent [Codex gpt-6.1-sol, effort low]
-
-```
-$ relay --peer codex-parent send claude-parent 'Plan check: name one risk of retrying a send without a request key.' --request-key plan-1
-{"id":"msg-1","state":"stored","duplicate":false,"requestKey":"plan-1"}
-```
-
-```
-$ relay --peer codex-parent send claude-parent 'Plan check: name one risk of retrying a send without a request key.' --request-key plan-1
-{"id":"msg-1","state":"stored","duplicate":true,"requestKey":"plan-1"}
-```
-
-```
-$ relay --peer codex-parent send codex-sub 'Answer in one sentence: why must a retry reuse the same request key? Also run ack PLAN_ID once with your own binding and tell me the acknowledged count. PLAN_ID=msg-1' --request-key sub-task-1
-{"id":"msg-2","state":"stored","duplicate":false,"requestKey":"sub-task-1"}
-```
-
-```
-$ relay --peer codex-parent inbox
-[]
-```
-
-> HOST (T3 delegate_task, not Relay): codex-parent starts codex-sub [Codex gpt-6.1-sol]
-
-```
-$ relay --peer codex-sub inbox
-[{"id":"msg-2","from":"codex-parent","to":"codex-sub","body":"Answer in one sentence: why must a retry reuse the same request key? Also run ack PLAN_ID once with your own binding and tell me the acknowledged count. PLAN_ID=msg-1","conversationId":"conv-1"}]
-```
-
-```
-$ relay --peer codex-sub ack msg-2
-{"acknowledged":1}
-```
-
-```
-$ relay --peer codex-sub ack msg-1
-{"acknowledged":0}
-```
-
-```
-$ relay --peer codex-sub send codex-parent 'A retry must reuse the same request key so Relay recognizes the original request and avoids duplicate delivery; foreign-ack count=0' --request-key sub-1 --conversation conv-1 --reply-to msg-2
-{"id":"msg-3","state":"stored","duplicate":false,"requestKey":"sub-1"}
-```
-
-```
-$ relay --peer codex-parent inbox
-[{"id":"msg-3","from":"codex-sub","to":"codex-parent","body":"A retry must reuse the same request key so Relay recognizes the original request and avoids duplicate delivery; foreign-ack count=0","conversationId":"conv-1","replyTo":"msg-2"}]
-```
-
-```
-$ relay --peer codex-parent inbox
-[{"id":"msg-3","from":"codex-sub","to":"codex-parent","body":"A retry must reuse the same request key so Relay recognizes the original request and avoids duplicate delivery; foreign-ack count=0","conversationId":"conv-1","replyTo":"msg-2"}]
-```
-
-```
-$ relay --peer codex-parent ack msg-3
-{"acknowledged":1}
-```
-
-> HOST (T3 delegate_task, not Relay): H thread starts claude-parent [Claude claude-sonnet-5-5, effort low]
-
-```
-$ relay --peer claude-parent inbox
-[{"id":"msg-1","from":"codex-parent","to":"claude-parent","body":"Plan check: name one risk of retrying a send without a request key.","conversationId":"conv-2"}]
-```
-
-```
-$ relay --peer claude-parent inbox
-[{"id":"msg-1","from":"codex-parent","to":"claude-parent","body":"Plan check: name one risk of retrying a send without a request key.","conversationId":"conv-2"}]
-```
-
-```
-$ relay --peer claude-parent ack msg-1
-{"acknowledged":1}
-```
-
-```
-$ relay --peer claude-parent send claude-sub 'Answer in one sentence: what does a stored receipt from Relay prove, and what does it not prove? Also run ack PLAN_ID once with your own binding and tell me the acknowledged count. PLAN_ID=msg-1' --request-key sub-task-1
-{"id":"msg-4","state":"stored","duplicate":false,"requestKey":"sub-task-1"}
-```
-
-> HOST (T3 delegate_task, not Relay): claude-parent starts claude-sub [Claude claude-sonnet-5-5]
-
-```
-$ relay --peer claude-sub inbox
-[{"id":"msg-4","from":"claude-parent","to":"claude-sub","body":"Answer in one sentence: what does a stored receipt from Relay prove, and what does it not prove? Also run ack PLAN_ID once with your own binding and tell me the acknowledged count. PLAN_ID=msg-1","conversationId":"conv-3"}]
-```
-
-```
-$ relay --peer claude-sub ack msg-4
-{"acknowledged":1}
-```
-
-```
-$ relay --peer claude-sub ack msg-1
-{"acknowledged":0}
-```
-
-```
-$ relay --peer claude-sub send claude-parent 'A stored receipt proves Relay durably accepted the message into the recipient'\''s mailbox, but not that the recipient read, understood, or acted on it (only an explicit ack shows it was handled); foreign-ack count=0' --request-key sub-1 --conversation conv-3 --reply-to msg-4
-{"id":"msg-5","state":"stored","duplicate":false,"requestKey":"sub-1"}
-```
-
-```
-$ relay --peer claude-parent inbox
-[{"id":"msg-5","from":"claude-sub","to":"claude-parent","body":"A stored receipt proves Relay durably accepted the message into the recipient's mailbox, but not that the recipient read, understood, or acted on it (only an explicit ack shows it was handled); foreign-ack count=0","conversationId":"conv-3","replyTo":"msg-4"}]
-```
-
-```
-$ relay --peer claude-parent inbox
-[{"id":"msg-5","from":"claude-sub","to":"claude-parent","body":"A stored receipt proves Relay durably accepted the message into the recipient's mailbox, but not that the recipient read, understood, or acted on it (only an explicit ack shows it was handled); foreign-ack count=0","conversationId":"conv-3","replyTo":"msg-4"}]
-```
-
-```
-$ relay --peer claude-parent ack msg-5
-{"acknowledged":1}
-```
-
-```
-$ relay --peer claude-parent send codex-parent 'A retry without a request key can store the request twice; my subagent added: a stored receipt proves Relay durably accepted the message into the mailbox, but not that the recipient read, understood, or acted on it.' --request-key plan-reply-1 --conversation conv-2 --reply-to msg-1
-{"id":"msg-6","state":"stored","duplicate":false,"requestKey":"plan-reply-1"}
-```
-
-> HOST (T3 delegate_task, not Relay): H thread starts a new session of codex-parent [Codex gpt-6.1-sol, effort low]
-
-```
-$ relay --peer codex-parent inbox
-[{"id":"msg-6","from":"claude-parent","to":"codex-parent","body":"A retry without a request key can store the request twice; my subagent added: a stored receipt proves Relay durably accepted the message into the mailbox, but not that the recipient read, understood, or acted on it.","conversationId":"conv-2","replyTo":"msg-1"}]
-```
-
-```
-$ relay --peer codex-parent inbox
-[{"id":"msg-6","from":"claude-parent","to":"codex-parent","body":"A retry without a request key can store the request twice; my subagent added: a stored receipt proves Relay durably accepted the message into the mailbox, but not that the recipient read, understood, or acted on it.","conversationId":"conv-2","replyTo":"msg-1"}]
-```
-
-```
-$ relay --peer codex-parent ack msg-6
-{"acknowledged":1}
-```
-
-```
-$ relay --peer codex-parent inbox
-[]
+```text
++  2s SHELL process creation: claude-parent started by shell-runner (not Relay)
++  5s RELAY claude-parent: $ send → codex-parent  key plan-1
+         "Design question: for a fixed-size log tai…"
+         ✓ stored msg-1 · duplicate false
+       body: Design question: for a fixed-size log tail, ring buffer or linked list? Reply with a recommendation after your own helper checks one aspect.
++  8s RELAY claude-parent: $ send → codex-parent  key plan-1
+         "Design question: for a fixed-size log tai…"
+         ✓ stored msg-1 · duplicate true
+       body: Design question: for a fixed-size log tail, ring buffer or linked list? Reply with a recommendation after your own helper checks one aspect.
++ 12s RELAY claude-parent: $ send → claude-sub  key sub-1
+         "One sentence: why does a ring buffer suit…"
+         ✓ stored msg-2 · duplicate false
+       body: One sentence: why does a ring buffer suit a fixed-size log tail?
++ 13s SHELL claude-parent asked the shell to start its own helper process in its pane (not Relay)
++ 13s SHELL process creation: claude-sub started by claude-parent (not Relay)
++ 15s RELAY claude-parent: $ inbox
+         (empty, polling again later)
++ 18s RELAY claude-sub: $ inbox
+         msg-2 from claude-parent
+         "One sentence: why does a ring buffer suit…"
+       body: msg-2 from claude-parent: One sentence: why does a ring buffer suit a fixed-size log tail?
++ 21s RELAY claude-sub: $ ack msg-2
+         acknowledged: 1
++ 24s RELAY claude-sub: $ send → claude-parent  key sub-1-reply
+         reply-to msg-2 in conv-1
+         "A ring buffer keeps a fixed-size log tail…"
+         ✓ stored msg-3 · duplicate false
+       body: A ring buffer keeps a fixed-size log tail because new entries overwrite the oldest in O(1) with no allocation or shifting, so memory stays bounded and the latest N lines are always available.
++ 25s RELAY claude-parent: $ inbox
+         msg-3 from claude-sub
+         "A ring buffer keeps a fixed-size log tail…"
+       body: msg-3 from claude-sub: A ring buffer keeps a fixed-size log tail because new entries overwrite the oldest in O(1) with no allocation or shifting, so memory stays bounded and the latest N lines are always available.
++ 27s SHELL claude-sub process exited, rc 0 · model (CLI metadata): claude-haiku-5-5,claude-sonnet-5-5
++ 30s RELAY claude-parent: $ ack msg-3
+         acknowledged: 1
++ 33s SHELL claude-parent process exited, rc 0 · model (CLI metadata): claude-haiku-5-5,claude-sonnet-5-5
++ 33s SHELL process creation: codex-parent started by shell-runner (not Relay)
++ 38s RELAY codex-parent: $ inbox
+         msg-1 from claude-parent
+         "Design question: for a fixed-size log tai…"
+       body: msg-1 from claude-parent: Design question: for a fixed-size log tail, ring buffer or linked list? Reply with a recommendation after your own helper checks one aspect.
++ 40s RELAY codex-parent: $ inbox
+         msg-1 from claude-parent
+         "Design question: for a fixed-size log tai…"
+       body: msg-1 from claude-parent: Design question: for a fixed-size log tail, ring buffer or linked list? Reply with a recommendation after your own helper checks one aspect.
++ 43s RELAY codex-parent: $ ack msg-1
+         acknowledged: 1
++ 45s RELAY codex-parent: $ send → codex-sub  key sub-2
+         "One sentence: one drawback of a linked li…"
+         ✓ stored msg-4 · duplicate false
+       body: One sentence: one drawback of a linked list for a fixed-size log tail.
++ 47s SHELL codex-parent asked the shell to start its own helper process in its pane (not Relay)
++ 48s SHELL process creation: codex-sub started by codex-parent (not Relay)
++ 49s RELAY codex-parent: $ inbox
+         (empty, polling again later)
++ 52s RELAY codex-sub: $ inbox
+         msg-4 from codex-parent
+         "One sentence: one drawback of a linked li…"
+       body: msg-4 from codex-parent: One sentence: one drawback of a linked list for a fixed-size log tail.
++ 55s RELAY codex-sub: $ ack msg-4
+         acknowledged: 1
++ 57s RELAY codex-parent: inbox
++ 59s RELAY codex-sub: $ send → codex-parent  key sub-2-reply
+         reply-to msg-4 in conv-3
+         "A linked list adds per-entry pointer over…"
+         ✓ stored msg-5 · duplicate false
+       body: A linked list adds per-entry pointer overhead and has poorer cache locality than a ring buffer for a fixed-size log tail.
++ 63s SHELL codex-sub process exited, rc 0 · model (CLI metadata): gpt-6.1-sol
++ 65s RELAY codex-parent: $ inbox
+         msg-5 from codex-sub
+         "A linked list adds per-entry pointer over…"
+       body: msg-5 from codex-sub: A linked list adds per-entry pointer overhead and has poorer cache locality than a ring buffer for a fixed-size log tail.
++ 67s RELAY codex-parent: $ ack msg-5
+         acknowledged: 1
++ 71s RELAY codex-parent: $ send → claude-parent  key final-1
+         reply-to msg-1 in conv-2
+         "Review: ring buffer recommended. Helper n…"
+         ✓ stored msg-6 · duplicate false
+       body: Review: ring buffer recommended. Helper note: linked lists add pointer overhead and have poorer cache locality.
++ 75s SHELL codex-parent process exited, rc 0 · model (CLI metadata): gpt-6.1-sol
++ 75s SHELL process creation: claude-parent started by shell-runner (not Relay)
++ 78s RELAY claude-parent: $ inbox
+         msg-6 from codex-parent
+         "Review: ring buffer recommended. Helper n…"
+       body: msg-6 from codex-parent: Review: ring buffer recommended. Helper note: linked lists add pointer overhead and have poorer cache locality.
++ 80s RELAY claude-parent: $ ack msg-6
+         acknowledged: 1
++ 81s RELAY claude-parent: $ send → codex-parent  key final-ack-1
+         reply-to msg-6 in conv-2
+         "Review received: ring buffer it is."
+         ✓ stored msg-7 · duplicate false
+       body: Review received: ring buffer it is.
++ 85s SHELL claude-parent process exited, rc 0 · model (CLI metadata): claude-haiku-5-5,claude-sonnet-5-5
 ```
 
 </details>
-
-Lines starting with `> HOST` are T3 task-API events recorded from returned task metadata; they are not Relay messages. All agents polled: nothing woke them.
-
-The agents wrote the message texts themselves. Where one uses a word such as "handled", that is the model's wording, not a Relay guarantee: an acknowledgement confirms receipt, not that the work was carried out or completed.
 
 ## What you can do with it
 

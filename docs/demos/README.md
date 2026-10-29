@@ -1,17 +1,28 @@
 # Demo recordings: provenance
 
-The README shows two **live-agent replays** (`relay-live-*.gif`). Both are two views of the **same single live run**: the handoff GIF is that run filtered to the traffic between the two parents (no subagent messages, hence the jump from `msg-1` to `msg-6` and a reply that mentions a subagent), and the subagents GIF shows the whole run. They are not separate runs. Two older **scripted replays** (`relay-scripted-*.gif`) are kept only as clearly labelled illustrations. Every frame says which kind it is in its top bar. None of them is a realtime recording and none makes a performance claim: waiting time is cut and each step is held for readability.
+The README features one recording: [relay-terminal-four-panes.gif](../media/relay-terminal-four-panes.gif), a **replay of captured terminal panes** from a single real run of the native `claude` and `codex` CLIs in four tmux panes. No T3 API, task or thread took part. The earlier T3-based live replays and the scripted replays below are **historical**: they stay in the repository, are labelled as such in their own frames, and are no longer linked from the README.
 
 | File | Kind | Length | Size |
 | --- | --- | --- | --- |
-| `relay-live-handoff.gif` | Replay of what live Codex and Claude agents ran: cross-provider handoff between two peers | 36 s | 0.42 MB |
-| `relay-live-subagents.gif` | Replay of live agents: two parents and their own subagents, with scoping checks | 62 s | 0.98 MB |
-| `relay-scripted-handoff.gif` | Scripted roles, real CLI output, no model | 33 s | 0.63 MB |
-| `relay-scripted-subagents.gif` | Scripted roles, real CLI output, no model | 40 s | 1.48 MB |
+| `relay-terminal-four-panes.gif` | Featured. Replay of captured tmux panes, one real run, native CLIs, no T3 | 43.6 s (cast timings add up to 47.3 s) | 0.82 MB, 1274x1328, 34 captured frames |
+| `relay-live-handoff.gif` | Historical. Replay of what live T3-started Codex and Claude agents ran | 36 s | 0.42 MB |
+| `relay-live-subagents.gif` | Historical. Same live T3 run, whole run | 62 s | 0.98 MB |
+| `relay-scripted-handoff.gif` | Historical. Scripted roles, real CLI output, no model | 33 s | 0.63 MB |
+| `relay-scripted-subagents.gif` | Historical. Scripted roles, real CLI output, no model | 40 s | 1.48 MB |
 
-Each GIF has a `*-poster.png` (final frame). Live casts are in [casts](casts), full command transcripts in [transcripts](transcripts).
+Each GIF has a `*-poster.png` (final frame); the terminal demo also has a full-size PNG. Casts are in [casts](casts), full transcripts in [transcripts](transcripts). None of the recordings is realtime and none makes a performance claim: waiting time is cut and each step is held for readability.
 
-## What the live replays are
+## The four-pane terminal demo
+
+- **What ran.** One run of [terminal/run.sh](terminal/run.sh) in a normal terminal outside T3, started from the committed sources of this directory: about 85 s elapsed, 5 native CLI sessions (Claude parent, Claude subagent, Codex parent, Codex subagent, then a short second Claude parent session), all exit code 0, 24 Relay wrapper calls, all rc 0, two child-process requests, a keyed retry that returned the same id with `duplicate: true`, repeated inbox reads and explicit acknowledgements and replies. At most two model processes were live at once, each with a hard 240 s deadline; the owned tmux server was stopped and no supervisor was left. The runner was executed by the lead from an archive copy of the commit.
+- **What the panes show.** Real `tmux capture-pane -e` output of a window of 93x42 characters, four panes of exactly 46x20, drawn by [render-panes.swift](render-panes.swift) at 22 pt with the same columns and rows. The agents are non-interactive (`claude -p`, `codex exec`): the panes show process status lines and the activity of the Relay wrapper, not an interactive TUI.
+- **Host versus Relay.** Magenta `[process]` lines and SHELL events in the transcript are process creation by the shell. A parent starts its own subagent by calling a helper that takes no arguments and only asks the shell to start the child CLI in the fixed pane of its own parent; this is a shell/tmux child process, not a vendor-internal subagent feature. Relay carries the task bodies and results, starts nothing and wakes nothing; every agent polled.
+- **Models and options.** Claude: `--model sonnet --effort low --no-session-persistence`, tools limited to its own wrapper, `sleep` and (parent only) the child helper. The CLI reported usage for both `claude-haiku-5-5` and `claude-sonnet-5-5` in every Claude session; no reason is claimed. Codex: `-m gpt-6.1-sol -s workspace-write`, header showed `gpt-6.1-sol` with its native default effort (medium). No approval or sandbox bypass, no environment stripping, no change to settings or hooks.
+- **Bindings.** Four manually registered peers (no host session IDs) in a fresh private namespace and state, installed Relay in a private prefix and HOME, each agent behind a wrapper that fixes `--peer`, state and namespace and accepts only `send`, `inbox`, `ack`, `list`. Not an MCP demonstration. Acknowledgements mark receipt, not completion; mailbox scoping is not OS or user authentication.
+- **What was changed for publication.** Peer, message and conversation IDs are aliases; paths of the private demo directory would appear as `<demo>` (none remained); [terminal/to-cast.ts](terminal/to-cast.ts) refuses to write the cast or transcript if a home or private path, UUID, vendor session marker or T3 name remains. Waits between frames are shortened (per-frame cap, total about 47 s for an 85 s run) and each step is held for readability. Message bodies over 42 characters are cut with `…` inside the panes; the transcript has the full bodies. Consecutive empty polls are shown once. Raw wrapper logs with real IDs and the raw CLI output stay private and unpublished.
+- **Limits.** The panes are 46 characters wide, so text is about 12 px at GitHub's width; phones need the [full-size frame](../media/relay-terminal-four-panes-full.png) and the [text transcript](transcripts/terminal-four-panes.md). One short run on one machine, no performance claim.
+
+## Historical: what the T3 live replays are
 
 - **Who ran the commands.** Agents did, not a script. The H thread started a Codex agent (`codex-parent`) and a Claude agent (`claude-parent`) with the T3 `delegate_task` tool. Each parent then started its own subagent (`codex-sub`, `claude-sub`) with `delegate_task`; T3 lists those as child threads of the parent. Providers and models come from the task metadata T3 returned, not from names the agents chose: Codex `gpt-6.1-sol` (reasoning effort low for the two parents) and Claude `claude-sonnet-5-5` (effort low for the parent). Subagent effort was requested but is not recorded in the metadata, so it is not claimed.
 - **Order, to stay at two live agents.** Codex parent plus its subagent, then Claude parent plus its subagent, then a short second Codex-parent session to read the final answer. Nothing woke an agent: the mailboxes are durable, so agents did not have to be live at the same time.
@@ -33,6 +44,17 @@ Each GIF has a `*-poster.png` (final frame). Live casts are in [casts](casts), f
 The three diagrams in the README are parsed and rendered from the files in [docs/diagrams](../diagrams) with `mermaid@11.17.2` (pinned CDN URL). T3's `html_preview` loaded the library, but its screenshot is taken before Mermaid's asynchronous render finishes, so it cannot show the result. As a fallback the check ran in a headless Google Chrome with a temporary profile (no existing tab or user profile) and a virtual-time budget; all three parse and render.
 
 ## Reproduce
+
+The terminal demo needs a normal terminal outside T3 with `tmux`, `bun`, `claude` and `codex` installed and logged in, plus `ffmpeg` and macOS `swiftc` for rendering. It touches only a fresh `/private/tmp/relay-h6run.*` directory and its own tmux socket. See [terminal/README.md](terminal/README.md).
+
+```sh
+docs/demos/terminal/run.sh --preview   # layout only, no model
+docs/demos/terminal/run.sh             # full run (refuses to start a model if the CLAUDECODE marker is present)
+bun docs/demos/terminal/to-cast.ts RUNDIR/proof CAST.jsonl TRANSCRIPT.md
+docs/demos/terminal/render.sh CAST.jsonl OUTBASE   # GIF, poster, full-size PNG
+```
+
+The older replays:
 
 ```sh
 bun docs/demos/capture.ts handoff     # scripted replay: real run, writes casts/handoff.jsonl
